@@ -24,7 +24,6 @@ use app_core::{
 };
 use editor_egui::resolvers::{EmbedResolver, EmbedState};
 use egui::emath::GuiRounding as _;
-use egui::load::{SizeHint, TexturePoll};
 use egui::{
     Button, Color32, CornerRadius, Label, Rect, StrokeKind, TextureHandle, TextureOptions, Ui,
     Vec2, pos2, vec2,
@@ -72,8 +71,8 @@ impl NotePdfs {
 /// side of a page draws. A page narrower than that allows keeps its shape.
 const MAX_PAGE_HEIGHT: f32 = 4_194_304.0;
 
-/// The box an image takes while it loads, in pixels.
-const LOADING_SIZE: Vec2 = Vec2::new(96.0, 96.0);
+/// The box an image takes while it loads, in points.
+const LOADING_SIZE: Vec2 = Vec2::new(48.0, 48.0);
 
 /// The box an embed of a locked PDF takes, in points.
 const LOCKED_SIZE: Vec2 = Vec2::new(360.0, 96.0);
@@ -174,8 +173,8 @@ pub(crate) struct WorkspaceImages {
     held: SharedHeld,
     /// Counts the changes to what this answers.
     seq: Arc<AtomicU64>,
-    /// The addresses whose texture finished decoding, with the
-    /// generation of the workspace image bytes it decoded.
+    /// The addresses whose image was measured, with the generation of
+    /// the workspace image bytes measured.
     decoded: Mutex<HashMap<String, Option<u64>>>,
     /// Remote images whose bytes egui holds.
     included: Mutex<Vec<String>>,
@@ -229,14 +228,13 @@ impl WorkspaceImages {
         match state {
             // A box that keeps the Open in tab button, whose tab asks for
             // the password.
-            Some(PdfEmbedState::Problem(EmbedProblem::Locked)) => {
-                EmbedState::Loaded(LOCKED_SIZE * self.ctx.pixels_per_point())
-            }
+            Some(PdfEmbedState::Problem(EmbedProblem::Locked)) => EmbedState::Loaded(LOCKED_SIZE),
             None | Some(PdfEmbedState::Problem(_)) => EmbedState::NotFound,
-            // A Letter page's shape, until the PDF opens.
-            Some(PdfEmbedState::Opening) => {
-                EmbedState::Loading(vec2(EMBED_WIDTH, EMBED_WIDTH * 11.0 / 8.5))
-            }
+            // A Letter page's shape, until the PDF opens. A page lays out
+            // `EMBED_WIDTH` of this screen's pixels wide.
+            Some(PdfEmbedState::Opening) => EmbedState::Loading(
+                vec2(EMBED_WIDTH, EMBED_WIDTH * 11.0 / 8.5) / self.ctx.pixels_per_point(),
+            ),
             Some(PdfEmbedState::Page {
                 size: [width, height],
                 ..
@@ -245,7 +243,10 @@ impl WorkspaceImages {
                 let laid_out = vec2(EMBED_WIDTH, EMBED_WIDTH * shape);
                 // A page of a sliver of a point across would lay out
                 // millions of points tall.
-                EmbedState::Page(laid_out * (MAX_PAGE_HEIGHT / laid_out.y).min(1.0))
+                EmbedState::Page(
+                    laid_out * (MAX_PAGE_HEIGHT / laid_out.y).min(1.0)
+                        / self.ctx.pixels_per_point(),
+                )
             }
         }
     }
@@ -553,11 +554,9 @@ impl EmbedResolver for WorkspaceImages {
             Ok(address) => address,
             Err(state) => return state,
         };
-        match self
-            .ctx
-            .try_load_texture(&address, TextureOptions::LINEAR, SizeHint::default())
-        {
-            Ok(TexturePoll::Ready { texture }) => {
+        // The size alone: the image draws at the pixels its box covers.
+        match crate::image_decoders::natural_size(&self.ctx, &address) {
+            Ok(Some(size)) => {
                 // Another note may have handed egui new bytes here.
                 let generation = self
                     .held
@@ -571,9 +570,9 @@ impl EmbedResolver for WorkspaceImages {
                     decoded.insert(address, generation);
                     self.seq.fetch_add(1, Ordering::SeqCst);
                 }
-                EmbedState::Loaded(texture.size)
+                EmbedState::Loaded(size)
             }
-            Ok(TexturePoll::Pending { size }) => EmbedState::Loading(size.unwrap_or(LOADING_SIZE)),
+            Ok(None) => EmbedState::Loading(LOADING_SIZE),
             Err(_) => EmbedState::NotFound,
         }
     }

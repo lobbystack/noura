@@ -10,12 +10,14 @@ pub use editor_core::resolvers::{
 /// What the embedding app knows about the content a URL names.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EmbedState {
-    /// Still loading. The editor reserves this size, in pixels, and `show`
+    /// Still loading. The editor reserves this size, in points, and `show`
     /// paints a placeholder in it.
     Loading(Vec2),
-    /// Loaded, at this size in pixels.
+    /// Loaded, showing at this size in points at its own size. Points
+    /// keep an image's size beside the text when the zoom or the screen's
+    /// density changes.
     Loaded(Vec2),
-    /// A document's page, at this size in pixels. A page no taller than
+    /// A document's page, at this size in points. A page no taller than
     /// an A4 page for its width lays out as an image of that size does. A
     /// taller one lays out as wide as an A4 page would, and its height
     /// follows its shape past the bottom of the view, so a web page saved

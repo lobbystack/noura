@@ -87,8 +87,8 @@ fn inline_image_advance_matches_rendered_width() {
         { TestEditor::with_test_embeds(&format!("![]({url}) ![]({url})\n\nfollow\n")) };
     ws.editor.edit.renderer.ctx.set_pixels_per_point(2.0);
 
-    // 180×120 rasterized at ppi=2 → a 360×240 px texture.
-    embeds.complete(url, Vec2::new(360.0, 240.0));
+    // The resolver gives the image's size in points, whatever the density.
+    embeds.complete(url, Vec2::new(180.0, 120.0));
 
     // Cursor off both images so they collapse rather than revealing.
     ws.push(Event::Select {

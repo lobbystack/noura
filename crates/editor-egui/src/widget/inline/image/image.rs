@@ -75,7 +75,7 @@ impl MdRender {
 }
 
 impl<'ast> MdRender {
-    /// The size, in pixels, an image's box is laid out from, and what the
+    /// The size, in points, an image's box is laid out from, and what the
     /// box paints: the content at its own size, or the broken-image marker
     /// when the embedding app can't find it.
     pub fn embed_texture_size(&self, url: &str) -> (Vec2, EmbedKind) {
@@ -83,10 +83,9 @@ impl<'ast> MdRender {
             EmbedState::Loading(size) | EmbedState::Loaded(size) | EmbedState::Page(size) => {
                 (size, EmbedKind::Image)
             }
-            EmbedState::NotFound | EmbedState::NotLoaded | EmbedState::Failed => (
-                Vec2::splat(MISSING_IMAGE_SIZE) * self.ctx.pixels_per_point(),
-                EmbedKind::Missing,
-            ),
+            EmbedState::NotFound | EmbedState::NotLoaded | EmbedState::Failed => {
+                (Vec2::splat(MISSING_IMAGE_SIZE), EmbedKind::Missing)
+            }
         }
     }
 
@@ -100,9 +99,9 @@ impl<'ast> MdRender {
             - Vec2::splat(self.layout.margin))
         .max(Vec2::ZERO);
 
-        // Texture dims are device pixels; the layout works in logical points.
-        // Convert so a Retina screenshot (ppp 2) isn't shown at 2x real size.
-        let natural = texture_size / self.ctx.pixels_per_point();
+        // The embedding app gives the size in points, so an image keeps its
+        // size beside the text as the zoom and the screen's density change.
+        let natural = texture_size;
         let aspect = if natural.x > 0.0 {
             natural.y / natural.x
         } else {
@@ -152,7 +151,7 @@ impl<'ast> MdRender {
         }
     }
 
-    /// The size a document's page `size` pixels large lays out at, as
+    /// The size a document's page `size` points large lays out at, as
     /// [`EmbedState::Page`] says. A height written in the note lays it out
     /// as an image.
     pub fn page_size(&self, size: Vec2, width: f32, requested: ImageDims) -> Vec2 {

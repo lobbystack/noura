@@ -10,7 +10,7 @@ use egui::{CornerRadius, Rect, Ui, Vec2};
 use egui_kittest::kittest::Queryable as _;
 use support::{editor, find, harness_with};
 
-/// Has every image at 600 by 400 pixels, except `missing.png`.
+/// Has every image at 600 by 400 points, except `missing.png`.
 struct Pictures;
 
 impl EmbedResolver for Pictures {
@@ -108,7 +108,7 @@ fn a_remote_image_waits_for_load_image_and_a_failed_one_offers_a_retry() {
     assert_eq!(editor(&harness).text(), note);
 }
 
-/// Has every document's page 1,200 pixels wide: `letter.pdf` and
+/// Has every document's page 1,200 points wide: `letter.pdf` and
 /// `a4.pdf` as tall as those papers, `tall.pdf` 14,000 by 612 points, as
 /// a web page saved as PDF. `letter.png` is an image of the Letter page.
 struct Pages;
@@ -175,14 +175,13 @@ fn images_draw_inline_at_their_size_or_the_width_an_embed_asks_for() {
         editor.set_embed_resolver(Box::new(Pictures));
     });
     let editor = editor(&harness);
-    let ppp = harness.ctx.pixels_per_point();
 
     let markdown = drawn_image(editor, "![Alt](pic.png)");
-    assert_eq!(markdown.width(), 600.0 / ppp);
+    assert_eq!(markdown.width(), 600.0);
     let narrow = drawn_image(editor, "![[photo.jpg|300]]");
     assert_eq!((narrow.width(), narrow.height()), (300.0, 200.0));
     let natural = drawn_image(editor, "![[photo.jpg]]");
-    assert_eq!(natural.width(), 600.0 / ppp);
+    assert_eq!(natural.width(), 600.0);
     drawn_image(editor, "![[missing.png]]");
     assert_eq!(editor.text(), note);
 }
