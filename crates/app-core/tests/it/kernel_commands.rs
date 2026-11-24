@@ -4,7 +4,7 @@ use crate::support;
 use std::time::{Duration, Instant};
 
 use app_core::{
-    App, Area, CommandSource, FILES_SECTION, Key, KeyPress, OpenAs, Platform, command_id,
+    App, Area, CommandSource, FILES_SECTION, Key, KeyPress, OpenAs, PdfZoom, Platform, command_id,
     settings_section,
 };
 use support::{FakeSystem, Fixture, document};
@@ -309,4 +309,48 @@ fn commands_that_need_a_workspace_do_nothing_without_one() {
 
     assert_eq!(app.palette(), None);
     assert!(app.tabs().is_empty());
+}
+
+#[test]
+fn zoom_keys_zoom_the_pdf_while_its_tab_is_active_and_the_interface_elsewhere() {
+    let fixture = Fixture::new(&[
+        ("text.pdf", &crate::pdf_viewer::pdf("text.pdf")),
+        ("Plan.md", b"# Plan\n"),
+    ]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    let mut at = Instant::now();
+    let mut press = |app: &mut App, key| {
+        at += Duration::from_secs(1);
+        assert!(
+            app.press_key(&KeyPress::new(key).with_cmd(), None, at),
+            "{key:?}"
+        );
+    };
+    app.open_file("text.pdf", OpenAs::Kept);
+    let pdf = app.active_tab().unwrap().id();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while app.pdf(pdf).unwrap().state() != &app_core::PdfState::Ready {
+        assert!(Instant::now() < deadline, "the PDF never opened");
+        std::thread::sleep(Duration::from_millis(5));
+        app.poll();
+    }
+    let zoom = |app: &App| app.pdf(pdf).unwrap().zoom();
+
+    // As in Preview: Command-= and Command-minus step the PDF's zoom, and
+    // Command-0 shows its pages at their own size.
+    press(&mut app, Key::Equals);
+    assert_ne!(zoom(&app), PdfZoom::FitWidth);
+    press(&mut app, Key::Num0);
+    assert_eq!(zoom(&app), PdfZoom::Scale(1.0));
+    press(&mut app, Key::Minus);
+    assert_eq!(zoom(&app), PdfZoom::Scale(0.9));
+    assert_eq!(app.preferences().zoom, 100);
+
+    // In a note, they zoom the interface, and leave the PDF alone.
+    app.open_file("Plan.md", OpenAs::Kept);
+    press(&mut app, Key::Equals);
+    assert_eq!(app.preferences().zoom, 110);
+    press(&mut app, Key::Num0);
+    assert_eq!(app.preferences().zoom, 100);
+    assert_eq!(zoom(&app), PdfZoom::Scale(0.9));
 }

@@ -1029,3 +1029,83 @@ fn the_calendar_sidebar_renders_with_and_without_files() {
         save(&mut harness, "calendar-sidebar-with-files", theme);
     }
 }
+
+/// A PDF tab at Actual Size before and after the interface zooms to 125%
+/// from a note, and partway through a pinch over its pages. Prints the
+/// page's width on the screen, in pixels, for each.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn a_pdf_tab_keeps_its_page_size_across_interface_zooms_and_pinches() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Reading");
+    create_workspace(app_data.path(), &folder);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app-core/tests/fixtures/pdf");
+    std::fs::copy(fixture.join("text.pdf"), folder.join("text.pdf")).unwrap();
+    std::fs::write(folder.join("Plan.md"), note('a', "Plan", "To read.\n")).unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::Linux));
+    let mut harness = window(app, Theme::Light, Some(linux_controls()));
+    let app = harness.state_mut().app_mut();
+    app.open_file("Plan.md", app_core::OpenAs::Kept);
+    let note = app.active_tab().unwrap().id();
+    app.open_file("text.pdf", app_core::OpenAs::Kept);
+    let tab = app.active_tab().unwrap().id();
+    let page_pixels = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::Image, "Page 1 of 3")
+            .rect()
+            .width()
+            * harness.ctx.pixels_per_point()
+    };
+    let drawn = |harness: &mut Ui| {
+        wait_until(harness, |harness| {
+            let pdf = harness.state().app().pdf(tab).unwrap();
+            harness
+                .query_by_role_and_label(Role::Image, "Page 1 of 3")
+                .is_some()
+                && pdf.settles_in().is_none()
+                && pdf.tiles(1).any(|tile| tile.key.density() == pdf.density())
+        });
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(30));
+            harness.step();
+        }
+    };
+    drawn(&mut harness);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Num0);
+    drawn(&mut harness);
+    save(&mut harness, "9-pdf-actual-size-100", Theme::Light);
+    eprintln!("100% interface: page {} pixels wide", page_pixels(&harness));
+
+    harness.state_mut().app_mut().activate_tab(note);
+    harness.run_steps(2);
+    for _ in 0..2 {
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Equals);
+        harness.run_steps(2);
+    }
+    harness.state_mut().app_mut().activate_tab(tab);
+    drawn(&mut harness);
+    save(&mut harness, "9-pdf-actual-size-125", Theme::Light);
+    eprintln!(
+        "{}% interface: page {} pixels wide",
+        harness.ctx.zoom_factor() * 100.0,
+        page_pixels(&harness)
+    );
+
+    // Pinch out over the page's first lines.
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 3")
+        .rect();
+    harness.hover_at(page.min + egui::vec2(100.0, 60.0));
+    harness.run_steps(2);
+    for _ in 0..4 {
+        harness.event(egui::Event::Zoom(1.1));
+        harness.step();
+    }
+    harness.step();
+    save(&mut harness, "9-pdf-pinching", Theme::Light);
+    eprintln!("mid-pinch: page {} pixels wide", page_pixels(&harness));
+    drawn(&mut harness);
+    save(&mut harness, "9-pdf-pinched", Theme::Light);
+    eprintln!("settled: page {} pixels wide", page_pixels(&harness));
+}

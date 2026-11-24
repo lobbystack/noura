@@ -52,12 +52,25 @@ impl App {
         self.change_pdf(tab, PdfSession::fit_width);
     }
 
+    /// Draw the PDF in `tab` at its own size.
+    pub fn pdf_actual_size(&mut self, tab: TabId) {
+        self.change_pdf(tab, PdfSession::actual_size);
+    }
+
+    /// A pinch over the PDF in `tab`: draw it `factor` times as large,
+    /// keeping the place `at` points right of and below the view's
+    /// top-left corner under the pointer.
+    pub fn pdf_zoom_by(&mut self, tab: TabId, factor: f32, at: [f32; 2]) {
+        self.change_pdf(tab, |session| session.zoom_by(factor, at));
+    }
+
     /// The PDF tab `tab` draws its pages at most `width` points wide, on a
-    /// screen with `pixels_per_point`. Its client says so each frame,
-    /// before it lays the pages out.
-    pub fn size_pdf(&mut self, tab: TabId, width: f32, pixels_per_point: f32) {
+    /// screen with `pixels_per_point`, at the interface zoom
+    /// `interface_zoom`, which leaves the pages' size on the screen alone.
+    /// Its client says so each frame, before it lays the pages out.
+    pub fn size_pdf(&mut self, tab: TabId, width: f32, pixels_per_point: f32, interface_zoom: f32) {
         if let Some(session) = self.viewers.pdfs.get_mut(&tab) {
-            session.size(width, pixels_per_point);
+            session.size(width, pixels_per_point, interface_zoom);
         }
     }
 
@@ -120,6 +133,17 @@ impl App {
             session.retry();
             true
         });
+    }
+
+    /// The tiles the PDF tab `tab` asked its thread for that it hasn't
+    /// drawn yet.
+    #[cfg(feature = "test-hooks")]
+    pub fn pdf_tiles_asked_for_testing(&self, tab: TabId) -> Vec<crate::PdfTileKey> {
+        self.viewers
+            .pdfs
+            .get(&tab)
+            .map(PdfSession::asked_for_testing)
+            .unwrap_or_default()
     }
 
     /// Hold every PDF thread before it draws a page, until the hold drops,

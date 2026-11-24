@@ -578,6 +578,174 @@ fn a_tall_page_draws_a_texture_pixel_for_each_screen_pixel_on_a_2x_screen() {
     assert!(textures.len() <= 4, "{textures:?}");
 }
 
+/// A window with `text.pdf` and `Plan.md` open in kept tabs, the PDF's
+/// active and drawn. Returns the PDF's tab and the note's.
+fn pdf_and_note(app_data: &Path, folder: &Path) -> (Ui, TabId, TabId) {
+    let mut harness = workspace(
+        app_data,
+        folder,
+        &[("text.pdf", &pdf("text.pdf")), ("Plan.md", b"# Plan\n")],
+    );
+    let app = harness.state_mut().app_mut();
+    app.open_file("Plan.md", app_core::OpenAs::Kept);
+    let note = app.active_tab().unwrap().id();
+    app.open_file("text.pdf", app_core::OpenAs::Kept);
+    let tab = app.active_tab().unwrap().id();
+    wait_until(&mut harness, "the first page draws", |harness| {
+        let pdf = harness.state().app().pdf(tab).unwrap();
+        shows_page(harness, "Page 1 of 3")
+            && pdf.tiles(1).any(|tile| tile.key.density() == pdf.density())
+    });
+    (harness, tab, note)
+}
+
+fn zoom(harness: &Ui, tab: TabId) -> PdfZoom {
+    harness.state().app().pdf(tab).unwrap().zoom()
+}
+
+#[test]
+fn a_pinch_over_the_pages_zooms_them_at_the_pointer() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let (mut harness, tab, _) = pdf_and_note(app_data.path(), &parent.path().join("Garden"));
+    let before = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 3")
+        .rect();
+    // The pointer rests a third of the way across page 1 and two fifths
+    // of the way down.
+    let pointer = before.min + before.size() * egui::vec2(0.3, 0.4);
+    harness.hover_at(pointer);
+    harness.run_steps(2);
+
+    // The fingers spread over six frames, and the pages grow smoothly.
+    let mut widths = vec![before.width()];
+    for _ in 0..6 {
+        harness.event(Event::Zoom(1.05));
+        harness.step();
+        harness.step();
+        widths.push(
+            harness
+                .get_by_role_and_label(Role::Image, "Page 1 of 3")
+                .rect()
+                .width(),
+        );
+    }
+    harness.run_steps(2);
+    for pair in widths.windows(2) {
+        let grew = pair[1] / pair[0];
+        assert!((grew - 1.05).abs() < 0.001, "{widths:?}");
+    }
+    let PdfZoom::Scale(_) = zoom(&harness, tab) else {
+        panic!("a pinch zooms to a scale");
+    };
+    // The place on the page under the pointer stays under it.
+    let after = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 3")
+        .rect();
+    let place = after.min + after.size() * egui::vec2(0.3, 0.4);
+    assert!((place - pointer).length() < 1.0, "{place:?} {pointer:?}");
+    // The interface keeps its size.
+    assert_eq!(harness.ctx.zoom_factor(), 1.0);
+
+    // Once the pinch settles, the page draws a texture pixel for each of
+    // the screen's at its new size.
+    wait_until(&mut harness, "the new size draws", |harness| {
+        let pdf = harness.state().app().pdf(tab).unwrap();
+        pdf.settles_in().is_none() && pdf.tiles(1).any(|tile| tile.key.density() == pdf.density())
+    });
+    harness.run_steps(2);
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 3")
+        .rect();
+    let widest = tile_textures(&harness)
+        .iter()
+        .map(|[width, _]| *width)
+        .max()
+        .unwrap();
+    assert!(
+        (widest as f32 - page.width()).abs() <= 1.0,
+        "{widest} for {page:?}"
+    );
+}
+
+#[test]
+fn command_equals_minus_and_0_zoom_a_pdf_tab_and_the_interface_elsewhere() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let (mut harness, tab, note) = pdf_and_note(app_data.path(), &parent.path().join("Garden"));
+    let key = |harness: &mut Ui, key| {
+        harness.key_press_modifiers(Modifiers::COMMAND, key);
+        harness.run_steps(2);
+    };
+
+    // As in Preview: Command-0 shows the pages at their own size, and
+    // Command-= and Command-minus step their zoom.
+    key(&mut harness, Key::Num0);
+    assert_eq!(zoom(&harness, tab), PdfZoom::Scale(1.0));
+    assert!(harness.query_by_label("100%").is_some());
+    key(&mut harness, Key::Equals);
+    assert_eq!(zoom(&harness, tab), PdfZoom::Scale(1.1));
+    key(&mut harness, Key::Minus);
+    key(&mut harness, Key::Minus);
+    assert_eq!(zoom(&harness, tab), PdfZoom::Scale(0.9));
+    assert!(harness.query_by_label("90%").is_some());
+    assert_eq!(harness.ctx.zoom_factor(), 1.0);
+
+    // In a note, they zoom the interface, and leave the PDF alone.
+    harness.state_mut().app_mut().activate_tab(note);
+    harness.run_steps(2);
+    key(&mut harness, Key::Equals);
+    assert_eq!(harness.ctx.zoom_factor(), 1.1);
+    key(&mut harness, Key::Num0);
+    assert_eq!(harness.ctx.zoom_factor(), 1.0);
+    assert_eq!(zoom(&harness, tab), PdfZoom::Scale(0.9));
+}
+
+#[test]
+fn the_interface_zoom_leaves_a_pdf_pages_size_on_the_screen_alone() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let (mut harness, tab, note) = pdf_and_note(app_data.path(), &parent.path().join("Garden"));
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Num0);
+    harness.run_steps(4);
+    // The page's width on the screen, in pixels.
+    let pixels = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::Image, "Page 1 of 3")
+            .rect()
+            .width()
+            * harness.ctx.pixels_per_point()
+    };
+    let before = pixels(&harness);
+    assert_eq!(before, 612.0 * harness.ctx.pixels_per_point());
+
+    // Zoom the interface to 125% from the note, then come back.
+    harness.state_mut().app_mut().activate_tab(note);
+    harness.run_steps(2);
+    for _ in 0..2 {
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Equals);
+        harness.run_steps(2);
+    }
+    assert_eq!(harness.ctx.zoom_factor(), 1.25);
+    harness.state_mut().app_mut().activate_tab(tab);
+    harness.run_steps(4);
+
+    // The page shows as many pixels wide, at 100%, from the same tiles,
+    // each still a texture pixel to a screen pixel.
+    assert!(
+        (pixels(&harness) - before).abs() < 0.01,
+        "{}",
+        pixels(&harness)
+    );
+    assert!(harness.query_by_label("100%").is_some());
+    let widest = tile_textures(&harness)
+        .iter()
+        .map(|[width, _]| *width)
+        .max()
+        .unwrap();
+    assert!((widest as f32 - before).abs() <= 1.0, "{widest}");
+}
+
 #[test]
 fn a_long_pdf_draws_only_the_pages_near_the_view() {
     let app_data = tempfile::tempdir().unwrap();

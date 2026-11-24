@@ -3,7 +3,9 @@
 //! form of a locked PDF. `app-core` reads, lays out, draws and searches the
 //! PDF on the PDF's own thread; this view uploads the tiles it draws, puts
 //! each where its pixels meet the screen's, and tells it how wide the tab
-//! is and which part of the pages shows.
+//! is, at which interface zoom, and which part of the pages shows. A pinch
+//! over the pages, or Command and the scroll wheel, zooms them at the
+//! pointer.
 
 use std::collections::HashMap;
 
@@ -104,6 +106,8 @@ enum Action {
     Retry,
     /// The part of the pages that showed.
     Shown(PdfArea),
+    /// A pinch zoomed the pages by this factor, at this place in the view.
+    Pinch(f32, [f32; 2]),
     Thumbnail(usize, f32),
 }
 
@@ -154,7 +158,12 @@ pub(crate) fn show(
             // The pages lay out for the width that's left, before they
             // draw.
             let width = (ui.available_width() - 2.0 * PAGE_GAP).max(1.0);
-            app.size_pdf(tab, width, ui.ctx().pixels_per_point());
+            app.size_pdf(
+                tab,
+                width,
+                ui.ctx().pixels_per_point(),
+                ui.ctx().zoom_factor(),
+            );
             if let Some(pdf) = app.pdf(tab) {
                 pages(ui, pdf, view, tab, &mut actions);
             }
@@ -188,6 +197,7 @@ fn apply(ui: &Ui, app: &mut App, view: &mut PdfTab, window: Id, tab: TabId, acti
         }
         Action::Retry => app.retry_pdf(tab),
         Action::Shown(area) => app.show_pdf_area(tab, area),
+        Action::Pinch(factor, at) => app.pdf_zoom_by(tab, factor, at),
         Action::Thumbnail(page, pixels_per_point) => {
             app.want_pdf_thumbnail(tab, page, pixels_per_point);
         }
@@ -304,7 +314,7 @@ fn toolbar(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, actions: &mut Vec<Acti
                 if icon_button(ui, "\u{2212}", "Zoom out", true).clicked() {
                     actions.push(Action::ZoomOut);
                 }
-                ui.label(format!("{:.0}%", pdf.scale() * 100.0));
+                ui.label(format!("{:.0}%", pdf.magnification() * 100.0));
                 if icon_button(ui, "+", "Zoom in", true).clicked() {
                     actions.push(Action::ZoomIn);
                 }
@@ -630,6 +640,20 @@ fn pages(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, tab: TabId, actions: &mu
         height: view.shown.y,
         jump: view.jumped,
     }));
+    // A pinch over the pages zooms them at the pointer, after `app-core`
+    // learned what shows.
+    let zoom = ui.input(|input| input.zoom_delta());
+    if zoom != 1.0
+        && ui.rect_contains_pointer(output.inner_rect)
+        && let Some(pointer) = ui.input(|input| input.pointer.hover_pos())
+    {
+        let at = pointer - output.inner_rect.min;
+        actions.push(Action::Pinch(zoom, [at.x, at.y]));
+    }
+    // The tiles at the new size are asked for once the pinch settles.
+    if let Some(after) = pdf.settles_in() {
+        ui.ctx().request_repaint_after(after);
+    }
 }
 
 /// Draw the page `page`, whose layout starts at `origin`, on a screen with

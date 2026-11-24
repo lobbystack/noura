@@ -202,7 +202,7 @@ fn a_page_renders_off_the_callers_thread_at_the_size_the_view_asks_for() {
 
     let hold = app.hold_pdf_rendering_for_testing();
     app.pdf_fit_width(tab);
-    app.size_pdf(tab, 306.0, 2.0);
+    app.size_pdf(tab, 306.0, 2.0, 1.0);
     let asked = Instant::now();
     show(&mut app, tab, 0.0, 400.0);
     // The page renders on the PDF's own thread, which the test holds, so
@@ -295,7 +295,7 @@ fn a_page_thinner_than_a_pixel_still_draws_a_pixel_wide_in_its_tab_thumbnail_and
     // 3 a quarter of a pixel each way. Pages 2 and 3 line up on the
     // middle of page 1, 3,600 points wide, so the view scrolls across to
     // them.
-    app.size_pdf(tab, 800.0, 1.0);
+    app.size_pdf(tab, 800.0, 1.0, 1.0);
     for page in 1..=3 {
         app.pdf_go_to(tab, page);
         let left = (view(&app, tab).page_rect(page).unwrap()[0] - 100.0).max(0.0);
@@ -344,7 +344,7 @@ fn going_to_a_page_zoom_and_fit_width_scroll_the_pdf_and_stay_with_the_tab() {
     let mut app = fixture.app();
     let tab = open_ready(&mut app, "text.pdf");
     app.keep_tab(tab);
-    app.size_pdf(tab, 612.0, 1.0);
+    app.size_pdf(tab, 612.0, 1.0, 1.0);
 
     // Going to a page scrolls its top a gap below the view's top.
     app.pdf_go_to(tab, 2);
@@ -377,7 +377,7 @@ fn going_to_a_page_zoom_and_fit_width_scroll_the_pdf_and_stay_with_the_tab() {
     assert_eq!(app.pdf(tab).unwrap().zoom(), PdfZoom::Scale(0.25));
     app.pdf_fit_width(tab);
     assert_eq!(app.pdf(tab).unwrap().zoom(), PdfZoom::FitWidth);
-    app.size_pdf(tab, 306.0, 1.0);
+    app.size_pdf(tab, 306.0, 1.0, 1.0);
     assert_eq!(app.pdf(tab).unwrap().scale(), 0.5);
     // Zooming in from a fitted page goes to the next step past its size.
     app.pdf_zoom_in(tab);
@@ -398,7 +398,7 @@ fn the_page_that_shows_follows_the_scroll_and_a_jump_keeps_its_page_until_you_sc
     let mut app = fixture.app();
     let tab = open_ready(&mut app, "text.pdf");
     // At full size, page n spans 12 + 804 (n - 1) to 792 points below.
-    app.size_pdf(tab, 612.0, 1.0);
+    app.size_pdf(tab, 612.0, 1.0, 1.0);
     assert_eq!(
         view(&app, tab).content_size(),
         [636.0, 4.0 * 12.0 + 3.0 * 792.0]
@@ -907,7 +907,7 @@ fn a_tall_page_draws_a_pixel_for_each_of_a_2x_screens_at_every_zoom() {
 
     // Fit width: the page shows 840 points wide on a screen with two
     // pixels a point, so it draws 1,680 pixels wide however tall it is.
-    app.size_pdf(tab, 840.0, 2.0);
+    app.size_pdf(tab, 840.0, 2.0, 1.0);
     let top = show_drawn(&mut app, tab, 0.0, 700.0);
     let pdf = view(&app, tab);
     assert_eq!(pdf.page_rect(1).unwrap()[2], 840.0);
@@ -976,7 +976,7 @@ fn a_long_pdf_opens_at_once_and_draws_only_the_pages_near_the_view() {
     // Nothing draws before the view shows.
     assert_eq!(view(&app, tab).tile_count(), 0);
 
-    app.size_pdf(tab, 600.0, 2.0);
+    app.size_pdf(tab, 600.0, 2.0, 1.0);
     let height = 700.0;
     let total = view(&app, tab).content_size()[1];
     let mut drawn = BTreeSet::new();
@@ -1025,7 +1025,7 @@ fn zooming_keeps_what_shows_at_the_middle_of_the_view_in_place() {
     let mut app = fixture.app();
     let tab = open_ready(&mut app, "tall.pdf");
     // Fit width: 840 points for a page 612 wide.
-    app.size_pdf(tab, VIEW_WIDTH - 2.0 * PAGE_GAP, 1.0);
+    app.size_pdf(tab, VIEW_WIDTH - 2.0 * PAGE_GAP, 1.0, 1.0);
     let scale = view(&app, tab).scale();
     show(&mut app, tab, 5000.0, 600.0);
 
@@ -1049,11 +1049,114 @@ fn zooming_keeps_what_shows_at_the_middle_of_the_view_in_place() {
 }
 
 #[test]
+fn a_pinch_zooms_at_the_pointer_and_draws_the_new_size_once_it_settles() {
+    let fixture = Fixture::new(&[("tall.pdf", &pdf("tall.pdf"))]);
+    let mut app = fixture.app();
+    let tab = open_ready(&mut app, "tall.pdf");
+    // Fit width: 840 points for a page 612 wide.
+    app.size_pdf(tab, VIEW_WIDTH - 2.0 * PAGE_GAP, 1.0, 1.0);
+    let scale = view(&app, tab).scale();
+    let before = view(&app, tab).density();
+    show_drawn(&mut app, tab, 5000.0, 600.0);
+
+    // The pointer sits 200 points right of the view's left and 100 below
+    // its top: on the page, 5,100 points down the pages.
+    let [left, top, _, _] = view(&app, tab).page_rect(1).unwrap();
+    let down = (5100.0 - top) / scale;
+    let across = (200.0 - left) / scale;
+    app.pdf_zoom_by(tab, 1.2, [200.0, 100.0]);
+    let pdf = view(&app, tab);
+    let PdfZoom::Scale(pinched) = pdf.zoom() else {
+        panic!("a pinch zooms to a scale");
+    };
+    assert!((pinched - scale * 1.2).abs() < 1e-4, "{pinched}");
+    // The place under the pointer stays under it.
+    let jump = pdf.jump().unwrap();
+    let [left, top, _, _] = pdf.page_rect(1).unwrap();
+    assert!((jump.top + 100.0 - (top + down * pdf.scale())).abs() < 0.5);
+    let x = left + across * pdf.scale();
+    assert!((jump.left.unwrap() + 200.0 - x).abs() < 0.5, "{jump:?}");
+
+    // Until the pinch settles, the tiles drawn before stretch, and the
+    // thread draws none, frame after frame.
+    let density = view(&app, tab).density();
+    assert_ne!(density, before);
+    assert!(app.pdf_tiles_asked_for_testing(tab).is_empty());
+    let mut shown = show(&mut app, tab, 0.0, 600.0);
+    assert!(
+        view(&app, tab)
+            .tiles(1)
+            .any(|tile| tile.key.density() == before)
+    );
+    while view(&app, tab).settles_in().is_some() {
+        assert!(app.pdf_tiles_asked_for_testing(tab).is_empty());
+        std::thread::sleep(Duration::from_millis(10));
+        app.poll();
+        shown = show(&mut app, tab, shown, 600.0);
+    }
+    // Once it settles, the tiles at the new size draw.
+    show_drawn(&mut app, tab, shown, 600.0);
+
+    // A pinch zooms between the smallest and largest steps, to any scale
+    // between them, and the zoom buttons step on from there.
+    app.pdf_zoom_by(tab, 100.0, [0.0, 0.0]);
+    assert_eq!(view(&app, tab).zoom(), PdfZoom::Scale(4.0));
+    app.pdf_zoom_by(tab, 1e-6, [0.0, 0.0]);
+    assert_eq!(view(&app, tab).zoom(), PdfZoom::Scale(0.25));
+    app.pdf_zoom_by(tab, f32::NAN, [0.0, 0.0]);
+    app.pdf_zoom_by(tab, 1.1, [f32::INFINITY, 0.0]);
+    assert_eq!(view(&app, tab).zoom(), PdfZoom::Scale(0.275));
+    app.pdf_zoom_in(tab);
+    assert_eq!(view(&app, tab).zoom(), PdfZoom::Scale(0.33));
+    app.pdf_actual_size(tab);
+    assert_eq!(view(&app, tab).zoom(), PdfZoom::Scale(1.0));
+}
+
+#[test]
+fn the_interface_zoom_leaves_a_pages_size_on_the_screen_alone() {
+    let fixture = Fixture::new(&[("text.pdf", &pdf("text.pdf"))]);
+    let mut app = fixture.app();
+    let tab = open_ready(&mut app, "text.pdf");
+    // A tab 840 points wide on a screen with two pixels a point.
+    app.size_pdf(tab, 840.0, 2.0, 1.0);
+    show_drawn(&mut app, tab, 0.0, 600.0);
+    let pixels = |app: &App, ppp: f32| view(app, tab).page_rect(1).unwrap()[2] * ppp;
+
+    // At its own size, a Letter page shows 1,224 pixels wide, at 100%.
+    app.pdf_actual_size(tab);
+    assert_eq!(pixels(&app, 2.0), 1224.0);
+    let density = view(&app, tab).density();
+    show_drawn(&mut app, tab, 0.0, 600.0);
+
+    // At a 125% interface zoom, the client's points hold 2.5 pixels and
+    // the same tab is 672 points wide. The page stays 1,224 pixels wide,
+    // at 100%, and keeps its tiles.
+    app.size_pdf(tab, 672.0, 2.5, 1.25);
+    assert!((pixels(&app, 2.5) - 1224.0).abs() < 0.01);
+    assert_eq!(view(&app, tab).magnification(), 1.0);
+    assert_eq!(view(&app, tab).density(), density);
+    assert!(view(&app, tab).tiles(1).next().is_some());
+
+    // Zoom steps go by what the page shows at, not by the interface zoom.
+    app.pdf_zoom_in(tab);
+    assert_eq!(view(&app, tab).zoom(), PdfZoom::Scale(1.1));
+    assert!((pixels(&app, 2.5) - 1224.0 * 1.1).abs() < 0.01);
+
+    // Fit width fills the same tab with the page at either interface
+    // zoom.
+    app.pdf_fit_width(tab);
+    let fit = pixels(&app, 2.5);
+    assert!((fit - 672.0 * 2.5).abs() < 0.01, "{fit}");
+    app.size_pdf(tab, 840.0, 2.0, 1.0);
+    assert!((pixels(&app, 2.0) - fit).abs() < 0.01);
+}
+
+#[test]
 fn find_scrolls_to_the_line_with_the_match_far_down_a_tall_page() {
     let fixture = Fixture::new(&[("tall.pdf", &pdf("tall.pdf"))]);
     let mut app = fixture.app();
     let tab = open_ready(&mut app, "tall.pdf");
-    app.size_pdf(tab, 612.0, 2.0);
+    app.size_pdf(tab, 612.0, 2.0, 1.0);
     show(&mut app, tab, 0.0, 600.0);
 
     app.search_pdf(tab, "needle");
@@ -1110,14 +1213,14 @@ fn a_new_width_at_fit_width_keeps_what_shows_at_the_middle_of_the_view_in_place(
     let fixture = Fixture::new(&[("tall.pdf", &pdf("tall.pdf"))]);
     let mut app = fixture.app();
     let tab = open_ready(&mut app, "tall.pdf");
-    app.size_pdf(tab, 612.0, 1.0);
+    app.size_pdf(tab, 612.0, 1.0, 1.0);
     show(&mut app, tab, 5000.0, 600.0);
     assert!(view(&app, tab).jump().is_none());
 
     // The thumbnails panel or a smaller window leaves the pages half the
     // width: the middle of the view, 5,288 points into page 1, stays in
     // the middle.
-    app.size_pdf(tab, 306.0, 1.0);
+    app.size_pdf(tab, 306.0, 1.0, 1.0);
     assert_eq!(view(&app, tab).scale(), 0.5);
     let jump = view(&app, tab).jump().unwrap();
     let middle = PAGE_GAP + 5288.0 * 0.5;
@@ -1125,13 +1228,13 @@ fn a_new_width_at_fit_width_keeps_what_shows_at_the_middle_of_the_view_in_place(
 
     // The same width again, as each frame says, scrolls nowhere.
     show(&mut app, tab, 0.0, 600.0);
-    app.size_pdf(tab, 306.0, 1.0);
+    app.size_pdf(tab, 306.0, 1.0, 1.0);
     assert!(view(&app, tab).jump().is_none());
 
     // At a zoom of its own, the pages keep their size and the view its
     // place.
     app.pdf_zoom_in(tab);
     show(&mut app, tab, 0.0, 600.0);
-    app.size_pdf(tab, 612.0, 1.0);
+    app.size_pdf(tab, 612.0, 1.0, 1.0);
     assert!(view(&app, tab).jump().is_none());
 }

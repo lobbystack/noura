@@ -73,9 +73,17 @@ impl App {
                 "Toggle Sidebar",
                 Arc::new(App::toggle_sidebar),
             ),
-            (ZOOM_IN, "Zoom In", Arc::new(App::zoom_in)),
-            (ZOOM_OUT, "Zoom Out", Arc::new(App::zoom_out)),
-            (ZOOM_RESET, "Actual Size", Arc::new(App::actual_size)),
+            (ZOOM_IN, "Zoom In", Arc::new(|app| app.zoom_view(Zoom::In))),
+            (
+                ZOOM_OUT,
+                "Zoom Out",
+                Arc::new(|app| app.zoom_view(Zoom::Out)),
+            ),
+            (
+                ZOOM_RESET,
+                "Actual Size",
+                Arc::new(|app| app.zoom_view(Zoom::ActualSize)),
+            ),
             (SETTINGS, "Settings…", Arc::new(App::open_settings)),
             (
                 ABOUT,
@@ -276,6 +284,33 @@ impl App {
         }
         if self.is_section_collapsed(FILES_SECTION) {
             self.toggle_section(FILES_SECTION);
+        }
+    }
+}
+
+/// What Zoom In, Zoom Out and Actual Size do.
+#[derive(Debug, Clone, Copy)]
+enum Zoom {
+    In,
+    Out,
+    ActualSize,
+}
+
+impl App {
+    /// Zoom In, Zoom Out and Actual Size zoom the PDF while its tab is
+    /// active, as Preview does, and the interface anywhere else.
+    fn zoom_view(&mut self, zoom: Zoom) {
+        let pdf = self
+            .active_tab()
+            .map(Tab::id)
+            .filter(|tab| self.pdf(*tab).is_some());
+        match (pdf, zoom) {
+            (Some(tab), Zoom::In) => self.pdf_zoom_in(tab),
+            (Some(tab), Zoom::Out) => self.pdf_zoom_out(tab),
+            (Some(tab), Zoom::ActualSize) => self.pdf_actual_size(tab),
+            (None, Zoom::In) => self.zoom_in(),
+            (None, Zoom::Out) => self.zoom_out(),
+            (None, Zoom::ActualSize) => self.actual_size(),
         }
     }
 }

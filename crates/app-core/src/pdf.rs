@@ -24,7 +24,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{Receiver, Sender, TryRecvError, channel},
     },
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 use hayro::{
@@ -49,10 +49,19 @@ use crate::{AppError, error::Access};
 pub const MAX_PDF_BYTES: u64 = 512 * 1024 * 1024;
 
 /// The zoom levels Zoom in and Zoom out step through, as scales of the
-/// page's own size.
+/// page's own size. A pinch zooms anywhere from the first to the last.
 pub const ZOOM_STEPS: [f32; 16] = [
     0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0,
 ];
+
+/// How long after a pinch last zoomed the pages the tab asks for tiles at
+/// their new size. Until then, the tiles it has stretch.
+pub(crate) const PINCH_SETTLE: Duration = Duration::from_millis(150);
+
+/// The smallest and largest a tab draws its pages, as scales of their own
+/// size.
+const SMALLEST: f32 = ZOOM_STEPS[0];
+const LARGEST: f32 = ZOOM_STEPS[ZOOM_STEPS.len() - 1];
 
 /// How wide a thumbnail draws a page, in points.
 pub const THUMBNAIL_WIDTH: f32 = 100.0;
@@ -125,12 +134,15 @@ pub enum PdfState {
     },
 }
 
-/// How large a PDF tab draws its pages.
+/// How large a PDF tab draws its pages. The interface zoom leaves them
+/// alone: at a scale of 1, a page shows its own size on the screen, as it
+/// would print, at any interface zoom.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PdfZoom {
     /// The widest page as wide as the tab.
     FitWidth,
-    /// At this scale of the page's own size, one of [`ZOOM_STEPS`].
+    /// At this scale of the page's own size, from the first of
+    /// [`ZOOM_STEPS`] to the last.
     Scale(f32),
 }
 
@@ -274,9 +286,10 @@ struct Anchor {
     down: f32,
     /// How far below the view's top the place lands, in points.
     at: f32,
-    /// Where the middle of the view lands across the pages, as a share of
-    /// their width. `None` leaves the scroll across alone.
-    across: Option<f32>,
+    /// How far across the page the place is, in the page's own points
+    /// from its left, and how far right of the view's left it lands, in
+    /// points. `None` leaves the scroll across alone.
+    across: Option<(f32, f32)>,
     /// The page's top stays in view when the place is near it.
     keep_top: bool,
 }
@@ -380,6 +393,11 @@ pub struct PdfView {
     width: Option<f32>,
     /// The pixels per point of the client's screen.
     pixels_per_point: f32,
+    /// The interface zoom the client draws at, which leaves the pages'
+    /// size on the screen alone.
+    interface_zoom: f32,
+    /// When a pinch last zoomed the pages.
+    pinched: Option<Instant>,
     /// What the client showed last.
     area: Option<PdfArea>,
     thumbnails_shown: bool,
@@ -410,6 +428,8 @@ impl PdfView {
             zoom: PdfZoom::FitWidth,
             width: None,
             pixels_per_point: 1.0,
+            interface_zoom: 1.0,
+            pinched: None,
             area: None,
             thumbnails_shown: false,
             tiles: BTreeMap::new(),
@@ -466,18 +486,32 @@ impl PdfView {
         self.zoom
     }
 
-    /// The scale the pages draw at: the zoom's, or for Fit width, the
-    /// tab's width over the widest page's.
-    pub fn scale(&self) -> f32 {
+    /// How large the pages show on the screen against their own size: the
+    /// zoom's scale, or for Fit width, what fits the widest page to the
+    /// tab. The toolbar shows it.
+    pub fn magnification(&self) -> f32 {
         match self.zoom {
             PdfZoom::Scale(scale) => scale,
             PdfZoom::FitWidth => match self.width {
                 Some(width) if self.widest > 0.0 => {
-                    (width / self.widest).clamp(ZOOM_STEPS[0], ZOOM_STEPS[ZOOM_STEPS.len() - 1])
+                    (width * self.interface_zoom / self.widest).clamp(SMALLEST, LARGEST)
                 }
                 _ => 1.0,
             },
         }
+    }
+
+    /// The client's points per point of a page: the magnification, less
+    /// the interface zoom the client's points carry.
+    pub fn scale(&self) -> f32 {
+        self.magnification() / self.interface_zoom
+    }
+
+    /// How long until the pinch under way settles and the tab asks for
+    /// tiles at the pages' new size. The client draws again then.
+    pub fn settles_in(&self) -> Option<Duration> {
+        let left = PINCH_SETTLE.checked_sub(self.pinched?.elapsed())?;
+        (!left.is_zero()).then_some(left)
     }
 
     /// The pixels per point of the client's screen, as it said.
@@ -489,7 +523,12 @@ impl PdfView {
     /// the screen's pixels per point, so a page draws a pixel for each of
     /// the screen's.
     pub fn density(&self) -> f32 {
-        density_of(self.scale(), self.pixels_per_point)
+        // The screen's own pixels per point, before the interface zoom,
+        // so the density stays the same across interface zooms.
+        density_of(
+            self.magnification(),
+            self.pixels_per_point / self.interface_zoom,
+        )
     }
 
     /// The size of the laid-out pages in points: as wide as the widest
@@ -526,7 +565,7 @@ impl PdfView {
         let [width, height] = self.page_size(page)?;
         let scale = self.scale();
         Some([
-            (self.column_width() - width * scale) / 2.0,
+            self.page_left(page),
             self.page_top(page) as f32,
             width * scale,
             height * scale,
@@ -595,10 +634,10 @@ impl PdfView {
         if anchor.keep_top {
             top = top.max(page_top - f64::from(PAGE_GAP));
         }
-        let width = self.area.map_or(0.0, |area| area.width);
+        let page_left = self.page_left(page);
         let left = anchor
             .across
-            .map(|across| (across * self.column_width() - width / 2.0).max(0.0));
+            .map(|(across, at)| (page_left + across * self.scale() - at).max(0.0));
         Some(PdfJump {
             seq,
             top: top.max(0.0) as f32,
@@ -610,19 +649,36 @@ impl PdfView {
     /// of zoom.
     fn middle(&self) -> Option<Anchor> {
         let area = self.area?;
+        self.place_at([area.width / 2.0, area.height / 2.0])
+    }
+
+    /// The place `at` points right of and below the view's top-left
+    /// corner, to keep there across a change of zoom.
+    fn place_at(&self, at: [f32; 2]) -> Option<Anchor> {
+        let area = self.area?;
         if self.pages.is_empty() {
             return None;
         }
-        let middle = area.top + area.height / 2.0;
-        let page = self.page_at(middle);
-        let down = (f64::from(middle) - self.page_top(page)) / f64::from(self.scale());
+        let [x, y] = at.map(|side| if side.is_finite() { side } else { 0.0 });
+        let down = area.top + y;
+        let page = self.page_at(down);
+        let scale = f64::from(self.scale());
+        let below = (f64::from(down) - self.page_top(page)) / scale;
+        let across = (f64::from(area.left + x) - f64::from(self.page_left(page))) / scale;
         Some(Anchor {
             page,
-            down: down as f32,
-            at: area.height / 2.0,
-            across: Some((area.left + area.width / 2.0) / self.column_width()),
+            down: below as f32,
+            at: y,
+            across: Some((across as f32, x)),
             keep_top: false,
         })
+    }
+
+    /// How far from the pages' left the page `page` starts, in points.
+    /// Each page lies in the middle of the column.
+    fn page_left(&self, page: usize) -> f32 {
+        let width = self.page_size(page).map_or(0.0, |size| size[0]);
+        (self.column_width() - width * self.scale()) / 2.0
     }
 
     pub fn thumbnails_shown(&self) -> bool {
@@ -1155,9 +1211,9 @@ impl PdfSession {
         true
     }
 
-    /// Zoom one step in or out from the scale the pages draw at.
+    /// Zoom one step in or out from the size the pages show at.
     pub(crate) fn zoom(&mut self, zoom_in: bool) -> bool {
-        let current = self.view.scale();
+        let current = self.view.magnification();
         let next = if zoom_in {
             ZOOM_STEPS
                 .iter()
@@ -1179,26 +1235,75 @@ impl PdfSession {
         self.set_zoom(PdfZoom::FitWidth)
     }
 
+    /// The tiles asked for that the thread hasn't drawn yet.
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn asked_for_testing(&self) -> Vec<PdfTileKey> {
+        self.asked.iter().copied().collect()
+    }
+
+    /// Show the pages at their own size.
+    pub(crate) fn actual_size(&mut self) -> bool {
+        self.set_zoom(PdfZoom::Scale(1.0))
+    }
+
+    /// A pinch: show the pages `factor` times as large, within the
+    /// smallest and largest of [`ZOOM_STEPS`], keeping the place `at`
+    /// points right of and below the view's top-left corner where it is.
+    /// The tab asks for tiles at the new size once the pinch settles.
+    pub(crate) fn zoom_by(&mut self, factor: f32, at: [f32; 2]) -> bool {
+        if self.view.state != PdfState::Ready || !factor.is_finite() || factor <= 0.0 {
+            return false;
+        }
+        let current = self.view.magnification();
+        let next = (current * factor).clamp(SMALLEST, LARGEST);
+        if next == current {
+            return false;
+        }
+        // A jump the client hasn't made yet keeps its place instead.
+        let anchor = self
+            .view
+            .jump
+            .map(|(_, anchor)| anchor)
+            .or_else(|| self.view.place_at(at));
+        self.view.zoom = PdfZoom::Scale(next);
+        self.view.pinched = Some(Instant::now());
+        // The thread stops drawing tiles for the old size.
+        if !self.asked.is_empty() {
+            self.send(Request::Tiles(Vec::new()));
+            self.asked.clear();
+        }
+        if let Some(anchor) = anchor {
+            self.view.page = anchor.page;
+            self.jump_to(anchor);
+        }
+        true
+    }
+
     /// The tab draws its pages `width` points wide at most, on a screen
-    /// with `pixels_per_point`. At Fit width, a new width scales the
-    /// pages, and what shows at the middle of the view stays there.
-    pub(crate) fn size(&mut self, width: f32, pixels_per_point: f32) {
-        if width.is_finite() && width > 0.0 && self.view.width != Some(width) {
-            let anchor = if self.view.zoom == PdfZoom::FitWidth {
-                self.view
-                    .jump
-                    .map(|(_, anchor)| anchor)
-                    .or_else(|| self.view.middle())
-            } else {
-                None
-            };
+    /// with `pixels_per_point`, at the interface zoom `interface_zoom`.
+    /// When the pages' scale in points changes, as at Fit width for a new
+    /// width or for a new interface zoom, what shows at the middle of the
+    /// view stays there.
+    pub(crate) fn size(&mut self, width: f32, pixels_per_point: f32, interface_zoom: f32) {
+        let before = self.view.scale();
+        let anchor = self
+            .view
+            .jump
+            .map(|(_, anchor)| anchor)
+            .or_else(|| self.view.middle());
+        if width.is_finite() && width > 0.0 {
             self.view.width = Some(width);
-            if let Some(anchor) = anchor {
-                self.jump_to(anchor);
-            }
         }
         if pixels_per_point.is_finite() && pixels_per_point > 0.0 {
             self.view.pixels_per_point = pixels_per_point;
+        }
+        if interface_zoom.is_finite() && interface_zoom > 0.0 {
+            self.view.interface_zoom = interface_zoom;
+        }
+        if self.view.scale() != before
+            && let Some(anchor) = anchor
+        {
+            self.jump_to(anchor);
         }
     }
 
@@ -1238,8 +1343,13 @@ impl PdfSession {
     }
 
     /// Forget the tiles far from `area`, and ask the thread for those that
-    /// show or soon will, from the middle of the view out.
+    /// show or soon will, from the middle of the view out. While a pinch
+    /// is under way, the tiles that show stretch and none are asked for.
     fn update_tiles(&mut self, area: &PdfArea) {
+        let pinching = self.view.settles_in().is_some();
+        if !pinching {
+            self.view.pinched = None;
+        }
         let density = self.view.density().to_bits();
         let shown = Zone::around(area, 0.0);
         let ahead = Zone::around(area, DRAW_AHEAD);
@@ -1308,6 +1418,9 @@ impl PdfSession {
             }
         }
 
+        if pinching {
+            return;
+        }
         let view = &self.view;
         let mut wanted: Vec<(bool, f32, PdfTileKey)> = Vec::new();
         for page in view.pages_between(ahead.top, ahead.bottom) {
@@ -2356,7 +2469,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         session.go_to(5);
-        session.size(612.0, 1.0);
+        session.size(612.0, 1.0, 1.0);
         show(&mut session, 0.0, 700.0);
 
         wait_until(&mut session, "page 5 draws", |view| {
@@ -2408,7 +2521,7 @@ mod tests {
         });
         assert_eq!(session.view().page_count(), 3);
         assert_eq!(session.view().page(), 3, "the page you were on stays");
-        session.size(612.0, 1.0);
+        session.size(612.0, 1.0, 1.0);
         show(&mut session, 0.0, 700.0);
         assert_eq!(session.view().page(), 3);
         wait_until(&mut session, "the page draws", |view| {
@@ -2423,7 +2536,7 @@ mod tests {
             view.state() == &PdfState::Ready
         });
         session.gate.fail(true);
-        session.size(612.0, 1.0);
+        session.size(612.0, 1.0, 1.0);
         show(&mut session, 0.0, 700.0);
         assert!(!session.view().page_failed(1));
         wait_until(&mut session, "the drawing fails", |view| {
