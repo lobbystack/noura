@@ -351,6 +351,87 @@ fn the_main_screens_render_in_light_and_dark() {
     }
 }
 
+/// Save the part of the window `rect` covers, in points, as `name`.
+fn save_part(harness: &mut Ui, name: &str, rect: egui::Rect) {
+    let image = harness.render().expect("the window renders");
+    let scale = scale();
+    let x = (rect.min.x * scale).max(0.0) as u32;
+    let y = (rect.min.y * scale).max(0.0) as u32;
+    let width = ((rect.width() * scale) as u32).min(image.width().saturating_sub(x));
+    let height = ((rect.height() * scale) as u32).min(image.height().saturating_sub(y));
+    let part = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+    let path = out_dir().join(format!("{name}.png"));
+    part.save(&path).unwrap();
+    eprintln!("rendered {}", path.display());
+}
+
+/// Each PDF texture's name and size in pixels, as uploaded.
+fn pdf_textures(harness: &Ui) -> Vec<(String, [usize; 2])> {
+    let textures = harness.ctx.tex_manager();
+    let textures = textures.read();
+    let mut found: Vec<(String, [usize; 2])> = textures
+        .allocated()
+        .filter(|(_, meta)| meta.name.starts_with("pdf"))
+        .map(|(_, meta)| (meta.name.clone(), meta.size))
+        .collect();
+    found.sort();
+    found
+}
+
+/// A page 612 by 14,000 points, as a web page saved as PDF, fit to the
+/// tab's width at two pixels a point: the window, the top of the page at
+/// one window pixel per screen pixel, and the size of each texture the
+/// page drew against the size it shows at.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn a_tall_pdf_page_renders_at_the_screens_density() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Reading");
+    create_workspace(app_data.path(), &folder);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app-core/tests/fixtures/pdf");
+    std::fs::copy(fixture.join("tall.pdf"), folder.join("tall.pdf")).unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::Linux));
+    let mut harness = window(app, Theme::Light, Some(linux_controls()));
+    // The desktop app's GPU limit, past kittest's 2048.
+    harness.input_mut().max_texture_side = Some(8192);
+
+    harness
+        .get_by_role_and_label(Role::TreeItem, "tall.pdf")
+        .click();
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Image, "Page 1 of 2")
+            .is_some()
+    });
+    // Let every drawing the view asked for arrive.
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        harness.step();
+    }
+    settle(&mut harness);
+    save(&mut harness, "7-pdf-tall", Theme::Light);
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 2")
+        .rect();
+    let shown = page.intersect(harness.ctx.viewport_rect());
+    let top = egui::Rect::from_min_size(shown.min, egui::vec2(shown.width().min(400.0), 160.0));
+    save_part(&mut harness, "7-pdf-tall-top", top);
+    eprintln!(
+        "page shows at {:?}, {} by {} points, {} pixels a point",
+        page.min,
+        page.width(),
+        page.height(),
+        scale()
+    );
+    for (name, [width, height]) in pdf_textures(&harness) {
+        eprintln!(
+            "texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
+            width as f32 / page.width()
+        );
+    }
+}
+
 /// The title bar row of a Linux window with each button layout GNOME
 /// offers: its default, the owner's, every button, and buttons at the
 /// start.
