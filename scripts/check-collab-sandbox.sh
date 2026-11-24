@@ -8,7 +8,8 @@
 #   `small-client`, which crates/local-core keeps for its v1 sync code, nor
 #   `sync` (§3), both in the module's build and in the fuzz crate's native
 #   build of the guest;
-# - guest: the guest's own unit tests pass natively;
+# - guest: the guest's own tests pass natively, including its replay of the
+#   inputs the fuzz job kept, with yrs's debug assertions on;
 # - fuzz: the fuzz crate's targets type-check with `--cfg fuzzing`, as
 #   cargo-fuzz builds them, so a change that breaks the scheduled fuzz job
 #   fails here first;
@@ -100,7 +101,7 @@ for check in "${checks[@]}"; do
     guest)
       if ! (cd crates/collab-sandbox-guest && cargo test --locked --quiet \
         --target-dir "$repo/target/collab-guest-native"); then
-        echo "error: the guest's unit tests failed"
+        echo "error: the guest's tests failed"
         fail=1
       fi
       ;;

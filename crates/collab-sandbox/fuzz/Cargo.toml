@@ -15,6 +15,8 @@ collab-sandbox = { path = ".." }
 # builds through a manifest of its own.
 collab-sandbox-guest = { path = "guest" }
 libfuzzer-sys = "0.4.10"
+# inputs.rs builds the guest targets' records with it.
+sync-protocol = { path = "../../sync-protocol" }
 
 # The fuzz targets build outside the Noura workspace, like the guest
 # module, so its builds and lockfile never see libFuzzer.

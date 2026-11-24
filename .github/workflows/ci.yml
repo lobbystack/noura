@@ -504,7 +504,7 @@ jobs:
   # must reach the same verdicts and fuel on both backends. Linux also
   # rebuilds the guest module and requires the bytes the sandbox embeds,
   # checks that the guest's yrs resolves without `small-client`, runs the
-  # guest's unit tests, checks that the scheduled fuzz job's targets build,
+  # guest's tests, checks that the scheduled fuzz job's targets build,
   # and runs the previous release on the current fixture.
   collab-sandbox:
     strategy:

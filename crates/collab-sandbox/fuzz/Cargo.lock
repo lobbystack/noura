@@ -1082,6 +1082,7 @@ dependencies = [
  "collab-sandbox",
  "collab-sandbox-guest",
  "libfuzzer-sys",
+ "sync-protocol",
 ]
 
 [[package]]
