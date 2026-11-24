@@ -160,10 +160,14 @@ fn f2_renames_in_place_where_enter_saves_and_escape_cancels() {
 }
 
 #[test]
-fn enter_on_the_open_file_starts_a_rename() {
+fn on_windows_and_linux_enter_on_the_open_file_starts_a_rename() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    let (mut harness, _) = opened_on(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        Platform::Windows,
+    );
     focus_row(&mut harness, "Todo");
 
     press(&mut harness, Key::Enter);

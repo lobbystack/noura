@@ -211,6 +211,7 @@ fn arrows_move_the_highlight_across_groups() {
         [
             (PaletteGroup::Files, "Close notes.md".to_owned()),
             (PaletteGroup::Commands, "Close Tab".to_owned()),
+            (PaletteGroup::Commands, "Reopen Closed Tab".to_owned()),
             (PaletteGroup::Commands, "Close Window".to_owned()),
         ]
     );
@@ -220,14 +221,14 @@ fn arrows_move_the_highlight_across_groups() {
     app.move_palette_selection(1);
     assert_eq!(app.palette().unwrap().selected(), 1);
     app.move_palette_selection(100);
-    assert_eq!(app.palette().unwrap().selected(), 2);
+    assert_eq!(app.palette().unwrap().selected(), 3);
 
     // Typing again highlights the first row.
     app.set_palette_query("close ");
     assert_eq!(app.palette().unwrap().selected(), 0);
 
     // Enter runs the highlighted row, not the first.
-    app.move_palette_selection(2);
+    app.move_palette_selection(3);
     app.run_palette_selection(Instant::now());
     assert_eq!(app.palette(), None);
     assert!(app.is_closed());

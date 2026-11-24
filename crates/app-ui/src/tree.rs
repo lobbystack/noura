@@ -5,7 +5,8 @@
 use std::time::Instant;
 
 use app_core::{
-    App, DropSpot, EntryKind, FILES_SECTION, FileTree, OpenAs, TreeAction, TreeKey, TreeRow,
+    App, DropSpot, EntryKind, FILES_SECTION, FileTree, OpenAs, Platform, TreeAction, TreeKey,
+    TreeRow,
 };
 use egui::{
     Align, Align2, Event, EventFilter, FontId, Id, Key, LayerId, Layout, Modifiers, Order, Popup,
@@ -122,46 +123,30 @@ enum Input {
     Text(String),
 }
 
-/// The tree key for a key press, if the tree uses it.
-fn tree_key(key: Key, modifiers: Modifiers) -> Option<TreeKey> {
-    if modifiers.matches_exact(Modifiers::SHIFT) {
-        return (key == Key::F10).then_some(TreeKey::Menu);
-    }
-    // Cmd-Backspace on macOS, Ctrl-Backspace on Windows and Linux.
-    if modifiers.matches_exact(Modifiers::COMMAND) {
-        return (key == Key::Backspace).then_some(TreeKey::Trash);
-    }
-    if modifiers.any() {
-        return None;
-    }
-    Some(match key {
-        Key::ArrowUp => TreeKey::Up,
-        Key::ArrowDown => TreeKey::Down,
-        Key::Home => TreeKey::Home,
-        Key::End => TreeKey::End,
-        Key::ArrowRight => TreeKey::Right,
-        Key::ArrowLeft => TreeKey::Left,
-        Key::Enter => TreeKey::Enter,
-        Key::Space => TreeKey::Activate,
-        Key::F2 => TreeKey::Rename,
-        Key::Delete => TreeKey::Trash,
-        Key::Menu => TreeKey::Menu,
-        _ => return None,
-    })
+/// The tree key for a key press on `platform`, if the tree uses it.
+fn tree_key(
+    key: Key,
+    physical: Option<Key>,
+    modifiers: Modifiers,
+    platform: Platform,
+) -> Option<TreeKey> {
+    let press = crate::keys::press(key, physical, modifiers, platform)?;
+    TreeKey::for_press(&press, platform)
 }
 
 /// Take the tree's keys and typing out of this frame's input.
-fn take_input(ui: &Ui) -> Vec<Input> {
+fn take_input(ui: &Ui, platform: Platform) -> Vec<Input> {
     ui.input_mut(|input| {
         let mut taken = Vec::new();
         input.events.retain(|event| {
             let found = match event {
                 Event::Key {
                     key,
+                    physical_key,
                     pressed: true,
                     modifiers,
                     ..
-                } => tree_key(*key, *modifiers).map(Input::Key),
+                } => tree_key(*key, *physical_key, *modifiers, platform).map(Input::Key),
                 Event::Text(text) if !text.trim().is_empty() => Some(Input::Text(text.clone())),
                 _ => None,
             };
@@ -311,7 +296,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         {
             tree.set_focus(row);
         }
-        for input in take_input(ui) {
+        for input in take_input(ui, app.platform()) {
             reveal = true;
             match input {
                 Input::Key(key) => {

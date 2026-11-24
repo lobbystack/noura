@@ -7,24 +7,38 @@
 use crate::support;
 use std::time::{Duration, Instant};
 
+use app_core::Platform;
 use egui::{Key, Modifiers, accesskit::Role};
 use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use support::{FakePicker, create_workspace, harness, harness_for, settle};
+use support::{FakePicker, create_workspace, harness_for, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
 
 /// A workspace holding `files`, opened at launch.
 fn opened(app_data: &std::path::Path, folder: &std::path::Path, files: &[(&str, &str)]) -> Ui {
+    opened_on(app_data, folder, files, Platform::current())
+}
+
+/// [`opened`] with `platform`'s keys. On macOS a row of the tree that has
+/// the keyboard opens with Cmd+O, as in Finder, so search opens from
+/// elsewhere there.
+fn opened_on(
+    app_data: &std::path::Path,
+    folder: &std::path::Path,
+    files: &[(&str, &str)],
+    platform: Platform,
+) -> Ui {
     create_workspace(app_data, folder);
     for (path, text) in files {
         let path = folder.join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
     }
-    let mut harness = harness(app_data, FakePicker::default());
+    let system = support::FakeSystem::new(platform);
+    let mut harness = support::harness_with(app_data, FakePicker::default(), system);
     settle(&mut harness);
     harness
 }
@@ -133,7 +147,7 @@ fn mod_o_finds_a_note_by_name_and_enter_opens_the_best_match() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    let mut harness = opened(
+    let mut harness = opened_on(
         app_data.path(),
         &folder,
         &[
@@ -141,6 +155,7 @@ fn mod_o_finds_a_note_by_name_and_enter_opens_the_best_match() {
             ("Groceries.md", "milk"),
             ("Meeting archive.md", "old"),
         ],
+        Platform::Windows,
     );
     let before = files(&folder);
 
@@ -202,10 +217,11 @@ fn keys_typed_right_after_mod_o_land_in_search_and_escape_gives_the_keyboard_bac
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     let folder = parent.path().join("Garden");
-    let mut harness = opened(
+    let mut harness = opened_on(
         app_data.path(),
         &folder,
         &[("Quiet.md", "unchanged"), ("Zebra.md", "z")],
+        Platform::Windows,
     );
     harness
         .get_by_role_and_label(Role::TreeItem, "Quiet")

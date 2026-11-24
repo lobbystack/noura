@@ -599,6 +599,7 @@ fn note_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shortcut>)> {
 pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shortcut>)> {
     use Key::*;
     let key = Shortcut::new;
+    let mac = platform == Platform::MacOs;
     let mut keys = vec![
         (Area::Anywhere, "Close a dialog", vec![key(Escape)]),
         // The tab commands that only their keys run.
@@ -622,13 +623,44 @@ pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shor
             "Go to the first or last item",
             vec![key(Home), key(End)],
         ),
+        // On macOS Return renames and Cmd+↓ or Cmd+O opens, as in Finder
+        // and VS Code; elsewhere Enter opens, as in Explorer.
         (
             Area::FileTree,
             "Open or close a folder",
-            vec![key(ArrowRight), key(ArrowLeft), key(Enter), key(Space)],
+            if mac {
+                vec![
+                    key(ArrowRight),
+                    key(ArrowLeft),
+                    Shortcut::command(ArrowDown),
+                    key(Space),
+                ]
+            } else {
+                vec![key(ArrowRight), key(ArrowLeft), key(Enter), key(Space)]
+            },
         ),
-        (Area::FileTree, "Open a file", vec![key(Enter), key(Space)]),
-        (Area::FileTree, "Rename", vec![key(F2)]),
+        (
+            Area::FileTree,
+            "Open a file",
+            if mac {
+                vec![
+                    Shortcut::command(ArrowDown),
+                    Shortcut::command(O),
+                    key(Space),
+                ]
+            } else {
+                vec![key(Enter), key(Space)]
+            },
+        ),
+        (
+            Area::FileTree,
+            "Rename",
+            if mac {
+                vec![key(Enter), key(F2)]
+            } else {
+                vec![key(F2)]
+            },
+        ),
         (
             Area::FileTree,
             "Move to the trash",

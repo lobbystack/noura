@@ -112,3 +112,36 @@ fn collapse_all_closes_every_folder() {
     assert_eq!(support::rows(&app), ["Docs", "Other"]);
     assert_eq!(current(&app).as_deref(), Some("Other"));
 }
+
+#[test]
+fn on_macos_return_renames_and_cmd_down_or_cmd_o_opens_and_elsewhere_enter_opens() {
+    use app_core::{Key, KeyPress, Platform};
+    let key = |platform, press: KeyPress| TreeKey::for_press(&press, platform);
+    let mac = Platform::MacOs;
+    let cmd = |key| KeyPress::new(key).with_cmd();
+
+    assert_eq!(key(mac, KeyPress::new(Key::Enter)), Some(TreeKey::Rename));
+    assert_eq!(key(mac, KeyPress::new(Key::F2)), Some(TreeKey::Rename));
+    assert_eq!(key(mac, cmd(Key::ArrowDown)), Some(TreeKey::Activate));
+    assert_eq!(key(mac, cmd(Key::O)), Some(TreeKey::Activate));
+    assert_eq!(key(mac, cmd(Key::Backspace)), Some(TreeKey::Trash));
+    assert_eq!(key(mac, KeyPress::new(Key::Space)), Some(TreeKey::Activate));
+    assert_eq!(
+        key(mac, KeyPress::new(Key::F10).with_shift()),
+        Some(TreeKey::Menu)
+    );
+    assert_eq!(key(mac, KeyPress::new(Key::O).with_ctrl()), None);
+
+    for platform in [Platform::Windows, Platform::Linux] {
+        let ctrl = |key| KeyPress::new(key).with_ctrl();
+        assert_eq!(
+            key(platform, KeyPress::new(Key::Enter)),
+            Some(TreeKey::Enter)
+        );
+        assert_eq!(key(platform, KeyPress::new(Key::F2)), Some(TreeKey::Rename));
+        // Ctrl+O stays with search, and Ctrl+Down with the window.
+        assert_eq!(key(platform, ctrl(Key::O)), None);
+        assert_eq!(key(platform, ctrl(Key::ArrowDown)), None);
+        assert_eq!(key(platform, ctrl(Key::Backspace)), Some(TreeKey::Trash));
+    }
+}

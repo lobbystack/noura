@@ -9,7 +9,7 @@ use std::{
 use local_core::{WorkspaceEntry, WorkspaceEntryKind, is_online_only};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
-use crate::{AppError, Workspace, error::Access};
+use crate::{AppError, Key, KeyPress, Platform, Workspace, error::Access};
 
 /// Typed characters within this window extend the type-ahead search.
 pub const TYPE_AHEAD_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -47,19 +47,64 @@ pub enum TreeKey {
     Right,
     /// Close an open folder, or move to the parent folder.
     Left,
-    /// Space: open a file or toggle a folder.
+    /// Space, or Cmd+↓ and Cmd+O on macOS: open a file or toggle a
+    /// folder.
     Activate,
-    /// Enter: as Space, except that on the file that's already open it
-    /// starts renaming the file. [`crate::App::press_tree_key`] knows which
-    /// file is open.
+    /// Enter on Windows and Linux: as Space, except that on the file
+    /// that's already open it starts renaming the file.
+    /// [`crate::App::press_tree_key`] knows which file is open.
     Enter,
-    /// F2: rename the current row.
+    /// F2, or Return on macOS: rename the current row.
     Rename,
     /// Delete, or Cmd-Backspace on macOS and Ctrl-Backspace elsewhere: move
     /// the current row to the trash.
     Trash,
     /// Shift-F10 or the menu key: open the current row's menu.
     Menu,
+}
+
+impl TreeKey {
+    /// The tree key `press` stands for on `platform` while the tree has
+    /// the keyboard. On macOS Return renames and Cmd+↓ or Cmd+O opens, as
+    /// in Finder and VS Code; on Windows and Linux Enter opens and F2
+    /// renames, as in Explorer. F2 renames on macOS too, and Space opens
+    /// everywhere.
+    pub fn for_press(press: &KeyPress, platform: Platform) -> Option<Self> {
+        let mac = platform == Platform::MacOs;
+        let (command, control) = match platform {
+            Platform::MacOs => (press.cmd, press.ctrl),
+            Platform::Windows | Platform::Linux => (press.ctrl, press.cmd),
+        };
+        if control || press.alt {
+            return None;
+        }
+        if press.shift {
+            let menu = !command && press.key == Key::F10;
+            return menu.then_some(Self::Menu);
+        }
+        if command {
+            return match press.key {
+                Key::Backspace => Some(Self::Trash),
+                Key::ArrowDown | Key::O if mac => Some(Self::Activate),
+                _ => None,
+            };
+        }
+        Some(match press.key {
+            Key::ArrowUp => Self::Up,
+            Key::ArrowDown => Self::Down,
+            Key::Home => Self::Home,
+            Key::End => Self::End,
+            Key::ArrowRight => Self::Right,
+            Key::ArrowLeft => Self::Left,
+            Key::Enter if mac => Self::Rename,
+            Key::Enter => Self::Enter,
+            Key::Space => Self::Activate,
+            Key::F2 => Self::Rename,
+            Key::Delete => Self::Trash,
+            Key::Menu => Self::Menu,
+            _ => return None,
+        })
+    }
 }
 
 /// What the tree asks its owner to do.

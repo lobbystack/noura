@@ -604,9 +604,10 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
         Some(vec![Shortcut::new(Key::Escape)])
     );
     // Keys that work only while one area has the keyboard.
+    // On macOS Return renames and Cmd+Down or Cmd+O opens, as in Finder.
     assert_eq!(
         entry(Area::FileTree, "Rename"),
-        Some(vec![Shortcut::new(Key::F2)])
+        Some(vec![Shortcut::new(Key::Enter), Shortcut::new(Key::F2)])
     );
     assert_eq!(
         entry(Area::FileTree, "Sort the tree"),
@@ -632,7 +633,11 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
     );
     assert_eq!(
         entry(Area::FileTree, "Open a file"),
-        Some(vec![Shortcut::new(Key::Enter), Shortcut::new(Key::Space)])
+        Some(vec![
+            Shortcut::command(Key::ArrowDown),
+            Shortcut::command(Key::O),
+            Shortcut::new(Key::Space)
+        ])
     );
     assert_eq!(
         entry(Area::Tabs, "Show the focused tab"),
@@ -700,6 +705,15 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
             entry(Area::Anywhere, quit),
             Some(vec![Shortcut::command(Key::Q)]),
             "{platform:?}"
+        );
+        // Enter opens and F2 renames, as in Explorer.
+        assert_eq!(
+            entry(Area::FileTree, "Rename"),
+            Some(vec![Shortcut::new(Key::F2)])
+        );
+        assert_eq!(
+            entry(Area::FileTree, "Open a file"),
+            Some(vec![Shortcut::new(Key::Enter), Shortcut::new(Key::Space)])
         );
         assert_eq!(
             entry(Area::Writing, "Redo"),
