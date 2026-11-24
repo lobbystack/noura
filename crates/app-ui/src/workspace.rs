@@ -77,7 +77,13 @@ pub(crate) fn show(state: &mut NouraUi, ui: &mut Ui) {
             // The bar is the title bar row: its empty part moves the
             // window.
             let rect = ui.max_rect().expand2(vec2(f32::from(TAB_BAR_MARGIN), 0.0));
-            common::title_bar_area(ui, rect, "tab-bar");
+            // The sidebar's resize edge reaches into the row's start, and
+            // takes its drags there as it does below the row.
+            let mut title_bar = rect;
+            if sidebar_shown {
+                title_bar.min.x += ui.style().interaction.resize_grab_radius_side;
+            }
+            common::title_bar_area(ui, title_bar, "tab-bar");
             // The window's own buttons take the row's end.
             let end = if end_reach > 0.0 {
                 window.right() - end_reach

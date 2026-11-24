@@ -430,6 +430,39 @@ fn a_double_click_on_the_row_asks_once_for_the_system_s_title_bar_action() {
     assert!(commands.is_empty(), "the row sent {commands:?}");
 }
 
+/// The sidebar's resize edge takes its drags in the title bar row too,
+/// where the row's empty part would move the window, and shows its cursor
+/// there.
+#[test]
+fn the_sidebar_s_edge_resizes_it_in_the_title_bar_row() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    let edge = harness.get_by_role(Role::Splitter).rect();
+    // Just past the divider, inside the edge and the title bar row.
+    let grab = egui::pos2(edge.right() - 1.0, edge.top() + 10.0);
+
+    harness.hover_at(grab);
+    harness.run();
+    let cursor = harness.output().platform_output.cursor_icon;
+    assert!(
+        matches!(
+            cursor,
+            egui::CursorIcon::ResizeEast
+                | egui::CursorIcon::ResizeWest
+                | egui::CursorIcon::ResizeHorizontal
+        ),
+        "the edge shows {cursor:?}"
+    );
+    let moved_window = drag(&mut harness, grab, grab + egui::vec2(40.0, 0.0), |_| {});
+    assert!(
+        !moved_window,
+        "grabbing the sidebar's edge moved the window"
+    );
+    let widened = harness.get_by_role(Role::Splitter).rect().center().x - edge.center().x;
+    assert!(widened > 30.0, "the sidebar widened by {widened}");
+}
+
 /// Open `name`'s row menu with a right-click and choose `item`.
 fn choose_from_row_menu(harness: &mut Ui, name: &str, item: &str) {
     row(harness, name).click_secondary();
