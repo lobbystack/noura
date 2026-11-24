@@ -297,20 +297,23 @@ enum Zoom {
 }
 
 impl App {
-    /// Zoom In, Zoom Out and Actual Size zoom the PDF while its tab is
-    /// active, as Preview does, and the interface anywhere else.
+    /// Zoom In, Zoom Out and Actual Size zoom the PDF or the image while
+    /// its tab is active, as Preview does, and the interface anywhere
+    /// else.
     fn zoom_view(&mut self, zoom: Zoom) {
-        let pdf = self
-            .active_tab()
-            .map(Tab::id)
-            .filter(|tab| self.pdf(*tab).is_some());
-        match (pdf, zoom) {
-            (Some(tab), Zoom::In) => self.pdf_zoom_in(tab),
-            (Some(tab), Zoom::Out) => self.pdf_zoom_out(tab),
-            (Some(tab), Zoom::ActualSize) => self.pdf_actual_size(tab),
-            (None, Zoom::In) => self.zoom_in(),
-            (None, Zoom::Out) => self.zoom_out(),
-            (None, Zoom::ActualSize) => self.actual_size(),
+        let tab = self.active_tab().map(Tab::id);
+        let pdf = tab.filter(|tab| self.pdf(*tab).is_some());
+        let image = tab.filter(|tab| self.image(*tab).is_some());
+        match (pdf, image, zoom) {
+            (Some(tab), _, Zoom::In) => self.pdf_zoom_in(tab),
+            (Some(tab), _, Zoom::Out) => self.pdf_zoom_out(tab),
+            (Some(tab), _, Zoom::ActualSize) => self.pdf_actual_size(tab),
+            (None, Some(tab), Zoom::In) => self.image_zoom_in(tab),
+            (None, Some(tab), Zoom::Out) => self.image_zoom_out(tab),
+            (None, Some(tab), Zoom::ActualSize) => self.image_actual_size(tab),
+            (None, None, Zoom::In) => self.zoom_in(),
+            (None, None, Zoom::Out) => self.zoom_out(),
+            (None, None, Zoom::ActualSize) => self.actual_size(),
         }
     }
 }

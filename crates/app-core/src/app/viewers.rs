@@ -21,6 +21,57 @@ impl App {
         self.viewers.images.get(&tab).map(|session| session.view())
     }
 
+    /// Change the image view of `tab` with `change`, and announce it when
+    /// `change` says it changed what the tab shows.
+    fn change_image(&mut self, tab: TabId, change: impl FnOnce(&mut ImageView) -> bool) {
+        if let Some(session) = self.viewers.images.get_mut(&tab)
+            && change(session.view_mut())
+        {
+            self.listeners.emit(Change::Viewer);
+        }
+    }
+
+    /// The image in `tab` measures `size` of the screen's points at its
+    /// own size, and the tab shows it in a view `area` of the client's
+    /// points large, at the interface zoom `interface_zoom`, which leaves
+    /// the image's size on the screen alone. Its client says so each
+    /// frame, before it draws.
+    pub fn size_image(&mut self, tab: TabId, size: [f32; 2], area: [f32; 2], interface_zoom: f32) {
+        if let Some(session) = self.viewers.images.get_mut(&tab) {
+            session.view_mut().measure(size, area, interface_zoom);
+        }
+    }
+
+    /// The image tab `tab` shows the point `offset` of its content at the
+    /// top left of its view, having made the scroll `seq`, or 0 before any.
+    /// Its client says so each frame, once it scrolled.
+    pub fn image_scrolled(&mut self, tab: TabId, offset: [f32; 2], seq: u64) {
+        if let Some(session) = self.viewers.images.get_mut(&tab) {
+            session.view_mut().scrolled(offset, seq);
+        }
+    }
+
+    /// Draw the image in `tab` one zoom step larger.
+    pub fn image_zoom_in(&mut self, tab: TabId) {
+        self.change_image(tab, |view| view.zoom_step(true));
+    }
+
+    /// Draw the image in `tab` one zoom step smaller.
+    pub fn image_zoom_out(&mut self, tab: TabId) {
+        self.change_image(tab, |view| view.zoom_step(false));
+    }
+
+    /// Draw the image in `tab` at its own size.
+    pub fn image_actual_size(&mut self, tab: TabId) {
+        self.change_image(tab, ImageView::actual_size);
+    }
+
+    /// Magnify the image in `tab` by `factor`, as a pinch does, keeping
+    /// the point at `anchor` in the view, from its top left, where it is.
+    pub fn image_zoom_by(&mut self, tab: TabId, factor: f32, anchor: [f32; 2]) {
+        self.change_image(tab, |view| view.zoom_by(factor, anchor));
+    }
+
     /// Change the PDF session of `tab` with `change`, and announce it when
     /// `change` says it changed what the tab shows.
     fn change_pdf(&mut self, tab: TabId, change: impl FnOnce(&mut PdfSession) -> bool) {

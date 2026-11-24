@@ -30,6 +30,7 @@ mod error;
 mod files;
 pub mod folder_sync;
 mod ignored;
+mod image_density;
 mod inbox;
 mod items;
 mod keys;
@@ -137,6 +138,7 @@ pub mod web_client {
         WebFetchResponse, WebSearchRequest, WebSearchResponse, WebSearchResult,
     };
 }
+pub use image_density::points_per_pixel;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use mcp_setup::{MCP_TEST_WAIT, McpProbe, McpSetup, McpTest};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
@@ -189,7 +191,7 @@ pub use updates::{
     FIRST_UPDATE_CHECK, PendingUpdate, UPDATE_CHECK_INTERVAL, UpdateError, UpdateErrorKind,
     UpdateSource, UpdateStatus, Updates,
 };
-pub use viewers::{ImageState, ImageView};
+pub use viewers::{IMAGE_ZOOM_STEPS, ImageScroll, ImageState, ImageView, ImageZoom};
 pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
 pub use writes::{PendingWork, PendingWrite, PendingWrites, WriteFailure};
