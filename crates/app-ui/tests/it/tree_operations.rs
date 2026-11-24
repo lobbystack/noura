@@ -464,3 +464,107 @@ fn resting_on_a_closed_folder_while_dragging_opens_it() {
     harness.run();
     assert_eq!(rows(&harness), ["Docs", "Readme", "Todo"]);
 }
+
+/// How far the tree has scrolled, from a row of folders named `F 00` to
+/// `F 39` drawn inside it.
+fn tree_offset(harness: &Ui) -> f32 {
+    let tree = harness.get_by_role_and_label(Role::Tree, "Files").rect();
+    harness
+        .get_all_by_role(Role::TreeItem)
+        .filter(|row| tree.contains_rect(row.rect()))
+        .find_map(|row| {
+            let label = row.accesskit_node().label()?;
+            let index: f32 = label.strip_prefix("F ")?.parse().ok()?;
+            Some(index * 28.0 - (row.rect().top() - tree.top()))
+        })
+        .unwrap()
+}
+
+#[test]
+fn a_drag_near_the_tree_s_edge_scrolls_it_faster_the_closer_it_gets() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    create_workspace(app_data.path(), &folder);
+    for index in 0..40 {
+        let inside = folder.join(format!("F {index:02}"));
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::write(inside.join("x.md"), b"x").unwrap();
+    }
+    let mut harness = harness_with(
+        app_data.path(),
+        FakePicker::default(),
+        FakeSystem::new(Platform::current()),
+    );
+    settle(&mut harness);
+    let tree = harness.get_by_role_and_label(Role::Tree, "Files").rect();
+    assert!(
+        !harness
+            .query_by_role_and_label(Role::TreeItem, "F 39")
+            .is_some_and(|row| tree.contains_rect(row.rect()))
+    );
+
+    let start = row(&harness, "F 00").rect().center();
+    harness.hover_at(start);
+    harness.run();
+    harness.drag_at(start);
+    harness.run();
+    // Away from the edges, the tree stays put.
+    let middle = egui::pos2(start.x, tree.center().y);
+    for step in 1..=6 {
+        harness.hover_at(start + (middle - start) * (step as f32 / 6.0));
+        harness.step();
+    }
+    assert_eq!(tree_offset(&harness), 0.0);
+
+    let scrolled = |harness: &mut Ui, at: egui::Pos2| {
+        let before = tree_offset(harness);
+        for _ in 0..4 {
+            harness.hover_at(at);
+            harness.step();
+        }
+        tree_offset(harness) - before
+    };
+    let near = scrolled(&mut harness, egui::pos2(start.x, tree.bottom() - 30.0));
+    let closer = scrolled(&mut harness, egui::pos2(start.x, tree.bottom() - 2.0));
+    assert!(near > 0.0, "near the bottom edge the tree scrolls down");
+    assert!(
+        closer > 3.0 * near,
+        "closer to the edge it scrolls faster: {near} then {closer}"
+    );
+
+    // Held there, the drag reaches the last folder, out of view before,
+    // and drops into it.
+    let at_edge = egui::pos2(start.x, tree.bottom() - 2.0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !harness
+        .query_by_role_and_label(Role::TreeItem, "F 39")
+        .is_some_and(|row| tree.contains_rect(row.rect()))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the tree never scrolled to F 39"
+        );
+        harness.hover_at(at_edge);
+        harness.step();
+    }
+    let target = row(&harness, "F 39").rect().center();
+    harness.hover_at(target);
+    harness.step();
+    harness.drop_at(target);
+    harness.run();
+    settle(&mut harness);
+    assert!(folder.join("F 39/F 00").is_dir());
+
+    // Near the top edge it scrolls back up.
+    let start = row(&harness, "F 38").rect().center();
+    harness.hover_at(start);
+    harness.run();
+    harness.drag_at(start);
+    harness.run();
+    let up = scrolled(&mut harness, egui::pos2(start.x, tree.top() + 4.0));
+    assert!(up < 0.0, "near the top edge the tree scrolls up");
+    harness.key_press(Key::Escape);
+    harness.drop_at(egui::pos2(start.x, tree.top() + 4.0));
+    harness.run();
+}

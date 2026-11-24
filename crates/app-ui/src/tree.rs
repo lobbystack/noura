@@ -44,6 +44,8 @@ pub(crate) struct TreeView {
     /// Give the current row keyboard focus again, once a menu or a rename
     /// field closes.
     refocus: bool,
+    /// Where the rows showed last frame, for scrolling during a drag.
+    area: Option<Rect>,
 }
 
 impl TreeView {
@@ -357,6 +359,16 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
         };
         scroll = scroll.vertical_scroll_offset(offset);
     }
+    let step = drag_scroll(ui, app, view);
+    let end = view.area.map_or(0.0, |area| {
+        (rows.len() as f32 * ROW_HEIGHT - area.height()).max(0.0)
+    });
+    let scrolled = (view.offset + step).clamp(0.0, end);
+    if scrolled != view.offset {
+        scroll = scroll.vertical_scroll_offset(scrolled);
+        // Keep scrolling while the pointer rests at the edge.
+        ui.ctx().request_repaint();
+    }
 
     let mut clicked = None;
     let mut kept = None;
@@ -438,15 +450,16 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::Tree)
         .accessibility_label("Files");
-    let output = ui
+    let (tree_id, output) = ui
         .scope_builder(builder, |ui| {
+            let tree_id = ui.unique_id();
             if drop_target.as_deref() == Some("") {
                 ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                     node.set_description(DROP_TARGET);
                 });
             }
             ui.spacing_mut().item_spacing.y = 0.0;
-            scroll.show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
+            let output = scroll.show_rows(ui, ROW_HEIGHT, rows.len(), |ui, range| {
                 // The current row exists even while it is scrolled out of
                 // view, so it keeps keyboard focus and its place in the tab
                 // order.
@@ -468,12 +481,23 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
                 if let Some(row) = tab_stop.filter(|row| *row >= range.end) {
                     row_ui(ui, row, away(row));
                 }
-            })
+            });
+            (tree_id, output)
         })
         .inner;
     view.offset = output.state.clamped_offset().y;
     view.drawn = drawn;
     let area = output.inner_rect;
+    view.area = Some(area);
+    // The tree's bounds are the rows in view.
+    ui.ctx().accesskit_node_builder(tree_id, |node| {
+        node.set_bounds(egui::accesskit::Rect {
+            x0: area.min.x.into(),
+            y0: area.min.y.into(),
+            x1: area.max.x.into(),
+            y1: area.max.y.into(),
+        });
+    });
     if drop_target.as_deref() == Some("") {
         ui.painter().rect_stroke(
             area,
@@ -575,6 +599,56 @@ fn finish_rename(app: &mut App, view: &mut TreeView, outcome: RenameOutcome) {
             view.refocus = true;
         }
     }
+}
+
+/// How deep the bands along the tree's top and bottom edges are where a
+/// drag scrolls the tree.
+const SCROLL_EDGE: f32 = 1.5 * ROW_HEIGHT;
+/// How fast a drag scrolls the tree, in points a second: as it enters an
+/// edge's band, and at the edge or past it.
+const SCROLL_SLOWEST: f32 = 60.0;
+const SCROLL_FASTEST: f32 = 1200.0;
+
+/// How fast a drag at `from_top` points below the tree's top edge and
+/// `from_bottom` above its bottom edge scrolls the tree, in points a
+/// second: down when positive. Within [`SCROLL_EDGE`] of an edge it
+/// scrolls toward that edge, faster the closer the pointer gets, and at
+/// full speed on or past it, as Finder does.
+pub(crate) fn edge_scroll_speed(from_top: f32, from_bottom: f32) -> f32 {
+    let speed = |distance: f32| {
+        let depth = ((SCROLL_EDGE - distance) / SCROLL_EDGE).clamp(0.0, 1.0);
+        SCROLL_SLOWEST + (SCROLL_FASTEST - SCROLL_SLOWEST) * depth * depth
+    };
+    if from_top < SCROLL_EDGE && from_top <= from_bottom {
+        -speed(from_top)
+    } else if from_bottom < SCROLL_EDGE {
+        speed(from_bottom)
+    } else {
+        0.0
+    }
+}
+
+/// How far to scroll the tree this frame, in points, while you drag a row
+/// or files from the file manager near its top or bottom edge, so a drop
+/// can reach a folder scrolled out of view.
+fn drag_scroll(ui: &Ui, app: &App, view: &TreeView) -> f32 {
+    let dragging_row = app.tree().is_some_and(|tree| tree.dragging().is_some());
+    let (pointer, files, dt) = ui.input(|input| {
+        (
+            input.pointer.latest_pos(),
+            !input.raw.hovered_files.is_empty(),
+            input.stable_dt,
+        )
+    });
+    let (Some(area), Some(pointer)) = (view.area, pointer) else {
+        return 0.0;
+    };
+    if !(dragging_row || files) || !area.x_range().contains(pointer.x) {
+        return 0.0;
+    }
+    let speed = edge_scroll_speed(pointer.y - area.top(), area.bottom() - pointer.y);
+    // A frame that took long, as after a stall, doesn't jump far.
+    speed * dt.min(1.0 / 20.0)
 }
 
 /// Read by screen readers after a folder's name, and by tests, while a
