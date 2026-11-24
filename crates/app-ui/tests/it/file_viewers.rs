@@ -143,7 +143,12 @@ fn pages_shown(harness: &Ui) -> Vec<usize> {
 
 /// Turn the mouse wheel over the pages `steps` times, `delta` points each.
 fn wheel(harness: &mut Ui, delta: f32, steps: usize) {
-    harness.hover_at(egui::pos2(600.0, 400.0));
+    wheel_at(harness, egui::pos2(600.0, 400.0), delta, steps);
+}
+
+/// Turn the mouse wheel at `pos` `steps` times, `delta` points each.
+fn wheel_at(harness: &mut Ui, pos: egui::Pos2, delta: f32, steps: usize) {
+    harness.hover_at(pos);
     harness.run_steps(2);
     for _ in 0..steps {
         harness.event(Event::MouseWheel {
@@ -431,6 +436,100 @@ fn the_thumbnails_panel_lists_one_button_per_page_and_scrolls_to_the_page_you_pi
     wait_until(&mut harness, "page 2 draws at the top", |harness| {
         shows_page_at_top(harness, "Page 2 of 3")
     });
+}
+
+/// The thumbnail of page `page` shows whole in the thumbnails panel, which
+/// runs as far down as the pages beside it.
+fn shows_thumbnail(harness: &Ui, page: usize) -> bool {
+    let label = format!("Go to page {page}");
+    let Some(thumbnail) = harness.query_by_role_and_label(Role::Button, &label) else {
+        return false;
+    };
+    let thumbnail = thumbnail.rect();
+    let pages = harness
+        .get_by_role_and_label(Role::ScrollView, "Pages")
+        .rect();
+    thumbnail.top() >= pages.top() - 0.5 && thumbnail.bottom() <= pages.bottom() + 0.5
+}
+
+/// The middle of the thumbnails panel, which shows the thumbnail of page
+/// `page`.
+fn thumbnails_middle(harness: &Ui, page: usize) -> egui::Pos2 {
+    let pages = harness
+        .get_by_role_and_label(Role::ScrollView, "Pages")
+        .rect();
+    let thumbnail = harness
+        .get_by_role_and_label(Role::Button, &format!("Go to page {page}"))
+        .rect();
+    egui::pos2(thumbnail.center().x, pages.center().y)
+}
+
+#[test]
+fn the_thumbnails_panel_follows_the_page_that_shows_and_leaves_your_own_scroll_alone() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = workspace(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[("large.pdf", &pdf("large.pdf"))],
+    );
+    open(&mut harness, "large.pdf");
+    let tab = active(&harness);
+    wait_until(&mut harness, "the first page draws", |harness| {
+        shows_page(harness, "Page 1 of 400")
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "Thumbnails")
+        .click();
+    harness.run_steps(4);
+    assert!(shows_thumbnail(&harness, 1));
+
+    // Scrolling the pages to the end brings the last thumbnail into view.
+    click_at(&mut harness, egui::pos2(600.0, 400.0));
+    harness.run_steps(2);
+    press(&mut harness, Key::End);
+    assert_eq!(page(&harness), 400);
+    assert!(shows_thumbnail(&harness, 400));
+    assert!(!shows_thumbnail(&harness, 1));
+
+    // Scrolling the panel yourself moves it away from the page that shows,
+    // and it stays there while that page does.
+    let panel = thumbnails_middle(&harness, 400);
+    wheel_at(&mut harness, panel, 2000.0, 6);
+    harness.run_steps(10);
+    assert_eq!(page(&harness), 400);
+    assert!(!shows_thumbnail(&harness, 400));
+    let scrolled = (1..400)
+        .find(|page| shows_thumbnail(&harness, *page))
+        .expect("a thumbnail shows");
+    harness.run_steps(10);
+    assert!(shows_thumbnail(&harness, scrolled), "the panel moved back");
+
+    // Scrolling the pages to another page brings its thumbnail back.
+    wheel(&mut harness, 400.0, 4);
+    let now = page(&harness);
+    assert!(now < 400, "the pages didn't scroll");
+    assert!(shows_thumbnail(&harness, now));
+
+    // So does a jump to a page, as a link makes.
+    harness.state_mut().app_mut().pdf_go_to(tab, 120);
+    harness.run_steps(4);
+    assert_eq!(page(&harness), 120);
+    assert!(shows_thumbnail(&harness, 120));
+
+    // And Fit width, after you scrolled the panel away.
+    harness
+        .get_by_role_and_label(Role::Button, "Zoom in")
+        .click();
+    harness.run_steps(4);
+    wheel_at(&mut harness, panel, -3000.0, 6);
+    harness.run_steps(4);
+    assert!(!shows_thumbnail(&harness, page(&harness)));
+    harness
+        .get_by_role_and_label(Role::Button, "Fit width")
+        .click();
+    harness.run_steps(4);
+    assert!(shows_thumbnail(&harness, page(&harness)));
 }
 
 #[test]

@@ -60,6 +60,14 @@ struct PdfTab {
     /// The tiles as uploaded, each with its picture's generation.
     tiles: HashMap<PdfTileKey, Option<(u64, TextureHandle)>>,
     thumbnails: HashMap<usize, Option<(u64, TextureHandle)>>,
+    /// The page, and the newest jump the pages had made, when the
+    /// thumbnails panel last brought the page's thumbnail into view. `None`
+    /// while the panel is hidden.
+    thumbnails_followed: Option<(usize, u64)>,
+    /// How far the thumbnails panel was scrolled, and how tall the part
+    /// that showed was, last frame.
+    thumbnails_offset: f32,
+    thumbnails_height: f32,
     /// The newest jump the pages made.
     jumped: u64,
     /// Where the pages were scrolled to, and the size of the part that
@@ -140,6 +148,8 @@ pub(crate) fn show(
             ui.add_space(8.0);
             if pdf.thumbnails_shown() {
                 thumbnails(ui, pdf, view, tab, &mut actions);
+            } else {
+                view.thumbnails_followed = None;
             }
             // The pages lay out for the width that's left, before they
             // draw.
@@ -391,8 +401,25 @@ fn fit_within(size: [f32; 2], bounds: Vec2) -> Vec2 {
     vec2((width * scale).max(1.0), (height * scale).max(1.0))
 }
 
+/// The offset that brings the rows from `top` to `bottom` into a view
+/// `height` tall scrolled to `offset`, scrolling as little as it can:
+/// `None` when they show already. Rows taller than the view show from
+/// their top.
+fn into_view(offset: f32, height: f32, top: f32, bottom: f32) -> Option<f32> {
+    let wanted = if top < offset || bottom - top >= height {
+        top
+    } else if bottom > offset + height {
+        bottom - height
+    } else {
+        offset
+    };
+    (wanted != offset).then_some(wanted)
+}
+
 /// One thumbnail per page, in a panel beside the pages. Picking one
-/// scrolls to its page.
+/// scrolls to its page. When the page that shows changes, or the pages
+/// jump, the panel scrolls to bring its thumbnail into view; between
+/// those, you scroll the panel where you like.
 fn thumbnails(
     ui: &mut Ui,
     pdf: &PdfView,
@@ -424,55 +451,71 @@ fn thumbnails(
                 .accessibility_role(Role::List)
                 .accessibility_label("Page thumbnails");
             ui.scope_builder(builder, |ui| {
-                ScrollArea::vertical()
+                let mut area = ScrollArea::vertical()
                     .id_salt(("pdf-thumbnails", tab))
-                    .auto_shrink(false)
-                    .show_rows(ui, row, pdf.page_count(), |ui, rows| {
-                        for page in rows.start + 1..=rows.end {
-                            actions.push(Action::Thumbnail(page, pixels_per_point));
-                            let size = fit_within(size_of(page), bounds);
-                            let current = page == pdf.page();
-                            let (rect, response) = ui.allocate_exact_size(
-                                vec2(ui.available_width(), row),
-                                Sense::click(),
-                            );
-                            let response = response.accessible_name(format!("Go to page {page}"));
-                            ui.ctx().accesskit_node_builder(response.id, |node| {
-                                node.set_role(Role::Button);
-                                node.set_selected(current);
-                            });
-                            let frame = Rect::from_center_size(
-                                rect.center_top() + vec2(0.0, 4.0 + box_height / 2.0),
-                                size,
-                            );
-                            let painter = ui.painter();
-                            painter.rect_filled(frame, radius(0.25), Color32::WHITE);
-                            let slot = view.thumbnails.entry(page).or_default();
-                            if let Some(texture) = pdf
-                                .thumbnail(page)
-                                .and_then(|picture| upload(ui, slot, picture, "pdf-thumbnail"))
-                            {
-                                egui::Image::from_texture(SizedTexture::new(texture.id(), size))
-                                    .paint_at(ui, frame);
-                            }
-                            let stroke = if current || response.hovered() {
-                                Stroke::new(2.0, palette.ring)
-                            } else {
-                                Stroke::new(1.0, palette.border)
-                            };
-                            painter.rect_stroke(frame, radius(0.25), stroke, StrokeKind::Outside);
-                            painter.text(
-                                pos2(rect.center().x, rect.top() + box_height + 8.0),
-                                egui::Align2::CENTER_TOP,
-                                page.to_string(),
-                                egui::FontId::proportional(12.0),
-                                palette.muted_foreground,
-                            );
-                            if response.clicked() {
-                                actions.push(Action::GoTo(page));
-                            }
+                    .auto_shrink(false);
+                let follow = (pdf.page(), view.jumped);
+                if view.thumbnails_followed != Some(follow) {
+                    view.thumbnails_followed = Some(follow);
+                    let top =
+                        pdf.page().saturating_sub(1) as f32 * (row + ui.spacing().item_spacing.y);
+                    // The panel's height, before it first showed.
+                    let height = if view.thumbnails_height > 0.0 {
+                        view.thumbnails_height
+                    } else {
+                        ui.available_height()
+                    };
+                    if let Some(offset) = into_view(view.thumbnails_offset, height, top, top + row)
+                    {
+                        area = area.vertical_scroll_offset(offset);
+                    }
+                }
+                let output = area.show_rows(ui, row, pdf.page_count(), |ui, rows| {
+                    for page in rows.start + 1..=rows.end {
+                        actions.push(Action::Thumbnail(page, pixels_per_point));
+                        let size = fit_within(size_of(page), bounds);
+                        let current = page == pdf.page();
+                        let (rect, response) =
+                            ui.allocate_exact_size(vec2(ui.available_width(), row), Sense::click());
+                        let response = response.accessible_name(format!("Go to page {page}"));
+                        ui.ctx().accesskit_node_builder(response.id, |node| {
+                            node.set_role(Role::Button);
+                            node.set_selected(current);
+                        });
+                        let frame = Rect::from_center_size(
+                            rect.center_top() + vec2(0.0, 4.0 + box_height / 2.0),
+                            size,
+                        );
+                        let painter = ui.painter();
+                        painter.rect_filled(frame, radius(0.25), Color32::WHITE);
+                        let slot = view.thumbnails.entry(page).or_default();
+                        if let Some(texture) = pdf
+                            .thumbnail(page)
+                            .and_then(|picture| upload(ui, slot, picture, "pdf-thumbnail"))
+                        {
+                            egui::Image::from_texture(SizedTexture::new(texture.id(), size))
+                                .paint_at(ui, frame);
                         }
-                    });
+                        let stroke = if current || response.hovered() {
+                            Stroke::new(2.0, palette.ring)
+                        } else {
+                            Stroke::new(1.0, palette.border)
+                        };
+                        painter.rect_stroke(frame, radius(0.25), stroke, StrokeKind::Outside);
+                        painter.text(
+                            pos2(rect.center().x, rect.top() + box_height + 8.0),
+                            egui::Align2::CENTER_TOP,
+                            page.to_string(),
+                            egui::FontId::proportional(12.0),
+                            palette.muted_foreground,
+                        );
+                        if response.clicked() {
+                            actions.push(Action::GoTo(page));
+                        }
+                    }
+                });
+                view.thumbnails_offset = output.state.clamped_offset().y;
+                view.thumbnails_height = output.inner_rect.height();
             });
         });
 }
@@ -684,7 +727,19 @@ mod tests {
     use app_core::PdfPicture;
     use egui::vec2;
 
-    use super::{PASSWORD_CHARS, PASSWORD_ROOM, fit_within, make_room, picture_image};
+    use super::{PASSWORD_CHARS, PASSWORD_ROOM, fit_within, into_view, make_room, picture_image};
+
+    #[test]
+    fn a_row_comes_into_view_with_the_least_scroll() {
+        // A view 500 points tall, scrolled 1,000 down.
+        assert_eq!(into_view(1000.0, 500.0, 1100.0, 1250.0), None);
+        assert_eq!(into_view(1000.0, 500.0, 900.0, 1050.0), Some(900.0));
+        assert_eq!(into_view(1000.0, 500.0, 1400.0, 1550.0), Some(1050.0));
+        assert_eq!(into_view(1000.0, 500.0, 60_000.0, 60_150.0), Some(59_650.0));
+        // A row taller than the view shows from its top.
+        assert_eq!(into_view(1000.0, 100.0, 1050.0, 1200.0), Some(1050.0));
+        assert_eq!(into_view(1050.0, 100.0, 1050.0, 1200.0), None);
+    }
 
     fn picture(width: u32, height: u32, bytes: usize) -> PdfPicture {
         PdfPicture {
