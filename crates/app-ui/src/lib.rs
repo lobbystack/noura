@@ -52,7 +52,7 @@ use std::{
 use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Screen, TabId};
 use egui::{Event, Id, ThemePreference, ViewportId};
 
-pub use common::take_window_menu_request;
+pub use common::{take_title_bar_double_click, take_window_menu_request};
 /// Finds misspelled words for the notes, such as the system's spell
 /// checker.
 pub use editor_egui::SpellChecker;

@@ -813,6 +813,7 @@ impl Window {
             // A deferred viewport has no winit window to show the window
             // menu from.
             let _ = app_ui::take_window_menu_request(ctx, id);
+            crate::title_bar::double_click(ctx, id);
             note_focus(ctx, id, &recent, window);
             file_drags
                 .lock()
@@ -896,6 +897,7 @@ impl eframe::App for Windows {
         crate::title_bar::claim_mouse_downs(frame);
         self.show(ui, frame);
         show_window_menu(ui.ctx(), frame);
+        crate::title_bar::double_click(ui.ctx(), ViewportId::ROOT);
         self.report_smoke(ui.ctx());
     }
 

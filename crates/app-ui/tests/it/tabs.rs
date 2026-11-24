@@ -355,6 +355,81 @@ fn dragging_a_tab_reorders_the_tabs_and_leaves_the_window_in_place() {
     assert_eq!(tabs(&harness), ["Alpha", "Beta"]);
 }
 
+/// The commands in `output` that move, zoom or minimize the window.
+fn window_commands(output: &egui::FullOutput) -> Vec<egui::ViewportCommand> {
+    output
+        .viewport_output
+        .values()
+        .flat_map(|viewport| viewport.commands.iter().cloned())
+        .filter(|command| {
+            matches!(
+                command,
+                egui::ViewportCommand::StartDrag
+                    | egui::ViewportCommand::Maximized(_)
+                    | egui::ViewportCommand::Minimized(_)
+            )
+        })
+        .collect()
+}
+
+/// Double-click at `pos`, as `double_click_at` does, and return the
+/// window commands the frames asked for.
+fn double_click_commands(harness: &mut Ui, pos: egui::Pos2) -> Vec<egui::ViewportCommand> {
+    let button = |pressed| Event::PointerButton {
+        pos,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: Modifiers::NONE,
+    };
+    harness.input_mut().events.extend([
+        Event::PointerMoved(pos),
+        button(true),
+        button(false),
+        button(true),
+        button(false),
+    ]);
+    harness.step();
+    let mut commands = window_commands(harness.output());
+    harness.run();
+    commands.extend(window_commands(harness.output()));
+    commands
+}
+
+/// A double-click on the title bar row's empty part asks the desktop
+/// shell, once, for what the system's setting says a title bar does, and
+/// sends no window command of its own. One on a tab only keeps the tab.
+#[test]
+fn a_double_click_on_the_row_asks_once_for_the_system_s_title_bar_action() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    harness.set_size(egui::vec2(1300.0, 700.0));
+    row(&harness, "Alpha").click();
+    harness.run();
+    let asked =
+        |harness: &Ui| app_ui::take_title_bar_double_click(&harness.ctx, egui::ViewportId::ROOT);
+
+    let tab = harness
+        .get_by_role_and_label(Role::Tab, "Alpha (preview)")
+        .rect();
+    let commands = double_click_commands(&mut harness, tab.left_center() + egui::vec2(12.0, 0.0));
+    assert_eq!(tabs(&harness), ["Alpha"]);
+    assert!(
+        !asked(&harness),
+        "a double-click on a tab asked for the action"
+    );
+    assert!(
+        commands.is_empty(),
+        "a double-click on a tab sent {commands:?}"
+    );
+
+    let empty = egui::pos2(tab.right() + 80.0, tab.center().y);
+    let commands = double_click_commands(&mut harness, empty);
+    assert!(asked(&harness), "a double-click on the row asked nothing");
+    assert!(!asked(&harness), "one double-click asked twice");
+    assert!(commands.is_empty(), "the row sent {commands:?}");
+}
+
 /// Open `name`'s row menu with a right-click and choose `item`.
 fn choose_from_row_menu(harness: &mut Ui, name: &str, item: &str) {
     row(harness, name).click_secondary();
