@@ -102,6 +102,19 @@ impl Tab {
         }
     }
 
+    /// The tab as the view state saves it.
+    fn stored(&self) -> StoredTab {
+        match &self.content {
+            TabContent::File { file, object_id } => StoredTab {
+                file: Some(file.relative_path.clone()),
+                object_id: object_id.clone(),
+                page: None,
+                preview: self.preview,
+            },
+            TabContent::Page { page_id, .. } => StoredTab::page(page_id, self.preview),
+        }
+    }
+
     fn shows(&self, content: &TabContent) -> bool {
         match (&self.content, content) {
             (TabContent::File { file, .. }, TabContent::File { file: other, .. }) => {
@@ -154,11 +167,28 @@ struct WaitingPage {
     index: usize,
 }
 
+/// How many closed tabs a window remembers for Reopen Closed Tab, as VS
+/// Code does.
+pub(crate) const CLOSED_LIMIT: usize = 20;
+
+/// A tab you closed, which Reopen Closed Tab brings back.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClosedTab {
+    /// What it showed, as the view state saves a tab.
+    pub(crate) tab: StoredTab,
+    /// Its place among the tabs when it closed.
+    pub(crate) index: usize,
+    /// Where you were in it, until Noura quits.
+    pub(crate) place: TabPlace,
+}
+
 /// A window's tabs, in order, and the active one.
 #[derive(Debug, Default)]
 pub(crate) struct Tabs {
     tabs: Vec<Tab>,
     active: Option<TabId>,
+    /// The tabs you closed, the last one last, at most [`CLOSED_LIMIT`].
+    closed: Vec<ClosedTab>,
     /// Saved page tabs waiting for their page, in saved order.
     waiting: Vec<WaitingPage>,
     /// The waiting page whose tab was active when the tabs were saved. It
@@ -372,19 +402,7 @@ impl Tabs {
     /// The tabs as saved in the view state, with the page tabs that are
     /// still waiting in their places.
     pub(crate) fn stored(&self) -> (Vec<StoredTab>, Option<usize>) {
-        let mut tabs: Vec<StoredTab> = self
-            .tabs
-            .iter()
-            .map(|tab| match &tab.content {
-                TabContent::File { file, object_id } => StoredTab {
-                    file: Some(file.relative_path.clone()),
-                    object_id: object_id.clone(),
-                    page: None,
-                    preview: tab.preview,
-                },
-                TabContent::Page { page_id, .. } => StoredTab::page(page_id, tab.preview),
-            })
-            .collect();
+        let mut tabs: Vec<StoredTab> = self.tabs.iter().map(Tab::stored).collect();
         let mut active = self
             .active
             .and_then(|active| self.tabs.iter().position(|tab| tab.id == active));
@@ -520,6 +538,81 @@ impl Tabs {
         let tab = self.tabs.remove(from);
         self.tabs.insert(to, tab);
         true
+    }
+
+    /// Remember the tab `id`, which you're closing, for Reopen Closed Tab.
+    /// The oldest closed tab goes once more than [`CLOSED_LIMIT`] wait.
+    pub(crate) fn remember_closed(&mut self, id: TabId) {
+        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
+            return;
+        };
+        let tab = &self.tabs[index];
+        self.closed.push(ClosedTab {
+            tab: StoredTab {
+                preview: false,
+                ..tab.stored()
+            },
+            index,
+            place: tab.place.clone(),
+        });
+        let extra = self.closed.len().saturating_sub(CLOSED_LIMIT);
+        self.closed.drain(..extra);
+    }
+
+    /// The tab closed last, which leaves the closed tabs.
+    pub(crate) fn take_closed(&mut self) -> Option<ClosedTab> {
+        self.closed.pop()
+    }
+
+    /// The closed tabs, the last one last.
+    pub(crate) fn closed(&self) -> &[ClosedTab] {
+        &self.closed
+    }
+
+    /// Remember `closed` as the closed tabs, as they come back with the
+    /// window.
+    pub(crate) fn set_closed(&mut self, mut closed: Vec<ClosedTab>) {
+        let extra = closed.len().saturating_sub(CLOSED_LIMIT);
+        closed.drain(..extra);
+        self.closed = closed;
+    }
+
+    /// The closed tab of the item at `from`, or of an item inside it,
+    /// follows it to `to`.
+    pub(crate) fn move_closed(&mut self, from: &str, to: &str) {
+        for closed in &mut self.closed {
+            if let Some(path) = closed
+                .tab
+                .file
+                .as_deref()
+                .and_then(|path| crate::files::remap(path, from, to))
+            {
+                closed.tab.file = Some(path);
+            }
+        }
+    }
+
+    /// Whether a tab shows `content`.
+    pub(crate) fn is_open(&self, content: &TabContent) -> bool {
+        self.tabs.iter().any(|tab| tab.shows(content))
+    }
+
+    /// Open a kept tab for `content` at `index`, or at the end when fewer
+    /// tabs are open, with `place` as where you were in it, and show it.
+    pub(crate) fn reopen(&mut self, content: TabContent, index: usize, place: TabPlace) -> TabId {
+        let id = self.new_id();
+        let at = index.min(self.tabs.len());
+        self.tabs.insert(
+            at,
+            Tab {
+                id,
+                content,
+                preview: false,
+                place,
+            },
+        );
+        self.set_active(Some(id));
+        id
     }
 
     /// Close a tab. Closing the active tab activates the tab that takes

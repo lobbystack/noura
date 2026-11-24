@@ -145,12 +145,22 @@ fn typing_filters_commands_and_enter_runs_the_highlighted_one() {
         .get_by_role_and_label(Role::TextInput, "Search")
         .type_text("tab");
     harness.run();
-    assert_eq!(listed(&harness), ["Close Tab", "Next Tab", "Previous Tab"]);
+    assert_eq!(
+        listed(&harness),
+        ["Close Tab", "Reopen Closed Tab", "Next Tab", "Previous Tab"]
+    );
     assert_eq!(
         row(&harness, "Close Tab").accesskit_node().is_selected(),
         Some(true)
     );
 
+    press(&mut harness, Modifiers::NONE, Key::ArrowDown);
+    assert_eq!(
+        row(&harness, "Reopen Closed Tab")
+            .accesskit_node()
+            .is_selected(),
+        Some(true)
+    );
     press(&mut harness, Modifiers::NONE, Key::ArrowDown);
     assert_eq!(
         row(&harness, "Next Tab").accesskit_node().is_selected(),

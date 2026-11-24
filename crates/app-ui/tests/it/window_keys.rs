@@ -131,3 +131,27 @@ fn cmd_1_to_8_show_that_tab_cmd_9_the_last_and_ctrl_cmd_a_digit_a_page() {
     assert_eq!(harness.state().app().current_page(), app_core::INBOX_PAGE);
     assert_eq!(titles(&harness).len(), 4);
 }
+
+#[test]
+fn cmd_shift_t_reopens_closed_tabs_one_after_another_in_their_places() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = mac_window(
+        app_data.path(),
+        &parent.path().join("Keys"),
+        &["Alpha.md", "Beta.md", "Gamma.md"],
+    );
+    press(&mut harness, CMD, Key::Num2);
+    press(&mut harness, CMD, Key::W);
+    press(&mut harness, CMD, Key::W);
+    assert_eq!(titles(&harness), ["Alpha"]);
+
+    let shift = CMD.plus(Modifiers::SHIFT);
+    press(&mut harness, shift, Key::T);
+    assert_eq!(titles(&harness), ["Alpha", "Gamma"]);
+    assert_eq!(active(&harness).as_deref(), Some("Gamma"));
+    press(&mut harness, shift, Key::T);
+    assert_eq!(titles(&harness), ["Alpha", "Beta", "Gamma"]);
+    assert_eq!(active(&harness).as_deref(), Some("Beta"));
+    assert!(harness.query_by_role_and_label(Role::Tab, "Beta").is_some());
+}

@@ -37,6 +37,8 @@ pub(crate) struct StoredWindow {
     pub(crate) active: Option<usize>,
     /// The file tree's open folders.
     pub(crate) expanded_folders: Vec<String>,
+    /// The tabs you closed, the last one last, for Reopen Closed Tab.
+    pub(crate) closed_tabs: Vec<StoredClosedTab>,
 }
 
 /// One saved tab: a file by workspace-relative path, or a rail page.
@@ -66,6 +68,14 @@ impl StoredTab {
     }
 }
 
+/// A tab you closed, and its place among the tabs when it closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StoredClosedTab {
+    #[serde(flatten)]
+    pub(crate) tab: StoredTab,
+    pub(crate) index: usize,
+}
+
 /// The file's shape, read field by field so one bad value drops only
 /// itself.
 #[derive(Serialize, Deserialize, Default)]
@@ -83,6 +93,7 @@ struct SavedWindow {
     tabs: Vec<Value>,
     active: Value,
     expanded_folders: Vec<Value>,
+    closed_tabs: Vec<Value>,
 }
 
 impl From<Saved> for StoredView {
@@ -122,6 +133,12 @@ impl From<SavedWindow> for StoredWindow {
             tabs: tabs.into_iter().flatten().collect(),
             active,
             expanded_folders: strings(saved.expanded_folders),
+            // A closed tab Noura can't read drops out of the list.
+            closed_tabs: saved
+                .closed_tabs
+                .into_iter()
+                .filter_map(|tab| serde_json::from_value(tab).ok())
+                .collect(),
         }
     }
 }
@@ -151,6 +168,11 @@ impl From<StoredWindow> for SavedWindow {
                 .collect(),
             active: window.active.map_or(Value::Null, Into::into),
             expanded_folders: values(window.expanded_folders),
+            closed_tabs: window
+                .closed_tabs
+                .into_iter()
+                .filter_map(|tab| serde_json::to_value(tab).ok())
+                .collect(),
         }
     }
 }

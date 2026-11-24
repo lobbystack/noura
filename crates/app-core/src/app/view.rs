@@ -16,8 +16,8 @@ use crate::{
     layout::sidebar_width,
     notes::NoteSession,
     rail::FILES_PAGE,
-    tabs::{Followed, Restored, TabContent},
-    view_state::StoredWindow,
+    tabs::{ClosedTab, Followed, Restored, TabContent},
+    view_state::{StoredClosedTab, StoredWindow},
     viewers::opens_in_tab,
     watch::Snapshot,
 };
@@ -223,9 +223,61 @@ impl App {
             bridge.close(rid);
         }
         let was_active = self.tabs.active().map(Tab::id) == Some(id);
+        self.tabs.remember_closed(id);
         if self.tabs.close(id) {
             self.tabs_changed(was_active);
         }
+    }
+
+    /// Reopen the tab you closed last, in its place among the tabs and
+    /// where you were in it, as Cmd+Shift+T does in Safari, Chrome, VS Code
+    /// and Obsidian. Each press goes one closed tab further back. A closed
+    /// tab whose file or page is gone, or that is open again, is skipped,
+    /// as VS Code skips it.
+    pub fn reopen_closed_tab(&mut self) {
+        let mut skipped = false;
+        while let Some(closed) = self.tabs.take_closed() {
+            let content = match (closed.tab.file, closed.tab.page) {
+                (Some(path), None) => self.file_tab(&path, closed.tab.object_id.as_deref()),
+                (None, Some(page_id)) => self.rail.page(&page_id).map(|page| TabContent::Page {
+                    page_id: page.id.clone(),
+                    title: page.title.clone(),
+                }),
+                _ => None,
+            };
+            match content {
+                Some(content) if !self.tabs.is_open(&content) => {
+                    self.save_leaving_note();
+                    self.tabs.reopen(content, closed.index, closed.place);
+                    self.tabs_changed(true);
+                    return;
+                }
+                _ => skipped = true,
+            }
+        }
+        if skipped {
+            self.save_view();
+        }
+    }
+
+    /// Whether Reopen Closed Tab has a tab to reopen.
+    pub fn can_reopen_closed_tab(&self) -> bool {
+        !self.tabs.closed().is_empty()
+    }
+
+    /// The tab for the file that was at `path`, with the stable ID
+    /// `object_id`, where it is now: a managed note moved meanwhile shows
+    /// at its new path. `None` when the file is gone or opens in no tab.
+    fn file_tab(&self, path: &str, object_id: Option<&str>) -> Option<TabContent> {
+        let workspace = self.workspace.as_ref()?;
+        let tree = self.tree.as_ref()?;
+        let path = tree.follow(path, object_id)?;
+        if !opens_in_tab(&path) {
+            return None;
+        }
+        let file = workspace.open_file(&path).ok()?;
+        let object_id = tree.object_id(&path).map(str::to_owned);
+        Some(TabContent::File { file, object_id })
     }
 
     /// The layout this device remembers.
@@ -510,6 +562,7 @@ impl App {
             let path = remap(path, from, to).unwrap_or_else(|| path.to_owned());
             Some((path, id.map(str::to_owned)))
         });
+        self.tabs.move_closed(from, to);
         self.tabs_followed(followed);
     }
 
@@ -589,10 +642,20 @@ impl App {
             .as_ref()
             .map(FileTree::expanded_folders)
             .unwrap_or_default();
+        let closed_tabs = self
+            .tabs
+            .closed()
+            .iter()
+            .map(|closed| StoredClosedTab {
+                tab: closed.tab.clone(),
+                index: closed.index,
+            })
+            .collect();
         let view = StoredWindow {
             tabs,
             active,
             expanded_folders,
+            closed_tabs,
         };
         self.session
             .save_window(self.key, self.opening, view, write);
@@ -602,12 +665,12 @@ impl App {
     /// page is still there, the active tab and the open folders. Tabs for
     /// pages that haven't registered yet wait for them.
     pub(super) fn restore_view(&mut self, stored: StoredWindow) {
-        let Some(workspace) = &self.workspace else {
+        if self.workspace.is_none() {
             self.tabs.restore(Vec::new(), None);
             self.sync_notes();
             self.sync_viewers();
             return;
-        };
+        }
         if let Some(tree) = &mut self.tree {
             tree.expand_folders(stored.expanded_folders.iter().map(String::as_str));
         }
@@ -615,21 +678,12 @@ impl App {
             .tabs
             .into_iter()
             .map(|tab| match (tab.file, tab.page) {
-                (Some(path), None) => {
-                    let file = self.tree.as_ref().and_then(|tree| {
-                        // A managed note moved while Noura was closed
-                        // comes back at its new path.
-                        let path = tree.follow(&path, tab.object_id.as_deref())?;
-                        // A file that opens in no tab stays closed.
-                        if !opens_in_tab(&path) {
-                            return None;
-                        }
-                        let file = workspace.open_file(&path).ok()?;
-                        let object_id = tree.object_id(&path).map(str::to_owned);
-                        Some(TabContent::File { file, object_id })
-                    });
-                    file.map_or(Restored::Gone, |file| Restored::Open(file, tab.preview))
-                }
+                // A managed note moved while Noura was closed comes back at
+                // its new path, and a file that opens in no tab stays
+                // closed.
+                (Some(path), None) => self
+                    .file_tab(&path, tab.object_id.as_deref())
+                    .map_or(Restored::Gone, |file| Restored::Open(file, tab.preview)),
                 (None, Some(page_id)) if !page_id.is_empty() => {
                     match self.rail.page(&page_id) {
                         Some(page) => {
@@ -651,6 +705,18 @@ impl App {
             })
             .collect();
         self.tabs.restore(restored, stored.active);
+        // Closed tabs find their files when you reopen them.
+        self.tabs.set_closed(
+            stored
+                .closed_tabs
+                .into_iter()
+                .map(|closed| ClosedTab {
+                    tab: closed.tab,
+                    index: closed.index,
+                    place: TabPlace::default(),
+                })
+                .collect(),
+        );
         self.sync_notes();
         self.sync_viewers();
         // The session saves this window with the others from now on.

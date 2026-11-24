@@ -34,7 +34,7 @@ impl App {
             Platform::Windows => "Exit",
             Platform::Linux => "Quit",
         };
-        let kernel: [(&str, &str, Run); 21] = [
+        let kernel: [(&str, &str, Run); 22] = [
             (NEW_NOTE, "New Note", Arc::new(|app| app.new_note(None))),
             (
                 NEW_FOLDER,
@@ -60,6 +60,11 @@ impl App {
             (SHARE_LINK, "Share Link…", Arc::new(App::share_open_note)),
             (SAVE, "Save", Arc::new(App::save_active_note)),
             (CLOSE_TAB, "Close Tab", Arc::new(App::close_active_tab)),
+            (
+                REOPEN_CLOSED_TAB,
+                "Reopen Closed Tab",
+                Arc::new(App::reopen_closed_tab),
+            ),
             (NEW_WINDOW, "New Window", Arc::new(App::open_new_window)),
             (CLOSE_WINDOW, "Close Window", Arc::new(App::close_window)),
             (NEXT_TAB, "Next Tab", Arc::new(|app| app.cycle_tab(1))),

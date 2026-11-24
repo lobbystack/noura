@@ -30,6 +30,8 @@ pub mod command_id {
     /// Save the open note now.
     pub const SAVE: &str = "save";
     pub const CLOSE_TAB: &str = "close-tab";
+    /// Reopen the tab closed last.
+    pub const REOPEN_CLOSED_TAB: &str = "reopen-closed-tab";
     /// Open another window on the open workspace. It has no default
     /// shortcut.
     pub const NEW_WINDOW: &str = "new-window";
@@ -203,6 +205,7 @@ pub fn default_shortcuts(id: &str, platform: Platform) -> Vec<Shortcut> {
         RENAME_FILE => vec![Shortcut::new(Key::F2)],
         SAVE => vec![command(Key::S)],
         CLOSE_TAB => vec![command(Key::W)],
+        REOPEN_CLOSED_TAB => vec![command(Key::T).with_shift()],
         CLOSE_WINDOW => vec![command(Key::W).with_shift()],
         // Chrome's keys: ⌥⌘→ on macOS, Ctrl+Page Down elsewhere.
         NEXT_TAB => vec![
@@ -235,7 +238,7 @@ pub fn default_shortcuts(id: &str, platform: Platform) -> Vec<Shortcut> {
 
 /// The kernel commands the default keymap names, in the order lists show
 /// them.
-const KEYMAP_ORDER: [&str; 17] = [
+const KEYMAP_ORDER: [&str; 18] = [
     command_id::NEW_NOTE,
     command_id::NEW_FOLDER,
     command_id::COMMAND_PALETTE,
@@ -244,6 +247,7 @@ const KEYMAP_ORDER: [&str; 17] = [
     command_id::RENAME_FILE,
     command_id::SAVE,
     command_id::CLOSE_TAB,
+    command_id::REOPEN_CLOSED_TAB,
     command_id::CLOSE_WINDOW,
     command_id::NEXT_TAB,
     command_id::PREVIOUS_TAB,
