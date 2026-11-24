@@ -608,8 +608,9 @@ fn painted_inside(harness: &Ui, area: egui::Rect) -> Vec<egui::Rect> {
     found
 }
 
-/// Tabs share the row evenly between 160 and 240 points: one tab is at
-/// its widest, and a few shrink together while they still fit.
+/// Tabs share the row evenly between 100 and 240 points: one tab is at
+/// its widest, and a few shrink together while they still fit, with no
+/// button to list them.
 #[test]
 fn tabs_share_the_row_between_their_narrowest_and_widest() {
     let app_data = tempfile::tempdir().unwrap();
@@ -645,12 +646,17 @@ fn tabs_share_the_row_between_their_narrowest_and_widest() {
     }
     let widths: Vec<f32> = names.iter().map(|name| width(&harness, name)).collect();
     assert!(
-        widths.iter().all(|width| (160.0..240.0).contains(width)),
+        widths.iter().all(|width| (100.0..240.0).contains(width)),
         "{widths:?}"
     );
     assert!(
         widths.windows(2).all(|pair| pair[0] == pair[1]),
         "{widths:?}"
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "All tabs")
+            .is_none()
     );
 }
 
@@ -687,7 +693,7 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
     let last = tab_rect(&harness, "Inbox");
     // The row starts where the window's content does, here the harness's
     // margin. Tabs stand on the bottom of its 36 points, where the page
-    // starts, 6 points below its top, and are no narrower than 160.
+    // starts, 6 points below its top, and are no narrower than 100.
     let row_top = harness
         .get_by_role_and_label(Role::Splitter, "Resize panel")
         .rect()
@@ -700,7 +706,7 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
         (first.bottom() - (row_top + 36.0)).abs() <= 0.5,
         "{first:?} under {row_top}"
     );
-    assert!(first.width() >= 160.0, "{first:?}");
+    assert!(first.width() >= 100.0, "{first:?}");
     assert!(
         first.left() < 0.0 || last.right() > 1100.0,
         "the tabs should run past the window: {first:?} {last:?}"
@@ -741,4 +747,185 @@ fn tabs_fit_the_title_bar_row_with_no_scrollbar_and_still_scroll() {
         tab_rect(&harness, "Inbox").right() <= 1100.0,
         "the wheel reaches the last tab"
     );
+}
+
+/// A workspace with `count` notes, "Note 1" on, each open in a kept tab, in
+/// a window `width` wide. The last one opened is active.
+fn many_tabs(
+    app_data: &std::path::Path,
+    parent: &std::path::Path,
+    count: usize,
+    width: f32,
+) -> (Ui, Vec<String>) {
+    let folder = parent.join("Garden");
+    create_workspace(app_data, &folder);
+    let names: Vec<String> = (1..=count).map(|n| format!("Note {n}")).collect();
+    for name in &names {
+        std::fs::write(folder.join(format!("{name}.md")), b"x").unwrap();
+    }
+    let mut harness = harness_registering(app_data, FakePicker::default(), |_| {});
+    settle(&mut harness);
+    harness.set_size(egui::vec2(width, 750.0));
+    harness.run();
+    for name in &names {
+        harness
+            .state_mut()
+            .app_mut()
+            .open_file(&format!("{name}.md"), app_core::OpenAs::Kept);
+    }
+    harness.run();
+    (harness, names)
+}
+
+fn tab_rect(harness: &Ui, name: &str) -> egui::Rect {
+    harness.get_by_role_and_label(Role::Tab, name).rect()
+}
+
+/// Whether the tab `name` shows whole in the part of the row that shows.
+fn shows(harness: &Ui, name: &str) -> bool {
+    let strip = harness.get_by_role_and_label(Role::TabList, "Tabs").rect();
+    let tab = tab_rect(harness, name);
+    tab.left() >= strip.left() - 0.5 && tab.right() <= strip.right() + 0.5
+}
+
+/// Swipe sideways on a trackpad over the row, `delta` points a frame.
+fn swipe(harness: &mut Ui, delta: f32) {
+    let over = harness
+        .get_by_role_and_label(Role::TabList, "Tabs")
+        .rect()
+        .center();
+    harness.hover_at(over);
+    harness.run();
+    for _ in 0..8 {
+        harness.event(Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(delta, 0.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Trackpad,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run();
+}
+
+/// Pick `name` from the menu of every tab, and return that menu's items.
+fn pick_from_list(harness: &mut Ui, name: &str) -> Vec<String> {
+    harness
+        .get_by_role_and_label(Role::Button, "All tabs")
+        .click();
+    harness.run();
+    let items = harness
+        .get_all_by_role(Role::MenuItem)
+        .filter_map(|item| item.accesskit_node().label())
+        .collect();
+    harness.get_by_role_and_label(Role::MenuItem, name).click();
+    harness.run();
+    items
+}
+
+/// Fourteen tabs in a 1,000-point window shrink to their narrowest, then
+/// the row scrolls sideways with a trackpad. The button at the row's end
+/// lists every tab, and picking one out of sight activates it and scrolls
+/// it into sight, the active one too.
+#[test]
+fn tabs_that_don_t_fit_shrink_scroll_and_show_in_a_list() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let (mut harness, names) = many_tabs(app_data.path(), parent.path(), 14, 1000.0);
+    let widths: Vec<f32> = names
+        .iter()
+        .map(|name| tab_rect(&harness, name).width())
+        .collect();
+    assert!(widths.iter().all(|width| *width == 100.0), "{widths:?}");
+    let shown = names.iter().filter(|name| shows(&harness, name)).count();
+    assert!(shown >= 6, "{shown} tabs show whole");
+    assert!(
+        shows(&harness, &names[13]),
+        "the active tab is out of sight"
+    );
+    assert!(!shows(&harness, &names[0]));
+
+    // A swipe right brings the first tabs into sight, and one left takes
+    // them out again.
+    let start = tab_rect(&harness, &names[0]).left();
+    swipe(&mut harness, 120.0);
+    let swiped = tab_rect(&harness, &names[0]).left();
+    assert!(
+        swiped > start + 300.0,
+        "the swipe moved {start} to {swiped}"
+    );
+    swipe(&mut harness, -120.0);
+    assert!(tab_rect(&harness, &names[0]).left() < swiped - 300.0);
+
+    let items = pick_from_list(&mut harness, &names[0]);
+    assert_eq!(items, names);
+    assert_eq!(selected(&harness).as_deref(), Some("Note 1"));
+    assert!(shows(&harness, &names[0]), "the picked tab is out of sight");
+
+    // Picked again once scrolled away, the active tab comes back.
+    swipe(&mut harness, -120.0);
+    assert!(!shows(&harness, &names[0]));
+    pick_from_list(&mut harness, &names[0]);
+    assert!(
+        shows(&harness, &names[0]),
+        "the active tab stayed out of sight"
+    );
+}
+
+/// The active tab stays in sight when the window narrows, and when a tab
+/// before it closes.
+#[test]
+fn the_active_tab_stays_in_sight_as_the_row_changes() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let (mut harness, names) = many_tabs(app_data.path(), parent.path(), 14, 1600.0);
+    harness.get_by_role_and_label(Role::Tab, &names[10]).click();
+    harness.run();
+    assert!(shows(&harness, &names[10]));
+
+    harness.set_size(egui::vec2(800.0, 750.0));
+    harness.run();
+    assert!(shows(&harness, &names[10]), "narrowing hid the active tab");
+
+    swipe(&mut harness, 120.0);
+    assert!(!shows(&harness, &names[10]));
+    harness
+        .get_by_role_and_label(Role::Button, "Close Note 1")
+        .click();
+    harness.run();
+    assert!(
+        shows(&harness, &names[10]),
+        "closing a tab hid the active one"
+    );
+}
+
+/// A tab dragged to the end of a row that scrolls scrolls it, and drops
+/// past the tabs that showed when the drag began, without moving the
+/// window.
+#[test]
+fn a_tab_dragged_to_the_row_s_end_scrolls_it_and_drops_there() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let (mut harness, names) = many_tabs(app_data.path(), parent.path(), 14, 1000.0);
+    pick_from_list(&mut harness, &names[0]);
+    let last_shown = names
+        .iter()
+        .rposition(|name| shows(&harness, name))
+        .unwrap();
+    assert!(last_shown < 10, "{last_shown}");
+
+    let strip = harness.get_by_role_and_label(Role::TabList, "Tabs").rect();
+    let from = tab_rect(&harness, &names[0]).left_center() + egui::vec2(25.0, 0.0);
+    let end = egui::pos2(strip.right() - 4.0, from.y);
+    let moved_window = drag(&mut harness, from, end, |harness| {
+        for _ in 0..40 {
+            harness.hover_at(end);
+            harness.step();
+        }
+    });
+    assert!(!moved_window, "dragging a tab moved the window");
+    let order = tabs(&harness);
+    let at = order.iter().position(|tab| tab == "Note 1").unwrap();
+    assert_eq!(at, 13, "{order:?}");
 }
