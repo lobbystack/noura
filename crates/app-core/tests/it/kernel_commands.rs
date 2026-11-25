@@ -510,4 +510,11 @@ fn zoom_keys_zoom_the_pdf_while_its_tab_is_active_and_the_interface_elsewhere() 
     press(&mut app, Key::Num0);
     assert_eq!(app.preferences().zoom, 100);
     assert_eq!(zoom(&app), PdfZoom::Scale(0.9));
+
+    // While Settings covers the PDF, they zoom the interface too.
+    app.open_file("text.pdf", OpenAs::Kept);
+    app.open_settings();
+    press(&mut app, Key::Equals);
+    assert_eq!(app.preferences().zoom, 110);
+    assert_eq!(zoom(&app), PdfZoom::Scale(0.9));
 }

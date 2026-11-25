@@ -388,9 +388,10 @@ enum Zoom {
 impl App {
     /// Zoom In, Zoom Out and Actual Size zoom the PDF or the image while
     /// its tab is active, as Preview does, and the interface anywhere
-    /// else.
+    /// else, as while Settings or search covers the tab.
     fn zoom_view(&mut self, zoom: Zoom) {
-        let tab = self.active_tab().map(Tab::id);
+        let covered = self.overlay().is_some();
+        let tab = self.active_tab().map(Tab::id).filter(|_| !covered);
         let pdf = tab.filter(|tab| self.pdf(*tab).is_some());
         let image = tab.filter(|tab| self.image(*tab).is_some());
         match (pdf, image, zoom) {

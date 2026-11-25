@@ -168,3 +168,44 @@ fn cmd_w_with_no_tab_left_closes_the_window() {
     press(&mut harness, CMD, Key::W);
     assert!(harness.state().is_closed(), "Cmd+W closes the empty window");
 }
+
+/// Whether the tab `name` shows whole in the part of the row that shows.
+fn in_sight(harness: &Ui, name: &str) -> bool {
+    let strip = harness.get_by_role_and_label(Role::TabList, "Tabs").rect();
+    let tab = harness.get_by_role_and_label(Role::Tab, name).rect();
+    tab.left() >= strip.left() - 0.5 && tab.right() <= strip.right() + 0.5
+}
+
+#[test]
+fn a_tab_the_keys_go_to_comes_into_sight_when_the_row_overflows() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let names: Vec<String> = (1..=14).map(|n| format!("Note {n:02}.md")).collect();
+    let files: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut harness = mac_window(app_data.path(), &parent.path().join("Keys"), &files);
+    harness.set_size(egui::vec2(1000.0, 750.0));
+    settle(&mut harness);
+    assert!(in_sight(&harness, "Note 14"));
+    assert!(!in_sight(&harness, "Note 01"), "the row doesn't overflow");
+
+    press(&mut harness, CMD, Key::Num1);
+    assert_eq!(active(&harness).as_deref(), Some("Note 01"));
+    assert!(in_sight(&harness, "Note 01"));
+    assert!(!in_sight(&harness, "Note 14"));
+    // ⌥⌘← from the first tab goes round to the last one.
+    press(&mut harness, CMD.plus(Modifiers::ALT), Key::ArrowLeft);
+    assert_eq!(active(&harness).as_deref(), Some("Note 14"));
+    assert!(in_sight(&harness, "Note 14"));
+    press(&mut harness, CMD.plus(Modifiers::ALT), Key::ArrowRight);
+    assert!(in_sight(&harness, "Note 01"));
+    press(&mut harness, CMD, Key::Num9);
+    assert!(in_sight(&harness, "Note 14"));
+    // Cmd+Shift+T puts a closed tab back in sight too.
+    press(&mut harness, CMD, Key::Num1);
+    press(&mut harness, CMD, Key::W);
+    press(&mut harness, CMD, Key::Num9);
+    assert!(!in_sight(&harness, "Note 02"));
+    press(&mut harness, CMD.plus(Modifiers::SHIFT), Key::T);
+    assert_eq!(active(&harness).as_deref(), Some("Note 01"));
+    assert!(in_sight(&harness, "Note 01"));
+}
