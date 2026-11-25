@@ -120,9 +120,10 @@ case "$(uname -s)" in
   Darwin)
     dmg="$(find_one '*.dmg')"
     mkdir "$work/mount" "$work/Applications"
-    # The image carries a license agreement, and hdiutil cancels the mount
-    # unless something answers it.
-    PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "$work/mount" "$dmg" < <(yes)
+    # apps/desktop/Cargo.toml sets no license-file, so the image opens
+    # without a license agreement. An image with one would make hdiutil
+    # cancel this mount, since nothing answers the agreement.
+    hdiutil attach -nobrowse -readonly -mountpoint "$work/mount" "$dmg"
     # Finder lays out the image's window while cargo-packager builds it and
     # keeps the layout in the volume's .DS_Store. When Finder doesn't run,
     # the image opens as a plain window.
