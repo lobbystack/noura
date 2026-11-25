@@ -21,6 +21,57 @@ impl App {
         self.viewers.images.get(&tab).map(|session| session.view())
     }
 
+    /// Change the image view of `tab` with `change`, and announce it when
+    /// `change` says it changed what the tab shows.
+    fn change_image(&mut self, tab: TabId, change: impl FnOnce(&mut ImageView) -> bool) {
+        if let Some(session) = self.viewers.images.get_mut(&tab)
+            && change(session.view_mut())
+        {
+            self.listeners.emit(Change::Viewer);
+        }
+    }
+
+    /// The image in `tab` measures `size` of the screen's points at its
+    /// own size, and the tab shows it in a view `area` of the client's
+    /// points large, at the interface zoom `interface_zoom`, which leaves
+    /// the image's size on the screen alone. Its client says so each
+    /// frame, before it draws.
+    pub fn size_image(&mut self, tab: TabId, size: [f32; 2], area: [f32; 2], interface_zoom: f32) {
+        if let Some(session) = self.viewers.images.get_mut(&tab) {
+            session.view_mut().measure(size, area, interface_zoom);
+        }
+    }
+
+    /// The image tab `tab` shows the point `offset` of its content at the
+    /// top left of its view, having made the scroll `seq`, or 0 before any.
+    /// Its client says so each frame, once it scrolled.
+    pub fn image_scrolled(&mut self, tab: TabId, offset: [f32; 2], seq: u64) {
+        if let Some(session) = self.viewers.images.get_mut(&tab) {
+            session.view_mut().scrolled(offset, seq);
+        }
+    }
+
+    /// Draw the image in `tab` one zoom step larger.
+    pub fn image_zoom_in(&mut self, tab: TabId) {
+        self.change_image(tab, |view| view.zoom_step(true));
+    }
+
+    /// Draw the image in `tab` one zoom step smaller.
+    pub fn image_zoom_out(&mut self, tab: TabId) {
+        self.change_image(tab, |view| view.zoom_step(false));
+    }
+
+    /// Draw the image in `tab` at its own size.
+    pub fn image_actual_size(&mut self, tab: TabId) {
+        self.change_image(tab, ImageView::actual_size);
+    }
+
+    /// Magnify the image in `tab` by `factor`, as a pinch does, keeping
+    /// the point at `anchor` in the view, from its top left, where it is.
+    pub fn image_zoom_by(&mut self, tab: TabId, factor: f32, anchor: [f32; 2]) {
+        self.change_image(tab, |view| view.zoom_by(factor, anchor));
+    }
+
     /// Change the PDF session of `tab` with `change`, and announce it when
     /// `change` says it changed what the tab shows.
     fn change_pdf(&mut self, tab: TabId, change: impl FnOnce(&mut PdfSession) -> bool) {
@@ -31,18 +82,10 @@ impl App {
         }
     }
 
-    /// Show the page `page` of the PDF in `tab`, from 1, or the nearest
-    /// page it has, as the page number field does.
+    /// Scroll the PDF in `tab` to the top of the page `page`, from 1, or
+    /// of the nearest page it has, as a thumbnail does.
     pub fn pdf_go_to(&mut self, tab: TabId, page: usize) {
         self.change_pdf(tab, |session| session.go_to(page));
-    }
-
-    pub fn pdf_next_page(&mut self, tab: TabId) {
-        self.change_pdf(tab, |session| session.step_page(true));
-    }
-
-    pub fn pdf_previous_page(&mut self, tab: TabId) {
-        self.change_pdf(tab, |session| session.step_page(false));
     }
 
     /// Draw the PDF in `tab` one zoom step larger.
@@ -60,12 +103,35 @@ impl App {
         self.change_pdf(tab, PdfSession::fit_width);
     }
 
-    /// The PDF tab `tab` draws its page at most `width` points wide, on a
-    /// screen with `pixels_per_point`. Its client says so each frame, and
-    /// the page draws again on the PDF's thread when it needs to.
-    pub fn size_pdf(&mut self, tab: TabId, width: f32, pixels_per_point: f32) {
+    /// Draw the PDF in `tab` at its own size.
+    pub fn pdf_actual_size(&mut self, tab: TabId) {
+        self.change_pdf(tab, PdfSession::actual_size);
+    }
+
+    /// A pinch over the PDF in `tab`: draw it `factor` times as large,
+    /// keeping the place `at` points right of and below the view's
+    /// top-left corner under the pointer.
+    pub fn pdf_zoom_by(&mut self, tab: TabId, factor: f32, at: [f32; 2]) {
+        self.change_pdf(tab, |session| session.zoom_by(factor, at));
+    }
+
+    /// The PDF tab `tab` draws its pages at most `width` points wide, on a
+    /// screen with `pixels_per_point`, at the interface zoom
+    /// `interface_zoom`, which leaves the pages' size on the screen alone.
+    /// Its client says so each frame, before it lays the pages out.
+    pub fn size_pdf(&mut self, tab: TabId, width: f32, pixels_per_point: f32, interface_zoom: f32) {
         if let Some(session) = self.viewers.pdfs.get_mut(&tab) {
-            session.size(width, pixels_per_point);
+            session.size(width, pixels_per_point, interface_zoom);
+        }
+    }
+
+    /// The PDF tab `tab` shows `area` of its pages. Its client says so
+    /// each frame, once it scrolled. The page that shows follows the
+    /// scroll, the tiles that show and those near them draw on the PDF's
+    /// thread, and the tiles far from them go.
+    pub fn show_pdf_area(&mut self, tab: TabId, area: crate::PdfArea) {
+        if let Some(session) = self.viewers.pdfs.get_mut(&tab) {
+            session.show_area(area);
         }
     }
 
@@ -120,6 +186,17 @@ impl App {
         });
     }
 
+    /// The tiles the PDF tab `tab` asked its thread for that it hasn't
+    /// drawn yet.
+    #[cfg(feature = "test-hooks")]
+    pub fn pdf_tiles_asked_for_testing(&self, tab: TabId) -> Vec<crate::PdfTileKey> {
+        self.viewers
+            .pdfs
+            .get(&tab)
+            .map(PdfSession::asked_for_testing)
+            .unwrap_or_default()
+    }
+
     /// Hold every PDF thread before it draws a page, until the hold drops,
     /// so tests can watch the window keep drawing meanwhile.
     #[cfg(feature = "test-hooks")]
@@ -136,8 +213,8 @@ impl App {
         crate::pdf::PdfDrawFailure(self.viewers.gate.clone())
     }
 
-    /// Open the PDF at `relative_path` as `how` says, at the page `page`
-    /// names: page 1 for none, the last page for one past the end.
+    /// Open the PDF at `relative_path` as `how` says, scrolled to the page
+    /// `page` names: page 1 for none, the last page for one past the end.
     pub fn open_pdf_page(&mut self, relative_path: &str, page: Option<u32>, how: OpenAs) {
         self.open_file(relative_path, how);
         let Some(tab) = self

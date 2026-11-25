@@ -85,7 +85,8 @@ fn the_macos_menu_bar_keeps_today_s_menus() {
             "Search File Contents…",
             "-",
             "Close Tab",
-            "Close Window"
+            "Close Window",
+            "Reopen Closed Tab"
         ])
     );
     assert_eq!(
@@ -135,6 +136,7 @@ fn the_windows_menu_bar_puts_settings_and_exit_under_file_and_about_under_help()
             "-",
             "Close Tab",
             "Close Window",
+            "Reopen Closed Tab",
             "-",
             "Settings…",
             "-",
@@ -163,7 +165,8 @@ fn items_whose_command_hasn_t_registered_and_their_separators_drop_out() {
             "Search File Contents…",
             "-",
             "Close Tab",
-            "Close Window"
+            "Close Window",
+            "Reopen Closed Tab"
         ])
     );
     assert_eq!(
@@ -244,6 +247,7 @@ fn a_command_added_to_the_registry_appears_in_the_menu_it_names() {
             "-",
             "Close Tab",
             "Close Window",
+            "Reopen Closed Tab",
             "-",
             "Ping"
         ])

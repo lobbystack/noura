@@ -131,16 +131,26 @@ fn an_svg_draws_nothing_from_a_file_outside_the_workspace() {
     wait_until(&mut harness, "the SVG drew at its size", |harness| {
         drew_small(harness, "pic.svg")
     });
-    // egui holds the workspace image's pixels under this address. Every
-    // one is clear: the red square outside the workspace never drew.
-    let image = match harness
-        .ctx
-        .try_load_image("bytes://noura-image/pic.svg", SizeHint::default())
-    {
-        Ok(ImagePoll::Ready { image }) => image,
-        _ => panic!("egui holds no pixels for pic.svg"),
+    // egui holds the workspace image's pixels under this address, as the
+    // note draws them. Every one is clear: the red square outside the
+    // workspace never drew.
+    let drawn = SizeHint::Size {
+        width: 8,
+        height: 8,
+        maintain_aspect_ratio: false,
     };
-    assert_eq!(image.size, [8, 8]);
+    let mut image = None;
+    wait_until(&mut harness, "egui holds the SVG's pixels", |harness| {
+        image = match harness
+            .ctx
+            .try_load_image("bytes://noura-image/pic.svg", drawn)
+        {
+            Ok(ImagePoll::Ready { image }) if image.size == [8, 8] => Some(image),
+            _ => None,
+        };
+        image.is_some()
+    });
+    let image = image.unwrap();
     assert!(image.pixels.iter().all(|pixel| pixel.a() == 0));
 }
 
@@ -330,4 +340,84 @@ fn an_image_two_tabs_draw_stays_drawn_until_neither_draws_it() {
         .click();
     harness.run_steps(2);
     assert!(!held(&harness), "egui still holds the image");
+}
+
+/// Where the image labelled `name` draws in the note, in points, and the
+/// sizes of the textures egui holds for it.
+fn image_and_textures(harness: &Ui, name: &str) -> Option<(egui::Vec2, Vec<[usize; 2]>)> {
+    let rect = crate::support::images::drawn(harness, name)?;
+    Some((
+        rect.size(),
+        crate::support::images::textures(harness, &format!("noura-image/{name}")),
+    ))
+}
+
+/// Wait until the image labelled `name` draws at `size` points from a
+/// texture of `pixels`.
+fn draws_at(harness: &mut Ui, name: &str, size: egui::Vec2, pixels: [usize; 2]) {
+    crate::support::images::wait_until(
+        harness,
+        &format!("{name} draws at {size:?} from {pixels:?}"),
+        |harness| {
+            image_and_textures(harness, name).is_some_and(|(drawn, textures)| {
+                (drawn - size).length() < 0.5 && textures.contains(&pixels)
+            })
+        },
+    );
+}
+
+#[test]
+fn note_images_show_at_their_density_and_keep_their_size_beside_the_text() {
+    use crate::support::images::{png_at, svg, window};
+    use egui::{Key, Modifiers, ViewportId, vec2};
+
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let note = "# Images\n\n![[retina.png]]\n\n![[plain.png]]\n\n![[diagram.svg]]\n";
+    let mut harness = window(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[
+            ("Images.md", note.as_bytes()),
+            ("retina.png", &png_at(800, 500, Some(144))),
+            ("plain.png", &png_at(300, 200, None)),
+            ("diagram.svg", &svg(200, 150)),
+        ],
+        [1200.0, 900.0],
+        2.0,
+    );
+    harness
+        .state_mut()
+        .app_mut()
+        .open_file("Images.md", app_core::OpenAs::Kept);
+
+    // On a Retina screen a Retina screenshot shows at half its pixels, as
+    // it always did, an image with no density at a point a pixel, and an
+    // SVG at its declared size, drawn at the screen's pixels.
+    draws_at(&mut harness, "retina.png", vec2(400.0, 250.0), [800, 500]);
+    draws_at(&mut harness, "plain.png", vec2(300.0, 200.0), [300, 200]);
+    draws_at(&mut harness, "diagram.svg", vec2(200.0, 150.0), [400, 300]);
+
+    // Zoomed in, they grow with the text: the same points, more pixels.
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Equals);
+    harness.run_steps(4);
+    assert!((harness.ctx.zoom_factor() - 1.1).abs() < 0.001);
+    draws_at(&mut harness, "retina.png", vec2(400.0, 250.0), [800, 500]);
+    draws_at(&mut harness, "diagram.svg", vec2(200.0, 150.0), [440, 330]);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Num0);
+    harness.run_steps(4);
+
+    // On a screen of a pixel a point they keep their size beside the text,
+    // the screenshot drawn from half its pixels.
+    harness
+        .input_mut()
+        .viewports
+        .get_mut(&ViewportId::ROOT)
+        .unwrap()
+        .native_pixels_per_point = Some(1.0);
+    harness.run_steps(2);
+    assert_eq!(harness.ctx.pixels_per_point(), 1.0);
+    draws_at(&mut harness, "retina.png", vec2(400.0, 250.0), [400, 250]);
+    draws_at(&mut harness, "plain.png", vec2(300.0, 200.0), [300, 200]);
+    draws_at(&mut harness, "diagram.svg", vec2(200.0, 150.0), [200, 150]);
 }

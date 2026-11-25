@@ -105,6 +105,37 @@ fn closing_a_tab_in_the_background_keeps_the_active_tab() {
     assert_eq!(active(&app).as_deref(), Some("B"));
 }
 
+#[test]
+fn a_moved_tab_keeps_its_new_place_through_a_relaunch() {
+    let (app_data, _folder, mut app) = opened(&["A.md", "B.md", "C.md", "D.md"]);
+    for file in ["A.md", "B.md", "C.md"] {
+        app.open_file(file, OpenAs::Kept);
+    }
+    app.open_file("D.md", OpenAs::Preview);
+    app.activate_tab(tab_id(&app, "B"));
+
+    app.move_tab(tab_id(&app, "A"), 2);
+    assert_eq!(shown(&app), ["B", "C", "A", "D (preview)"]);
+    app.move_tab(tab_id(&app, "D"), 0);
+    assert_eq!(shown(&app), ["D (preview)", "B", "C", "A"]);
+    // Past the end puts the tab last.
+    app.move_tab(tab_id(&app, "B"), 9);
+    assert_eq!(shown(&app), ["D (preview)", "C", "A", "B"]);
+    assert_eq!(active(&app).as_deref(), Some("B"));
+    // A closed tab's ID moves nothing.
+    let gone = tab_id(&app, "C");
+    app.close_tab(gone);
+    app.move_tab(gone, 0);
+    assert_eq!(shown(&app), ["D (preview)", "A", "B"]);
+
+    let mut app = relaunch(app, app_data.path());
+    assert_eq!(shown(&app), ["D (preview)", "A", "B"]);
+    assert_eq!(active(&app).as_deref(), Some("B"));
+    // The preview, moved, is still the one the next preview replaces.
+    app.open_file("C.md", OpenAs::Preview);
+    assert_eq!(shown(&app), ["C (preview)", "A", "B"]);
+}
+
 /// Each tab's title, with "(preview)" after the preview tab's.
 fn shown(app: &App) -> Vec<String> {
     app.tabs()
@@ -1044,4 +1075,103 @@ fn closing_the_last_tab_leaves_nothing_open() {
     assert!(app.tabs().is_empty());
     assert!(app.active_tab().is_none());
     assert!(app.document().is_none());
+}
+
+#[test]
+fn reopen_closed_tab_brings_back_closed_tabs_newest_first_in_their_places() {
+    let (_app_data, folder, mut app) = opened(&["A.md", "B.md", "C.md", "D.md", "Gone.md"]);
+    for path in ["A.md", "B.md", "C.md", "D.md", "Gone.md"] {
+        app.open_file(path, OpenAs::Kept);
+    }
+    let place = TabPlace {
+        scroll: [0.0, 120.0],
+        view: Some(ViewPlace::Selection {
+            anchor: 3,
+            caret: 3,
+        }),
+    };
+    app.set_tab_place(tab_id(&app, "B"), place.clone());
+    app.close_tab(tab_id(&app, "Gone"));
+    app.close_tab(tab_id(&app, "B"));
+    app.close_tab(tab_id(&app, "D"));
+    app.close_tab(tab_id(&app, "A"));
+    assert_eq!(titles(&app), ["C"]);
+    std::fs::remove_file(folder.path().join("Gone.md")).unwrap();
+    app.rescan();
+
+    app.reopen_closed_tab();
+    assert_eq!(titles(&app), ["A", "C"]);
+    assert_eq!(active(&app).as_deref(), Some("A"));
+    app.reopen_closed_tab();
+    assert_eq!(titles(&app), ["A", "C", "D"]);
+    app.reopen_closed_tab();
+    assert_eq!(titles(&app), ["A", "B", "C", "D"]);
+    assert_eq!(active(&app).as_deref(), Some("B"));
+    // B comes back where you were in it, as a kept tab.
+    assert_eq!(app.tab_place(tab_id(&app, "B")), place);
+    assert!(app.tabs().iter().all(|tab| !tab.is_preview()));
+    // Gone.md's file went to the trash meanwhile: it's skipped, and then
+    // nothing is left to reopen.
+    assert!(app.can_reopen_closed_tab());
+    app.reopen_closed_tab();
+    assert_eq!(titles(&app), ["A", "B", "C", "D"]);
+    assert!(!app.can_reopen_closed_tab());
+}
+
+#[test]
+fn a_closed_tab_that_is_open_again_is_skipped_and_one_that_moved_follows_its_file() {
+    let (_app_data, _folder, mut app) = opened(&["A.md", "B.md", "C.md", "Folder/X.md"]);
+    for path in ["A.md", "B.md", "C.md"] {
+        app.open_file(path, OpenAs::Kept);
+    }
+    app.close_tab(tab_id(&app, "A"));
+    app.close_tab(tab_id(&app, "B"));
+    app.open_file("B.md", OpenAs::Kept);
+    app.move_into("A.md", "Folder");
+    assert_eq!(titles(&app), ["C", "B"]);
+
+    app.reopen_closed_tab();
+    assert_eq!(titles(&app), ["A", "C", "B"]);
+    assert_eq!(
+        app.document()
+            .map(|file| file.relative_path.clone())
+            .as_deref(),
+        Some("Folder/A.md")
+    );
+}
+
+#[test]
+fn closed_tabs_come_back_with_the_window_at_launch() {
+    let (app_data, _folder, mut app) = opened(&["A.md", "B.md", "C.md"]);
+    for path in ["A.md", "B.md", "C.md"] {
+        app.open_file(path, OpenAs::Kept);
+    }
+    app.close_tab(tab_id(&app, "A"));
+    app.close_tab(tab_id(&app, "C"));
+
+    let mut app = relaunch(app, app_data.path());
+    assert_eq!(titles(&app), ["B"]);
+    app.reopen_closed_tab();
+    assert_eq!(titles(&app), ["B", "C"]);
+    app.reopen_closed_tab();
+    assert_eq!(titles(&app), ["A", "B", "C"]);
+    assert!(!app.can_reopen_closed_tab());
+}
+
+#[test]
+fn a_window_remembers_its_last_twenty_closed_tabs() {
+    let names: Vec<String> = (0..25).map(|n| format!("N{n:02}.md")).collect();
+    let files: Vec<&str> = names.iter().map(String::as_str).collect();
+    let (_app_data, _folder, mut app) = opened(&files);
+    for name in &files {
+        app.open_file(name, OpenAs::Kept);
+        app.close_tab(app.active_tab().unwrap().id());
+    }
+    let mut reopened = 0;
+    while app.can_reopen_closed_tab() {
+        app.reopen_closed_tab();
+        reopened += 1;
+    }
+    assert_eq!(reopened, 20);
+    assert_eq!(app.tabs().first().map(|tab| tab.title()), Some("N05"));
 }

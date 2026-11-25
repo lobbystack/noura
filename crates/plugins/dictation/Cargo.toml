@@ -17,7 +17,7 @@ isolang = "2.4"
 # Soundex, for custom words that sound like what the model heard, as
 # Handy matches them. MIT.
 natural = { version = "0.5", default-features = false }
-plugin-sdk = { version = "0.3.2", path = "../../plugin-sdk" }
+plugin-sdk = { version = "0.3.3", path = "../../plugin-sdk" }
 serde_json.workspace = true
 # Levenshtein distance, for custom words spelled close to what the model
 # heard, as Handy matches them. MIT.
@@ -26,4 +26,4 @@ strsim = "0.11"
 [dev-dependencies]
 # Checks the settings type's schema and what the plugin writes against the
 # workspace format. Tests only: the plugin reaches files through the host.
-workspace-format = { version = "0.3.2", path = "../../workspace-format" }
+workspace-format = { version = "0.3.3", path = "../../workspace-format" }

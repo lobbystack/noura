@@ -14,8 +14,7 @@ use crate::{
     SystemItem,
 };
 
-/// The IDs of the kernel's commands. Features that haven't landed yet
-/// register their commands under these IDs and get the default keys.
+/// The IDs of the kernel's commands.
 pub mod command_id {
     pub const NEW_NOTE: &str = "new-note";
     pub const NEW_FOLDER: &str = "new-folder";
@@ -31,6 +30,8 @@ pub mod command_id {
     /// Save the open note now.
     pub const SAVE: &str = "save";
     pub const CLOSE_TAB: &str = "close-tab";
+    /// Reopen the tab closed last.
+    pub const REOPEN_CLOSED_TAB: &str = "reopen-closed-tab";
     /// Open another window on the open workspace. It has no default
     /// shortcut.
     pub const NEW_WINDOW: &str = "new-window";
@@ -51,6 +52,12 @@ pub mod command_id {
     /// The prefix of the commands that show a rail page, followed by the
     /// page's ID.
     pub const GO_TO_PAGE: &str = "go-to-page:";
+    /// The prefix of the commands that show a tab by its place, followed
+    /// by its number from 1 to 8, or by [`LAST_TAB`]. Only their keys run
+    /// them, as in Safari and Chrome; search doesn't list them.
+    pub const GO_TO_TAB: &str = "go-to-tab:";
+    /// After [`GO_TO_TAB`], the last tab, whatever its number.
+    pub const LAST_TAB: &str = "last";
 }
 
 /// Where a key works: anywhere in the window, or only while one part of
@@ -93,6 +100,53 @@ impl Area {
     }
 }
 
+/// What covers the window: search, Settings or a dialog. While one shows,
+/// the keys and menu items that act on the window's tabs and files don't
+/// reach past it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overlay {
+    /// Search. Close Tab closes it, as closing a panel does in Safari and
+    /// VS Code.
+    Palette,
+    /// Settings. Close Tab closes it, as Close closes the Settings window
+    /// of a macOS app.
+    Settings,
+    /// A dialog that asks something, which only its buttons answer. As
+    /// while a macOS sheet asks, Close Tab and Close Window wait.
+    Dialog,
+}
+
+/// What a command does while an overlay covers the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Covered {
+    Runs,
+    /// Close the overlay instead.
+    Closes,
+    /// Nothing: the command would act on what the overlay covers.
+    Waits,
+}
+
+impl Overlay {
+    /// What the command `id` does while this overlay covers the window.
+    pub(crate) fn takes(self, id: &str) -> Covered {
+        use command_id::*;
+        // Quit, zoom and another window don't act on what's covered.
+        if [QUIT, ZOOM_IN, ZOOM_OUT, ZOOM_RESET, NEW_WINDOW].contains(&id) {
+            return Covered::Runs;
+        }
+        match self {
+            Self::Dialog => Covered::Waits,
+            _ if id == CLOSE_TAB => Covered::Closes,
+            _ if id == CLOSE_WINDOW => Covered::Runs,
+            // Search's own keys switch its filter or close it.
+            Self::Palette if [COMMAND_PALETTE, QUICK_OPEN, SEARCH].contains(&id) => Covered::Runs,
+            // These show a section of Settings.
+            Self::Settings if [SETTINGS, ABOUT, KEYBOARD_SHORTCUTS].contains(&id) => Covered::Runs,
+            Self::Palette | Self::Settings => Covered::Waits,
+        }
+    }
+}
+
 /// Something you can run from its shortcut, the command palette or a
 /// menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,13 +162,13 @@ pub struct Command {
 }
 
 impl Command {
-    /// A command with the keys the default keymap gives `id`, if any.
+    /// A command without keys. [`Command::with_shortcuts`] gives it some.
     pub fn new(id: &str, label: &str, area: Area) -> Self {
         Self {
             id: id.to_owned(),
             label: label.to_owned(),
             area,
-            shortcuts: default_shortcuts(id),
+            shortcuts: Vec::new(),
             menu: None,
         }
     }
@@ -136,12 +190,12 @@ impl Command {
     }
 }
 
-/// The default keymap: the keys of each kernel command, the first one
-/// first. Commands for features that haven't landed yet get theirs when
-/// they register.
-pub fn default_shortcuts(id: &str) -> Vec<Shortcut> {
+/// The default keymap on `platform`: the keys of each kernel command, the
+/// first one first.
+pub fn default_shortcuts(id: &str, platform: Platform) -> Vec<Shortcut> {
     use command_id::*;
     let command = Shortcut::command;
+    let mac = platform == Platform::MacOs;
     match id {
         NEW_NOTE => vec![command(Key::N)],
         NEW_FOLDER => vec![command(Key::N).with_shift()],
@@ -151,14 +205,26 @@ pub fn default_shortcuts(id: &str) -> Vec<Shortcut> {
         RENAME_FILE => vec![Shortcut::new(Key::F2)],
         SAVE => vec![command(Key::S)],
         CLOSE_TAB => vec![command(Key::W)],
+        REOPEN_CLOSED_TAB => vec![command(Key::T).with_shift()],
         CLOSE_WINDOW => vec![command(Key::W).with_shift()],
+        // Chrome's keys: ⌥⌘→ on macOS, Ctrl+Page Down elsewhere.
         NEXT_TAB => vec![
             command(Key::CloseBracket).with_shift(),
             Shortcut::ctrl(Key::Tab),
+            if mac {
+                command(Key::ArrowRight).with_alt()
+            } else {
+                Shortcut::ctrl(Key::PageDown)
+            },
         ],
         PREVIOUS_TAB => vec![
             command(Key::OpenBracket).with_shift(),
             Shortcut::ctrl(Key::Tab).with_shift(),
+            if mac {
+                command(Key::ArrowLeft).with_alt()
+            } else {
+                Shortcut::ctrl(Key::PageUp)
+            },
         ],
         TOGGLE_SIDEBAR => vec![command(Key::Backslash)],
         ZOOM_IN => vec![command(Key::Plus), command(Key::Equals)],
@@ -172,7 +238,7 @@ pub fn default_shortcuts(id: &str) -> Vec<Shortcut> {
 
 /// The kernel commands the default keymap names, in the order lists show
 /// them.
-const KEYMAP_ORDER: [&str; 17] = [
+const KEYMAP_ORDER: [&str; 18] = [
     command_id::NEW_NOTE,
     command_id::NEW_FOLDER,
     command_id::COMMAND_PALETTE,
@@ -181,6 +247,7 @@ const KEYMAP_ORDER: [&str; 17] = [
     command_id::RENAME_FILE,
     command_id::SAVE,
     command_id::CLOSE_TAB,
+    command_id::REOPEN_CLOSED_TAB,
     command_id::CLOSE_WINDOW,
     command_id::NEXT_TAB,
     command_id::PREVIOUS_TAB,
@@ -192,9 +259,22 @@ const KEYMAP_ORDER: [&str; 17] = [
     command_id::QUIT,
 ];
 
-/// The keys that show rail pages: Mod-1 the Inbox, Mod-2 Files, and Mod-3
-/// to Mod-9 the other pages in rail order.
-fn page_shortcuts(pages: &[&Page]) -> Vec<(String, Option<Shortcut>)> {
+const PLATFORMS: [Platform; 3] = [Platform::MacOs, Platform::Windows, Platform::Linux];
+
+/// The key with the modifiers that show a rail page on `platform`: ⌃⌘ on
+/// macOS, the keys Safari gives its sidebars, and Alt on Windows and
+/// Linux. Mod and a digit show a tab, ⌥⌘ and a digit makes a heading in a
+/// note, and ⌥⌘8 turns macOS's zoom on or off.
+fn page_key(key: Key, platform: Platform) -> Shortcut {
+    match platform {
+        Platform::MacOs => Shortcut::command(key).with_ctrl(),
+        Platform::Windows | Platform::Linux => Shortcut::new(key).with_alt(),
+    }
+}
+
+/// The keys that show rail pages on `platform`: 1 the Inbox, 2 Files, and
+/// 3 to 9 the other pages in rail order, with [`page_key`]'s modifiers.
+fn page_shortcuts(pages: &[&Page], platform: Platform) -> Vec<(String, Option<Shortcut>)> {
     let mut others = Key::DIGITS[3..].iter();
     pages
         .iter()
@@ -204,9 +284,27 @@ fn page_shortcuts(pages: &[&Page]) -> Vec<(String, Option<Shortcut>)> {
                 FILES_PAGE => Some(&Key::Num2),
                 _ => others.next(),
             };
-            (page.id.clone(), key.copied().map(Shortcut::command))
+            let shortcut = key.map(|key| page_key(*key, platform));
+            (page.id.clone(), shortcut)
         })
         .collect()
+}
+
+/// The keys that show a tab by its place, as in Safari, Chrome, VS Code
+/// and Obsidian: Mod-1 to Mod-8 the first eight tabs, Mod-9 the last.
+/// Each comes with the ID of the command it runs.
+fn tab_shortcuts() -> impl Iterator<Item = (String, Shortcut)> {
+    Key::DIGITS[1..].iter().enumerate().map(|(index, key)| {
+        let place = if *key == Key::Num9 {
+            command_id::LAST_TAB.to_owned()
+        } else {
+            (index + 1).to_string()
+        };
+        (
+            format!("{}{place}", command_id::GO_TO_TAB),
+            Shortcut::command(*key),
+        )
+    })
 }
 
 /// Keys no command takes: the Edit menu's, which act on the focused text
@@ -218,16 +316,24 @@ fn kept_keys() -> impl Iterator<Item = Shortcut> {
         .chain([Shortcut::command(Key::F)])
 }
 
-/// Whether `shortcut` belongs to the default keymap under another ID, to
-/// a page, or to the keys no command takes.
+/// Whether `shortcut` belongs, on some platform, to the default keymap
+/// under another ID, to a page or a tab, or to the keys no command takes.
 fn reserved(shortcut: &Shortcut, id: &str) -> bool {
     let keymap = KEYMAP_ORDER
         .iter()
         .filter(|kernel| **kernel != id)
-        .flat_map(|kernel| default_shortcuts(kernel));
-    let pages = Key::DIGITS[1..].iter().map(|key| Shortcut::command(*key));
+        .flat_map(|kernel| {
+            PLATFORMS
+                .into_iter()
+                .flat_map(|platform| default_shortcuts(kernel, platform))
+        });
+    let pages = Key::DIGITS[1..]
+        .iter()
+        .flat_map(|key| PLATFORMS.map(|platform| page_key(*key, platform)));
+    let tabs = tab_shortcuts().map(|(_, shortcut)| shortcut);
     keymap
         .chain(pages)
+        .chain(tabs)
         .chain(kept_keys())
         .any(|taken| taken.conflicts_with(shortcut))
 }
@@ -255,6 +361,7 @@ impl Registry {
     /// belongs to another command or to the default keymap.
     pub(crate) fn register(&mut self, command: Command, run: Run) -> Result<(), AppError> {
         let taken = command.id.starts_with(command_id::GO_TO_PAGE)
+            || command.id.starts_with(command_id::GO_TO_TAB)
             || self
                 .commands
                 .iter()
@@ -286,14 +393,16 @@ impl Registry {
         Ok(())
     }
 
-    /// Every command: the registered ones, then one per rail page.
-    pub(crate) fn list(&self, pages: &[&Page]) -> Vec<Command> {
+    /// Every command: the registered ones, then one per rail page, with
+    /// their keys on `platform`.
+    pub(crate) fn list(&self, pages: &[&Page], platform: Platform) -> Vec<Command> {
         let mut commands: Vec<Command> = self
             .commands
             .iter()
             .map(|(command, _)| command.clone())
             .collect();
-        for ((page_id, shortcut), page) in page_shortcuts(pages).into_iter().zip(pages) {
+        let shortcuts = page_shortcuts(pages, platform);
+        for ((page_id, shortcut), page) in shortcuts.into_iter().zip(pages) {
             commands.push(Command {
                 id: format!("{}{page_id}", command_id::GO_TO_PAGE),
                 label: format!("Go to {}", page.title),
@@ -312,6 +421,18 @@ impl Registry {
             return Some(Arc::new(move |app: &mut App| {
                 app.open_page(&page_id, crate::OpenAs::Preview)
             }));
+        }
+        if let Some(place) = id.strip_prefix(command_id::GO_TO_TAB) {
+            let number = match place {
+                command_id::LAST_TAB => None,
+                number => Some(
+                    number
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|n| (1..=8).contains(n))?,
+                ),
+            };
+            return Some(Arc::new(move |app: &mut App| app.show_tab_number(number)));
         }
         self.commands
             .iter()
@@ -342,8 +463,13 @@ impl Registry {
         if handled_by_focus {
             return None;
         }
+        if let Some((id, _)) =
+            tab_shortcuts().find(|(_, shortcut)| shortcut.matches(press, platform))
+        {
+            return Some(id);
+        }
         let commands: Vec<Command> = self
-            .list(pages)
+            .list(pages, platform)
             .into_iter()
             .filter(|command| command.area == Area::Anywhere || Some(command.area) == focus)
             .collect();
@@ -473,8 +599,20 @@ fn note_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shortcut>)> {
 pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shortcut>)> {
     use Key::*;
     let key = Shortcut::new;
+    let mac = platform == Platform::MacOs;
     let mut keys = vec![
         (Area::Anywhere, "Close a dialog", vec![key(Escape)]),
+        // The tab commands that only their keys run.
+        (
+            Area::Anywhere,
+            "Go to a tab by its number",
+            vec![Shortcut::command(OneToEight)],
+        ),
+        (
+            Area::Anywhere,
+            "Go to the last tab",
+            vec![Shortcut::command(Num9)],
+        ),
         (
             Area::FileTree,
             "Move up or down",
@@ -485,13 +623,44 @@ pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shor
             "Go to the first or last item",
             vec![key(Home), key(End)],
         ),
+        // On macOS Return renames and Cmd+↓ or Cmd+O opens, as in Finder
+        // and VS Code; elsewhere Enter opens, as in Explorer.
         (
             Area::FileTree,
             "Open or close a folder",
-            vec![key(ArrowRight), key(ArrowLeft), key(Enter), key(Space)],
+            if mac {
+                vec![
+                    key(ArrowRight),
+                    key(ArrowLeft),
+                    Shortcut::command(ArrowDown),
+                    key(Space),
+                ]
+            } else {
+                vec![key(ArrowRight), key(ArrowLeft), key(Enter), key(Space)]
+            },
         ),
-        (Area::FileTree, "Open a file", vec![key(Enter), key(Space)]),
-        (Area::FileTree, "Rename", vec![key(F2)]),
+        (
+            Area::FileTree,
+            "Open a file",
+            if mac {
+                vec![
+                    Shortcut::command(ArrowDown),
+                    Shortcut::command(O),
+                    key(Space),
+                ]
+            } else {
+                vec![key(Enter), key(Space)]
+            },
+        ),
+        (
+            Area::FileTree,
+            "Rename",
+            if mac {
+                vec![key(Enter), key(F2)]
+            } else {
+                vec![key(F2)]
+            },
+        ),
         (
             Area::FileTree,
             "Move to the trash",

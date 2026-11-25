@@ -6,7 +6,10 @@
 use crate::support;
 use std::time::{Duration, Instant};
 
-use app_core::{App, IMAGE_EXTENSIONS, ImageState, OpenAs, TabId, TreeKey};
+use app_core::{
+    App, CommandSource, IMAGE_EXTENSIONS, IMAGE_ZOOM_STEPS, ImageState, ImageZoom, OpenAs, TabId,
+    TreeKey, command_id,
+};
 use support::{Call, FakeSystem, Fixture, open_from_tree};
 
 /// Poll until `done` holds.
@@ -345,4 +348,150 @@ fn an_image_larger_than_noura_shows_says_so() {
             message: "This image is larger than 20 MB, the most Noura shows.".to_owned()
         }
     );
+}
+
+/// The scale the image in `tab` draws at.
+fn scale(app: &App, tab: TabId) -> f32 {
+    app.image(tab).unwrap().scale()
+}
+
+fn close(found: [f32; 2], expected: [f32; 2]) -> bool {
+    (found[0] - expected[0]).abs() < 0.01 && (found[1] - expected[1]).abs() < 0.01
+}
+
+#[test]
+fn an_image_tab_fits_its_image_then_zooms_in_steps_and_back_to_fit() {
+    let fixture = Fixture::new(&[("wide.png", b"image"), ("icon.png", b"image")]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "wide.png");
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Fit);
+
+    // 2,000 by 1,000 points in a view of 800 by 600: it fits at 40%,
+    // centered down the view.
+    app.size_image(tab, [2000.0, 1000.0], [800.0, 600.0], 1.0);
+    let image = app.image(tab).unwrap();
+    assert!((image.scale() - 0.4).abs() < 0.001);
+    assert!(close(image.drawn_size().unwrap(), [800.0, 400.0]));
+    assert!(close(image.image_origin(), [0.0, 100.0]));
+
+    app.image_zoom_in(tab);
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Scale(0.5));
+    app.image_zoom_in(tab);
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Scale(0.67));
+    // Zoom Out steps back down, and stops at Fit on the way past it.
+    app.image_zoom_out(tab);
+    app.image_zoom_out(tab);
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Fit);
+    app.image_zoom_out(tab);
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Scale(0.33));
+    app.image_actual_size(tab);
+    assert_eq!(scale(&app, tab), 1.0);
+    // Zoom In stops at its largest step.
+    for _ in 0..40 {
+        app.image_zoom_in(tab);
+    }
+    assert_eq!(
+        scale(&app, tab),
+        IMAGE_ZOOM_STEPS[IMAGE_ZOOM_STEPS.len() - 1]
+    );
+
+    // An image smaller than its view fits at its own size, centered.
+    let icon = open_from_tree(&mut app, "icon.png");
+    app.size_image(icon, [64.0, 32.0], [800.0, 600.0], 1.0);
+    let image = app.image(icon).unwrap();
+    assert_eq!(image.scale(), 1.0);
+    assert!(close(image.image_origin(), [368.0, 284.0]));
+}
+
+#[test]
+fn zooming_keeps_the_middle_of_the_view_and_a_pinch_the_point_under_the_pointer() {
+    let fixture = Fixture::new(&[("map.png", b"image")]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "map.png");
+    // 1,000 points square in a view of 500: it fits at 50%.
+    app.size_image(tab, [1000.0, 1000.0], [500.0, 500.0], 1.0);
+    app.image_scrolled(tab, [0.0, 0.0], 0);
+
+    // A pinch to twice the size at 100, 100 keeps the image's point 200,
+    // 200 there: the view scrolls to 100, 100.
+    app.image_zoom_by(tab, 2.0, [100.0, 100.0]);
+    let image = app.image(tab).unwrap();
+    assert_eq!(image.zoom(), ImageZoom::Scale(1.0));
+    let scroll = image.scroll().expect("the view scrolls");
+    assert!(close(scroll.offset, [100.0, 100.0]), "{scroll:?}");
+
+    // What the client shows before it makes the scroll doesn't count.
+    app.image_scrolled(tab, [0.0, 0.0], scroll.seq - 1);
+    assert_eq!(app.image(tab).unwrap().scroll(), Some(scroll));
+    app.image_scrolled(tab, scroll.offset, scroll.seq);
+    assert_eq!(app.image(tab).unwrap().scroll(), None);
+
+    // Zoom In keeps the image's point at the view's middle, 350, 350.
+    app.image_zoom_in(tab);
+    let image = app.image(tab).unwrap();
+    assert_eq!(image.zoom(), ImageZoom::Scale(1.1));
+    assert!(close(image.scroll().unwrap().offset, [135.0, 135.0]));
+
+    // A pinch far out stops at the smallest step and shows it centered.
+    app.image_zoom_by(tab, 0.0001, [250.0, 250.0]);
+    let image = app.image(tab).unwrap();
+    assert_eq!(image.scale(), IMAGE_ZOOM_STEPS[0]);
+    assert!(close(image.scroll().unwrap().offset, [0.0, 0.0]));
+}
+
+#[test]
+fn zoom_commands_zoom_the_image_of_an_image_tab_and_the_interface_elsewhere() {
+    let fixture = Fixture::new(&[("map.png", b"image"), ("Plan.md", b"# Plan\n")]);
+    let mut app = fixture.app();
+    app.open_file("map.png", OpenAs::Kept);
+    let tab = app.active_tab().unwrap().id();
+    app.size_image(tab, [2000.0, 1000.0], [800.0, 600.0], 1.0);
+    let at = Instant::now();
+
+    assert!(app.run_command(command_id::ZOOM_IN, CommandSource::Menu, at));
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Scale(0.5));
+    assert!(app.run_command(command_id::ZOOM_RESET, CommandSource::Menu, at));
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Scale(1.0));
+    assert!(app.run_command(command_id::ZOOM_OUT, CommandSource::Menu, at));
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Scale(0.9));
+    assert_eq!(app.preferences().zoom, 100, "the interface kept its zoom");
+
+    app.open_file("Plan.md", OpenAs::Kept);
+    assert!(app.run_command(command_id::ZOOM_IN, CommandSource::Menu, at));
+    assert_eq!(app.preferences().zoom, 110);
+    assert!(app.run_command(command_id::ZOOM_RESET, CommandSource::Menu, at));
+    assert_eq!(app.preferences().zoom, 100);
+    assert_eq!(app.image(tab).unwrap().zoom(), ImageZoom::Scale(0.9));
+}
+
+#[test]
+fn the_interface_zoom_leaves_an_images_size_on_the_screen_alone() {
+    let fixture = Fixture::new(&[("map.png", b"image")]);
+    let mut app = fixture.app();
+    let tab = open_from_tree(&mut app, "map.png");
+    // At a 125% interface zoom each of the client's points covers 1.25 of
+    // the screen's, so a view 800 by 600 screen points measures 640 by 480.
+    app.size_image(tab, [2000.0, 1000.0], [640.0, 480.0], 1.25);
+    app.image_scrolled(tab, [0.0, 0.0], 0);
+    // Fit still fills the tab: 40% of the image's size on the screen.
+    let image = app.image(tab).unwrap();
+    assert!((image.magnification() - 0.4).abs() < 0.001);
+    assert!(close(image.drawn_size().unwrap(), [640.0, 320.0]));
+
+    // Actual Size shows each of the image's points on one of the screen's.
+    app.image_actual_size(tab);
+    let image = app.image(tab).unwrap();
+    assert_eq!(image.magnification(), 1.0);
+    assert!(close(image.drawn_size().unwrap(), [1600.0, 800.0]));
+    let scroll = image.scroll().unwrap();
+    assert!(close(scroll.offset, [480.0, 160.0]), "{scroll:?}");
+    app.image_scrolled(tab, scroll.offset, scroll.seq);
+
+    // Back at 100%, the image keeps its size on the screen, and the
+    // image's point at the middle of the view stays there.
+    app.size_image(tab, [2000.0, 1000.0], [800.0, 600.0], 1.0);
+    let image = app.image(tab).unwrap();
+    assert_eq!(image.zoom(), ImageZoom::Scale(1.0));
+    assert!(close(image.drawn_size().unwrap(), [2000.0, 1000.0]));
+    assert!(close(image.scroll().unwrap().offset, [600.0, 200.0]));
 }

@@ -981,17 +981,17 @@ pub(crate) fn menu_separator(ui: &mut Ui) {
 pub(crate) const TITLE_BAR_HEIGHT: f32 = 36.0;
 
 /// Let `rect`, an empty part of the title bar row, move the window when
-/// dragged, zoom it when double-clicked and ask for the window menu when
-/// right-clicked, as a title bar does.
+/// dragged, do what the system's setting says when double-clicked and ask
+/// for the window menu when right-clicked, as a title bar does.
 pub(crate) fn title_bar_area(ui: &mut Ui, rect: egui::Rect, id: &str) {
     let response = ui.interact(rect, Id::unique(("title-bar", id)), Sense::click_and_drag());
     if response.drag_started() {
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
     if response.double_clicked() {
-        let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
-        ui.ctx()
-            .send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+        let key = double_click_key(ui.ctx().viewport_id());
+        ui.ctx().data_mut(|data| data.insert_temp(key, true));
+        ui.ctx().request_repaint();
     }
     if response.secondary_clicked()
         && let Some(at) = response.interact_pointer_pos()
@@ -1004,6 +1004,23 @@ pub(crate) fn title_bar_area(ui: &mut Ui, rect: egui::Rect, id: &str) {
 
 fn window_menu_key(viewport: egui::ViewportId) -> Id {
     Id::unique(("window-menu", viewport))
+}
+
+fn double_click_key(viewport: egui::ViewportId) -> Id {
+    Id::unique(("title-bar-double-click", viewport))
+}
+
+/// Whether a double-click on the title bar row of the window `viewport`
+/// asked for the title bar's action since the last call. What that does,
+/// zoom, fill, minimize or nothing, is the system's setting, which the
+/// desktop shell reads.
+pub fn take_title_bar_double_click(ctx: &egui::Context, viewport: egui::ViewportId) -> bool {
+    let key = double_click_key(viewport);
+    ctx.data_mut(|data| {
+        let asked = data.get_temp::<bool>(key).unwrap_or(false);
+        data.remove::<bool>(key);
+        asked
+    })
 }
 
 /// Where a right click on the title bar row of the window `viewport` asked

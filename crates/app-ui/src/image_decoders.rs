@@ -15,10 +15,17 @@
 //!   other formats. An AVIF image whose frames could decode past the
 //!   `image` crate's default size limit draws nothing.
 //!
-//! egui uploads an image at the size it decodes to, and wgpu panics on a
-//! texture wider or taller than the GPU's largest side, 8192 pixels in the
-//! desktop app. `FittingTextureLoader` uploads such an image scaled down
-//! to fit instead, for notes and the image tab alike.
+//! An image shows at its own size as Preview shows it: an SVG at the size
+//! it declares, and a raster image at the density its file records, so a
+//! Retina screenshot shows at half its pixel size. [`natural_size`] gives
+//! that size in points, for notes and the image tab alike.
+//!
+//! egui uploads a raster image at the size it decodes to, and the GPU
+//! draws it smaller by skipping pixels, so fine lines beat into moiré.
+//! wgpu also panics on a texture wider or taller than the GPU's largest
+//! side, 8192 pixels in the desktop app. `ScaledTextureLoader` uploads
+//! each raster image at the pixels it draws at instead, scaled down on
+//! another thread, and an SVG draws at those pixels.
 
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
@@ -61,14 +68,21 @@ fn max_decoded_bytes() -> u64 {
 pub(crate) fn install(ctx: &Context) {
     register_avif();
     egui_extras::install_image_loaders(ctx);
+    let measures = measures(ctx);
     // egui asks the newest loader first, so this one answers for SVG even
     // if something installs egui_extras' SVG loader later.
     if !ctx.is_loader_installed(SvgLoader::ID) {
-        ctx.add_image_loader(Arc::new(SvgLoader::default()));
+        ctx.add_image_loader(Arc::new(SvgLoader {
+            measures: Arc::clone(&measures),
+            ..SvgLoader::default()
+        }));
     }
     // egui asks this loader before its own.
-    if !ctx.is_loader_installed(FittingTextureLoader::ID) {
-        ctx.add_texture_loader(Arc::new(FittingTextureLoader::default()));
+    if !ctx.is_loader_installed(ScaledTextureLoader::ID) {
+        ctx.add_texture_loader(Arc::new(ScaledTextureLoader {
+            measures,
+            ..ScaledTextureLoader::default()
+        }));
     }
 }
 
@@ -244,6 +258,7 @@ struct SvgCache {
 #[derive(Default)]
 struct SvgLoader {
     cache: Arc<Mutex<SvgCache>>,
+    measures: Measures,
 }
 
 impl SvgLoader {
@@ -384,10 +399,17 @@ impl ImageLoader for SvgLoader {
 
     fn forget(&self, uri: &str) {
         self.cache.lock().unwrap().images.remove(uri);
+        if egui::load::has_extension(uri, "svg") {
+            self.measures.lock().unwrap().remove(uri);
+        }
     }
 
     fn forget_all(&self) {
         self.cache.lock().unwrap().images.clear();
+        self.measures
+            .lock()
+            .unwrap()
+            .retain(|uri, _| !egui::load::has_extension(uri, "svg"));
     }
 
     fn end_pass(&self, pass_index: u64) {
@@ -430,42 +452,254 @@ impl ImageLoader for SvgLoader {
     }
 }
 
-/// Uploads each image wider or taller than the GPU's largest texture
-/// scaled down to fit, on a thread of its own, and keeps the size the
-/// image lays out at, so it draws where it would at full size, a little
-/// softer. egui's own texture loader uploads every image that fits, and
-/// every SVG, which `SvgLoader` draws at most [`MAX_SVG_SIDE`] on a side.
-/// An image with no pixels on a side never uploads, since no texture can
-/// be 0 pixels on a side.
+/// What the loaders measured of an image: the size it shows at, in
+/// points, and for a raster image, its pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Measure {
+    points: Vec2,
+    pixels: Option<[usize; 2]>,
+}
+
+/// The images measured so far, by address. A context keeps one, which
+/// [`install`] sets up. An SVG's measure goes when `SvgLoader` forgets
+/// its address, a raster image's when `ScaledTextureLoader` does: both
+/// happen when egui forgets the image, which it does before it holds new
+/// bytes at an address.
+type Measures = Arc<Mutex<HashMap<String, Measure>>>;
+
+fn measures(ctx: &Context) -> Measures {
+    ctx.data_mut(|data| {
+        data.get_temp_mut_or_default::<Measures>(egui::Id::unique("noura-image-measures"))
+            .clone()
+    })
+}
+
+/// The size hint that measures an SVG: a drawing one pixel wide costs
+/// nothing beyond reading the SVG, and holds its declared size.
+const MEASURE_SVG: SizeHint = SizeHint::Size {
+    width: 1,
+    height: 1,
+    maintain_aspect_ratio: true,
+};
+
+/// The size the image at `uri` shows at its own size, in points, once
+/// it's known: an SVG's declared size, or a raster image's pixels at the
+/// density its file records, as Preview shows it. `Ok(None)` while the
+/// image decodes. Measuring an SVG reads it on another thread without
+/// drawing it, and measuring a raster image decodes it, which drawing it
+/// needs anyway.
+pub(crate) fn natural_size(ctx: &Context, uri: &str) -> Result<Option<Vec2>, LoadError> {
+    Ok(measure(ctx, uri)?.map(|measure| measure.points))
+}
+
+fn measure(ctx: &Context, uri: &str) -> Result<Option<Measure>, LoadError> {
+    let measures = measures(ctx);
+    if let Some(measure) = measures.lock().unwrap().get(uri) {
+        return Ok(Some(*measure));
+    }
+    let svg = egui::load::has_extension(uri, "svg");
+    let hint = if svg {
+        MEASURE_SVG
+    } else {
+        SizeHint::default()
+    };
+    let image = match ctx.try_load_image(uri, hint)? {
+        ImagePoll::Pending { .. } => return Ok(None),
+        ImagePoll::Ready { image } => image,
+    };
+    let measure = if svg {
+        Measure {
+            points: image.source_size,
+            pixels: None,
+        }
+    } else {
+        let [x, y] = match ctx.try_load_bytes(uri) {
+            Ok(BytesPoll::Ready { bytes, .. }) => app_core::points_per_pixel(&bytes),
+            _ => [1.0, 1.0],
+        };
+        let [width, height] = image.size;
+        Measure {
+            points: Vec2::new(width as f32 * x, height as f32 * y),
+            pixels: Some(image.size),
+        }
+    };
+    measures.lock().unwrap().insert(uri.to_owned(), measure);
+    Ok(Some(measure))
+}
+
+/// The most bytes of decoded raster images `ScaledTextureLoader` leaves
+/// egui's image loader holding, to scale them again without decoding
+/// them. Past this, the images it used longest ago decode again when
+/// they draw at a new size.
+const DECODED_BUDGET: usize = 256 * 1024 * 1024;
+
+/// Uploads each raster image at the size it draws, in pixels, so it shows
+/// sharp and without moiré at any size: the GPU samples each texture at
+/// one level, so an image drawn much smaller than its pixels skips some
+/// of them. Its pixels scale down on a thread of their own with a
+/// Lanczos filter, and an image drawn larger than its pixels uploads
+/// them as they are. An image wider or taller than the GPU's largest
+/// texture uploads scaled down to fit. The texture keeps the size the
+/// image shows at, in points, which [`natural_size`] gives.
+///
+/// While a new size scales, as when a window resizes or a pinch zooms,
+/// the size the image drew at last stands in for it. Each image keeps
+/// only the sizes the last two passes drew, and egui's image loader keeps
+/// at most [`DECODED_BUDGET`] bytes of decoded images. SVGs go to egui's
+/// own texture loader, which `SvgLoader` draws for at each size, and so do
+/// the frames of animated GIF and WebP images.
 #[derive(Default)]
-struct FittingTextureLoader {
-    textures: Mutex<HashMap<(String, TextureOptions), Fitted>>,
+struct ScaledTextureLoader {
+    measures: Measures,
+    state: Mutex<Scaling>,
 }
 
-impl FittingTextureLoader {
-    const ID: &'static str = egui::generate_loader_id!(FittingTextureLoader);
+impl ScaledTextureLoader {
+    const ID: &'static str = egui::generate_loader_id!(ScaledTextureLoader);
 }
 
-/// What `FittingTextureLoader` knows of an image.
-enum Fitted {
-    /// The image fits, so egui's own loader uploads it.
-    Fits,
-    /// The image is being scaled down on another thread, which fills
-    /// `shrunk` once it's done: `None` if it failed.
-    Shrinking {
-        source_size: Vec2,
-        shrunk: Arc<Mutex<Option<Option<ColorImage>>>>,
-    },
-    /// The texture of the scaled-down image.
-    Shrunk {
-        texture: TextureHandle,
-        source_size: Vec2,
-    },
-    /// The image couldn't be scaled down.
-    Failed,
+#[derive(Default)]
+struct Scaling {
+    pass: u64,
+    images: HashMap<(String, TextureOptions), Scaled>,
 }
 
-impl TextureLoader for FittingTextureLoader {
+/// A thread's scaling of an image: `None` until it's done, then the image,
+/// or `None` if it failed.
+type ScaleJob = Arc<Mutex<Option<Option<ColorImage>>>>;
+
+/// The textures of one image.
+#[derive(Default)]
+struct Scaled {
+    /// Each size uploaded, in pixels, with the pass that last drew it.
+    textures: HashMap<[usize; 2], (TextureHandle, u64)>,
+    /// The size a thread scales the image to now.
+    scaling: Option<([usize; 2], ScaleJob)>,
+    /// The bytes of the decoded image egui's image loader holds, and the
+    /// pass that last scaled from it.
+    decoded: Option<(usize, u64)>,
+    /// The size that couldn't be scaled to.
+    failed: Option<[usize; 2]>,
+}
+
+/// The pixels an image of `pixels` draws from at `hint`, given the size
+/// it shows at, `points`: as many as it draws at, at most its own, and at
+/// most `max_side` on a side.
+fn target_pixels(hint: SizeHint, points: Vec2, pixels: [usize; 2], max_side: usize) -> [usize; 2] {
+    let want = match hint {
+        SizeHint::Scale(scale) => points * scale.into_inner(),
+        SizeHint::Width(width) => points * (width as f32 / points.x),
+        SizeHint::Height(height) => points * (height as f32 / points.y),
+        SizeHint::Size {
+            width,
+            height,
+            maintain_aspect_ratio: true,
+        } => points * (width as f32 / points.x).min(height as f32 / points.y),
+        SizeHint::Size {
+            width,
+            height,
+            maintain_aspect_ratio: false,
+        } => Vec2::new(width as f32, height as f32),
+    };
+    let full = Vec2::new(pixels[0] as f32, pixels[1] as f32);
+    let mut size = if want.is_finite() && want.x < full.x && want.y < full.y {
+        want
+    } else {
+        full
+    };
+    let largest = size.max_elem();
+    if largest > max_side as f32 {
+        size *= max_side as f32 / largest;
+    }
+    [0, 1].map(|axis| (size[axis].round() as usize).clamp(1, pixels[axis].max(1)))
+}
+
+impl ScaledTextureLoader {
+    /// Start making the texture of `uri` at `size` pixels: upload the
+    /// decoded image when it has that size, or scale it on another
+    /// thread. Does nothing while the image decodes, until egui asks again
+    /// once it's decoded.
+    fn start(
+        &self,
+        ctx: &Context,
+        uri: &str,
+        options: TextureOptions,
+        scaled: &mut Scaled,
+        pass: u64,
+        size: [usize; 2],
+    ) -> Result<(), LoadError> {
+        let image = match ctx.try_load_image(uri, SizeHint::default()) {
+            Ok(ImagePoll::Ready { image }) => image,
+            Ok(ImagePoll::Pending { .. }) => return Ok(()),
+            Err(_) => return Err(LoadError::NotSupported),
+        };
+        scaled.decoded = Some((image.pixels.len() * size_of::<Color32>(), pass));
+        if image.size == size {
+            let texture = ctx.load_texture(texture_name(uri, size), image, options);
+            scaled.textures.insert(size, (texture, pass));
+            return Ok(());
+        }
+        let done: ScaleJob = Arc::default();
+        let result = Arc::clone(&done);
+        let waker = ctx.clone();
+        let spawned = std::thread::Builder::new()
+            .name("noura-image-scale".to_owned())
+            .spawn(move || {
+                let image =
+                    std::panic::catch_unwind(AssertUnwindSafe(|| scale_image(&image, size))).ok();
+                *result.lock().unwrap() = Some(image);
+                waker.request_repaint();
+            });
+        if spawned.is_err() {
+            scaled.failed = Some(size);
+            return Err(LoadError::Loading(SCALE_FAILED.to_owned()));
+        }
+        scaled.scaling = Some((size, done));
+        Ok(())
+    }
+
+    /// Let egui's image loader forget the decoded images used longest ago
+    /// while those it holds take more than [`DECODED_BUDGET`] bytes.
+    fn keep_decoded_within_budget(
+        ctx: &Context,
+        images: &mut HashMap<(String, TextureOptions), Scaled>,
+    ) {
+        let mut held: Vec<(u64, usize, String)> = images
+            .iter()
+            .filter_map(|((uri, _), scaled)| {
+                scaled
+                    .decoded
+                    .map(|(bytes, used)| (used, bytes, uri.clone()))
+            })
+            .collect();
+        let mut total: usize = held.iter().map(|(_, bytes, _)| bytes).sum();
+        if total <= DECODED_BUDGET {
+            return;
+        }
+        held.sort();
+        let loaders = ctx.loaders();
+        for (_, bytes, uri) in held {
+            if total <= DECODED_BUDGET {
+                break;
+            }
+            for loader in loaders.image.lock().iter() {
+                loader.forget(&uri);
+            }
+            for ((address, _), scaled) in images.iter_mut() {
+                if *address == uri {
+                    scaled.decoded = None;
+                }
+            }
+            total -= bytes;
+        }
+    }
+}
+
+fn texture_name(uri: &str, [width, height]: [usize; 2]) -> String {
+    format!("{uri} {width}x{height}")
+}
+
+impl TextureLoader for ScaledTextureLoader {
     fn id(&self) -> &str {
         Self::ID
     }
@@ -477,156 +711,184 @@ impl TextureLoader for FittingTextureLoader {
         texture_options: TextureOptions,
         size_hint: SizeHint,
     ) -> TextureLoadResult {
-        if egui::load::has_extension(uri, "svg") {
+        if egui::load::has_extension(uri, "svg") || egui::decode_animated_image_uri(uri).is_ok() {
             return Err(LoadError::NotSupported);
         }
-        let key = (uri.to_owned(), texture_options);
-        let mut textures = self.textures.lock().unwrap();
-        match textures.get(&key) {
-            Some(Fitted::Fits) => return Err(LoadError::NotSupported),
-            Some(Fitted::Failed) => return Err(LoadError::Loading(SHRINK_FAILED.to_owned())),
-            Some(Fitted::Shrunk {
-                texture,
-                source_size,
-            }) => {
-                let texture = SizedTexture::new(texture.id(), *source_size);
-                return Ok(TexturePoll::Ready { texture });
-            }
-            Some(Fitted::Shrinking {
-                source_size,
-                shrunk,
-            }) => {
-                let source_size = *source_size;
-                let Some(image) = shrunk.lock().unwrap().take() else {
-                    return Ok(TexturePoll::Pending {
-                        size: Some(source_size),
-                    });
-                };
-                let Some(image) = image else {
-                    textures.insert(key, Fitted::Failed);
-                    return Err(LoadError::Loading(SHRINK_FAILED.to_owned()));
-                };
-                let texture = ctx.load_texture(uri, image, texture_options);
-                let sized = SizedTexture::new(texture.id(), source_size);
-                textures.insert(
-                    key,
-                    Fitted::Shrunk {
-                        texture,
-                        source_size,
-                    },
-                );
-                drop(textures);
-                // The texture holds all it draws now, so the image at full
-                // size, which can take hundreds of megabytes, goes.
-                for loader in ctx.loaders().image.lock().iter() {
-                    loader.forget(uri);
-                }
-                return Ok(TexturePoll::Ready { texture: sized });
-            }
-            None => {}
-        }
-        drop(textures);
-        // While the image decodes, this loader keeps the address: handing it
-        // on would let egui's own texture loader upload the image at full
-        // size if decoding finishes in between. egui's loader still says why
-        // an image can't load.
-        let image = match ctx.try_load_image(uri, size_hint) {
-            Ok(ImagePoll::Ready { image }) => image,
-            Ok(ImagePoll::Pending { size }) => return Ok(TexturePoll::Pending { size }),
+        // egui's own loader says why an image can't load.
+        let measure = match measure(ctx, uri) {
+            Ok(Some(measure)) => measure,
+            Ok(None) => return Ok(TexturePoll::Pending { size: None }),
             Err(_) => return Err(LoadError::NotSupported),
         };
-        let [width, height] = image.size;
-        if width == 0 || height == 0 {
+        let Some(pixels) = measure.pixels else {
+            return Err(LoadError::NotSupported);
+        };
+        if pixels.contains(&0) {
             return Err(LoadError::Loading("The image has no pixels.".to_owned()));
         }
         let max_side = ctx.input(|input| input.max_texture_side).max(1);
-        let mut textures = self.textures.lock().unwrap();
-        if width <= max_side && height <= max_side {
-            textures.insert(key, Fitted::Fits);
-            return Err(LoadError::NotSupported);
+        let size = target_pixels(size_hint, measure.points, pixels, max_side);
+        let sized = |texture: &TextureHandle| SizedTexture::new(texture.id(), measure.points);
+
+        let mut state = self.state.lock().unwrap();
+        let Scaling { pass, images } = &mut *state;
+        let pass = *pass;
+        let key = (uri.to_owned(), texture_options);
+        let scaled = images.entry(key.clone()).or_default();
+        // Take in a scaling that finished.
+        let finished = scaled
+            .scaling
+            .as_ref()
+            .and_then(|(scaled_to, done)| Some((*scaled_to, done.lock().unwrap().take()?)));
+        if let Some((scaled_to, result)) = finished {
+            scaled.scaling = None;
+            match result {
+                Some(image) => {
+                    let texture =
+                        ctx.load_texture(texture_name(uri, scaled_to), image, texture_options);
+                    scaled.textures.insert(scaled_to, (texture, pass));
+                }
+                None => scaled.failed = Some(scaled_to),
+            }
         }
-        let source_size = image.source_size;
-        let shrunk = Arc::new(Mutex::new(None));
-        let done = Arc::clone(&shrunk);
-        let waker = ctx.clone();
-        let spawned = std::thread::Builder::new()
-            .name("noura-image-fit".to_owned())
-            .spawn(move || {
-                let image =
-                    std::panic::catch_unwind(AssertUnwindSafe(|| shrink(&image, max_side))).ok();
-                *done.lock().unwrap() = Some(image);
-                waker.request_repaint();
+        if let Some((texture, used)) = scaled.textures.get_mut(&size) {
+            *used = pass;
+            return Ok(TexturePoll::Ready {
+                texture: sized(texture),
             });
-        if spawned.is_err() {
-            textures.insert(key, Fitted::Failed);
-            return Err(LoadError::Loading(SHRINK_FAILED.to_owned()));
         }
-        textures.insert(
-            key,
-            Fitted::Shrinking {
-                source_size,
-                shrunk,
+        if scaled.failed == Some(size) {
+            return Err(LoadError::Loading(SCALE_FAILED.to_owned()));
+        }
+        if scaled.scaling.is_none() {
+            self.start(ctx, uri, texture_options, scaled, pass, size)?;
+            if let Some((texture, _)) = scaled.textures.get(&size) {
+                let texture = sized(texture);
+                Self::keep_decoded_within_budget(ctx, images);
+                return Ok(TexturePoll::Ready { texture });
+            }
+        }
+        // The size drawn last stands in until this one is ready.
+        let stand_in = scaled
+            .textures
+            .values_mut()
+            .max_by_key(|(_, used)| *used)
+            .map(|(texture, used)| {
+                *used = pass;
+                sized(texture)
+            });
+        Self::keep_decoded_within_budget(ctx, images);
+        Ok(match stand_in {
+            Some(texture) => TexturePoll::Ready { texture },
+            None => TexturePoll::Pending {
+                size: Some(measure.points),
             },
-        );
-        Ok(TexturePoll::Pending {
-            size: Some(source_size),
         })
     }
 
     fn forget(&self, uri: &str) {
-        self.textures
+        self.state
             .lock()
             .unwrap()
+            .images
             .retain(|(address, _), _| address != uri);
+        // An SVG's measure goes with `SvgLoader`'s drawings, which egui's
+        // texture loader forgets alone while a drawing stands in.
+        if !egui::load::has_extension(uri, "svg") {
+            self.measures.lock().unwrap().remove(uri);
+        }
     }
 
     fn forget_all(&self) {
-        self.textures.lock().unwrap().clear();
+        self.state.lock().unwrap().images.clear();
+        self.measures.lock().unwrap().clear();
+    }
+
+    fn end_pass(&self, pass_index: u64) {
+        let mut state = self.state.lock().unwrap();
+        state.pass = pass_index;
+        for scaled in state.images.values_mut() {
+            // An image drawn at several sizes, as while a window resizes,
+            // keeps only the sizes the last two passes drew.
+            if scaled.textures.len() > 1 {
+                scaled
+                    .textures
+                    .retain(|_, (_, used)| *used + 1 >= pass_index);
+            }
+        }
+        state.images.retain(|_, scaled| {
+            !scaled.textures.is_empty() || scaled.scaling.is_some() || scaled.decoded.is_some()
+        });
     }
 
     fn byte_size(&self) -> usize {
-        self.textures
+        self.state
             .lock()
             .unwrap()
+            .images
             .values()
-            .map(|fitted| match fitted {
-                Fitted::Shrunk { texture, .. } => texture.byte_size(),
-                _ => 0,
-            })
+            .flat_map(|scaled| scaled.textures.values())
+            .map(|(texture, _)| texture.byte_size())
             .sum()
     }
 }
 
-/// Why an image too large for a texture doesn't draw.
-const SHRINK_FAILED: &str = "Noura couldn't scale the image down to fit a texture.";
+/// Why an image doesn't draw at a size.
+const SCALE_FAILED: &str = "Noura couldn't scale the image.";
 
-/// `image` scaled down to fit within `max_side` pixels on each side,
-/// keeping its shape and at least a pixel on each side. Each pixel is the
-/// mean of the pixels it covers, which egui's premultiplied alpha averages
-/// without dark fringes. The image keeps the size it lays out at.
-fn shrink(image: &ColorImage, max_side: usize) -> ColorImage {
+/// `image` scaled to `size` pixels with a Lanczos filter, as Core Image's
+/// Lanczos scale does, which keeps edges sharp and averages away detail
+/// finer than a pixel of the result, so a grid of 1-pixel lines turns an
+/// even gray instead of beating. Halving first, while the image is more
+/// than four times the size, keeps the filter's work small for a large
+/// photo. egui's premultiplied alpha averages without dark fringes. The
+/// image keeps the size it shows at.
+fn scale_image(image: &ColorImage, size: [usize; 2]) -> ColorImage {
+    let mut current: std::borrow::Cow<'_, ColorImage> = std::borrow::Cow::Borrowed(image);
+    while current.size[0] >= size[0] * 4 && current.size[1] >= size[1] * 4 {
+        current = std::borrow::Cow::Owned(halve(&current));
+    }
+    let [width, height] = current.size;
+    let buffer = image::RgbaImage::from_raw(width as u32, height as u32, current.as_raw().to_vec())
+        .expect("a ColorImage holds four bytes a pixel");
+    let resized = image::imageops::resize(
+        &buffer,
+        size[0] as u32,
+        size[1] as u32,
+        image::imageops::FilterType::Lanczos3,
+    );
+    let mut rgba = resized.into_raw();
+    // The filter's negative lobes can leave a color past its alpha, which
+    // premultiplied alpha draws brighter than white.
+    for pixel in rgba.as_chunks_mut::<4>().0 {
+        let alpha = pixel[3];
+        for channel in &mut pixel[..3] {
+            *channel = (*channel).min(alpha);
+        }
+    }
+    ColorImage::from_rgba_premultiplied(size, &rgba).with_source_size(image.source_size)
+}
+
+/// `image` at half its size, each pixel the mean of the two by two it
+/// covers. An odd last row or column folds into the one before.
+fn halve(image: &ColorImage) -> ColorImage {
     let [width, height] = image.size;
-    let longest = width.max(height);
-    let side = |length: usize| {
-        let scaled = (length as f64 * max_side as f64 / longest as f64).round() as usize;
-        scaled.clamp(1, length.min(max_side))
-    };
-    let size = [side(width), side(height)];
+    let size = [(width / 2).max(1), (height / 2).max(1)];
     let mut pixels = Vec::with_capacity(size[0] * size[1]);
     for y in 0..size[1] {
-        let rows = covered(y, height, size[1]);
+        let rows = 2 * y..(2 * y + 2 + usize::from(y + 1 == size[1]) * (height % 2)).min(height);
         for x in 0..size[0] {
-            let columns = covered(x, width, size[0]);
-            let mut sum = [0u64; 4];
+            let columns =
+                2 * x..(2 * x + 2 + usize::from(x + 1 == size[0]) * (width % 2)).min(width);
+            let mut sum = [0u32; 4];
             for row in rows.clone() {
-                let start = row * width;
-                for pixel in &image.pixels[start + columns.start..start + columns.end] {
+                for pixel in &image.pixels[row * width + columns.start..row * width + columns.end] {
                     for (total, channel) in sum.iter_mut().zip(pixel.to_array()) {
-                        *total += u64::from(channel);
+                        *total += u32::from(channel);
                     }
                 }
             }
-            let count = (rows.len() * columns.len()) as u64;
+            let count = (rows.len() * columns.len()) as u32;
             let [r, g, b, a] = sum.map(|total| ((total + count / 2) / count) as u8);
             pixels.push(Color32::from_rgba_premultiplied(r, g, b, a));
         }
@@ -636,14 +898,6 @@ fn shrink(image: &ColorImage, max_side: usize) -> ColorImage {
         source_size: image.source_size,
         pixels,
     }
-}
-
-/// The rows or columns of a side `from` long that row or column `index`
-/// of the side scaled down to `to` covers: at least one.
-fn covered(index: usize, from: usize, to: usize) -> std::ops::Range<usize> {
-    let start = index * from / to;
-    let end = ((index + 1) * from / to).clamp(start + 1, from);
-    start..end
 }
 
 /// Teach the `image` crate to recognize and decode AVIF through
@@ -1502,7 +1756,7 @@ mod tests {
     }
 
     #[test]
-    fn a_scaled_down_pixel_is_the_mean_of_the_pixels_it_covers() {
+    fn halving_makes_each_pixel_the_mean_of_the_two_by_two_it_covers() {
         let [red, blue, clear] = [
             Color32::from_rgb(255, 0, 0),
             Color32::from_rgb(0, 0, 255),
@@ -1510,14 +1764,261 @@ mod tests {
         ];
         let image = ColorImage::new([4, 2], vec![red, red, blue, clear, red, red, blue, clear]);
 
-        let shrunk = shrink(&image, 2);
+        let halved = halve(&image);
 
-        assert_eq!(shrunk.size, [2, 1]);
-        assert_eq!(shrunk.source_size, Vec2::new(4.0, 2.0));
+        assert_eq!(halved.size, [2, 1]);
+        assert_eq!(halved.source_size, Vec2::new(4.0, 2.0));
         assert_eq!(
-            shrunk.pixels,
+            halved.pixels,
             [red, Color32::from_rgba_premultiplied(0, 0, 128, 128)]
         );
+    }
+
+    /// Black and white columns a pixel wide, `width` by `height`.
+    fn grating(width: usize, height: usize) -> ColorImage {
+        let pixels = (0..width * height)
+            .map(|index| {
+                if (index % width).is_multiple_of(2) {
+                    Color32::BLACK
+                } else {
+                    Color32::WHITE
+                }
+            })
+            .collect();
+        ColorImage::new([width, height], pixels)
+    }
+
+    /// How far apart the darkest and lightest columns of `image` are, in
+    /// levels of gray, away from its edges, which the filter reaches past.
+    fn column_spread(image: &ColorImage) -> u32 {
+        let [width, height] = image.size;
+        let columns: Vec<u32> = (4..width - 4)
+            .map(|x| {
+                let sum: u32 = (0..height)
+                    .map(|y| u32::from(image.pixels[y * width + x].r()))
+                    .sum();
+                sum / height as u32
+            })
+            .collect();
+        columns.iter().max().unwrap() - columns.iter().min().unwrap()
+    }
+
+    /// What the GPU draws from `image` at `width` pixels wide: the two
+    /// texels nearest each pixel's center, blended.
+    fn sampled(image: &ColorImage, width: usize) -> ColorImage {
+        let [from, height] = image.size;
+        let pixels =
+            (0..width * height)
+                .map(|index| {
+                    let (x, y) = (index % width, index / width);
+                    let at = ((x as f32 + 0.5) * from as f32 / width as f32 - 0.5).max(0.0);
+                    let (left, part) = (at.floor() as usize, at.fract());
+                    let gray = |x: usize| f32::from(image.pixels[y * from + x.min(from - 1)].r());
+                    Color32::from_gray(
+                        (gray(left) * (1.0 - part) + gray(left + 1) * part).round() as u8
+                    )
+                })
+                .collect();
+        ColorImage::new([width, height], pixels)
+    }
+
+    #[test]
+    fn one_pixel_lines_scale_down_to_an_even_gray_without_moire() {
+        let lines = grating(1200, 8);
+        // From 1.5 to 4 times smaller: the GPU, sampling the whole image,
+        // beats between black and white; scaled on the CPU, each column
+        // is the same gray.
+        for width in [800, 700, 599, 401, 299] {
+            let gpu = column_spread(&sampled(&lines, width));
+            assert!(
+                gpu > 100,
+                "the GPU drew {width} wide with columns {gpu} apart"
+            );
+            let scaled = scale_image(&lines, [width, 8]);
+            assert_eq!(scaled.size, [width, 8]);
+            assert_eq!(scaled.source_size, Vec2::new(1200.0, 8.0));
+            let spread = column_spread(&scaled);
+            assert!(spread <= 8, "{width} wide: columns {spread} apart");
+        }
+        // Halving first, from far larger, too.
+        let scaled = scale_image(&grating(4800, 32), [700, 4]);
+        assert!(column_spread(&scaled) <= 8, "{}", column_spread(&scaled));
+    }
+
+    #[test]
+    fn scaling_keeps_each_color_within_its_alpha() {
+        let half_red = Color32::from_rgba_premultiplied(128, 0, 0, 128);
+        let mut pixels = vec![Color32::TRANSPARENT; 64 * 4];
+        for row in pixels.chunks_mut(64) {
+            row[30..34].fill(Color32::WHITE);
+            row[40..44].fill(half_red);
+        }
+        let scaled = scale_image(&ColorImage::new([64, 4], pixels), [24, 2]);
+        for pixel in &scaled.pixels {
+            assert!(
+                pixel.r() <= pixel.a() && pixel.g() <= pixel.a() && pixel.b() <= pixel.a(),
+                "{pixel:?}"
+            );
+        }
+    }
+
+    /// `png` with a `pHYs` chunk of `per_meter` pixels a meter on each
+    /// side, after its header.
+    fn with_density(png: &[u8], per_meter: u32) -> Vec<u8> {
+        let mut chunk = b"pHYs".to_vec();
+        chunk.extend(per_meter.to_be_bytes());
+        chunk.extend(per_meter.to_be_bytes());
+        chunk.push(1);
+        let mut out = png[..33].to_vec();
+        out.extend(9u32.to_be_bytes());
+        out.extend(&chunk);
+        out.extend(crc32(&chunk).to_be_bytes());
+        out.extend(&png[33..]);
+        out
+    }
+
+    /// Run a pass of `ctx` that does `work`, as a window's frame does.
+    fn pass(ctx: &Context, work: impl FnMut(&Context)) {
+        let mut work = work;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| work(ui.ctx()));
+        // No renderer takes the textures in.
+        output.textures_delta.clear();
+    }
+
+    /// Run passes of `ctx` until `done` gives something.
+    fn run_until<T>(ctx: &Context, what: &str, mut done: impl FnMut(&Context) -> Option<T>) -> T {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let mut found = None;
+            pass(ctx, |ctx| found = done(ctx));
+            if let Some(found) = found {
+                return found;
+            }
+            assert!(Instant::now() < deadline, "{what} never happened");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The texture of `address` at `width` by `height` pixels once it's
+    /// ready at that size, and what it shows at, in points.
+    fn texture_at(
+        ctx: &Context,
+        address: &str,
+        width: u32,
+        height: u32,
+    ) -> (SizedTexture, [usize; 2]) {
+        let hint = SizeHint::Size {
+            width,
+            height,
+            maintain_aspect_ratio: false,
+        };
+        run_until(ctx, "the texture at its size", |ctx| {
+            match ctx.try_load_texture(address, TextureOptions::LINEAR, hint) {
+                Ok(TexturePoll::Ready { texture }) => {
+                    let uploaded = ctx.tex_manager().read().meta(texture.id).unwrap().size;
+                    let wanted = [width as usize, height as usize];
+                    (uploaded == wanted || uploaded[0] < wanted[0]).then_some((texture, uploaded))
+                }
+                _ => None,
+            }
+        })
+    }
+
+    #[test]
+    fn a_raster_image_shows_at_its_density_and_uploads_the_pixels_it_draws_at() {
+        let ctx = Context::default();
+        install(&ctx);
+        // 400 by 300 pixels saved at 144 dpi, as a Retina screenshot is.
+        let address = "bytes://noura-image/Garden/shot.png";
+        ctx.include_bytes(
+            address,
+            with_density(&png_bytes(ImageFormat::Png, 400, 300), 5669),
+        );
+        let size = run_until(&ctx, "the image measures", |ctx| {
+            natural_size(ctx, address).unwrap()
+        });
+        assert_eq!(size, Vec2::new(200.0, 150.0));
+
+        // Drawn 100 by 75 pixels, it uploads 100 by 75.
+        let (texture, uploaded) = texture_at(&ctx, address, 100, 75);
+        assert_eq!(uploaded, [100, 75]);
+        assert_eq!(texture.size, Vec2::new(200.0, 150.0));
+        // Drawn larger than its pixels, it uploads them as they are.
+        let (_, uploaded) = texture_at(&ctx, address, 800, 600);
+        assert_eq!(uploaded, [400, 300]);
+
+        // Every size it drew at but the last two passes' goes.
+        for width in [120, 160, 240] {
+            texture_at(&ctx, address, width, width * 3 / 4);
+        }
+        let textures = ctx.tex_manager();
+        let held: Vec<_> = textures
+            .read()
+            .allocated()
+            .filter(|(_, meta)| meta.name.starts_with(address))
+            .map(|(_, meta)| meta.size)
+            .collect();
+        assert!(held.len() <= 2, "{held:?}");
+    }
+
+    #[test]
+    fn while_a_new_size_scales_the_last_one_stands_in() {
+        let ctx = Context::default();
+        install(&ctx);
+        let address = "bytes://noura-image/Garden/photo.png";
+        ctx.include_bytes(address, png_bytes(ImageFormat::Png, 300, 200));
+        let (first, _) = texture_at(&ctx, address, 150, 100);
+
+        let hint = SizeHint::Size {
+            width: 90,
+            height: 60,
+            maintain_aspect_ratio: false,
+        };
+        // The first ask for the new size starts its scaling and gets the
+        // old size's texture meanwhile.
+        let mut asked = None;
+        pass(&ctx, |ctx| {
+            asked = Some(ctx.try_load_texture(address, TextureOptions::LINEAR, hint));
+        });
+        match asked.unwrap() {
+            Ok(TexturePoll::Ready { texture }) => {
+                assert_eq!(texture.id, first.id);
+                assert_eq!(texture.size, Vec2::new(300.0, 200.0));
+            }
+            Ok(TexturePoll::Pending { .. }) => panic!("nothing stood in"),
+            Err(err) => panic!("the image didn't load: {err}"),
+        }
+        let (_, uploaded) = texture_at(&ctx, address, 90, 60);
+        assert_eq!(uploaded, [90, 60]);
+    }
+
+    #[test]
+    fn an_svg_measures_its_declared_size_without_drawing_it() {
+        let ctx = Context::default();
+        install(&ctx);
+        let address = "bytes://noura-image/Garden/wide.svg";
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="red"/></svg>"#;
+        ctx.include_bytes(address, svg.as_bytes());
+        let size = run_until(&ctx, "the SVG measures", |ctx| {
+            natural_size(ctx, address).unwrap()
+        });
+        assert_eq!(size, Vec2::new(400.0, 300.0));
+        let drawn: usize = ctx
+            .loaders()
+            .image
+            .lock()
+            .iter()
+            .map(|loader| loader.byte_size())
+            .sum();
+        assert!(drawn < 64, "measuring drew {drawn} bytes");
+
+        // New bytes at the address measure again.
+        ctx.forget_image(address);
+        ctx.include_bytes(address, svg.replace("400", "40").into_bytes());
+        let size = run_until(&ctx, "the new SVG measures", |ctx| {
+            natural_size(ctx, address).unwrap()
+        });
+        assert_eq!(size, Vec2::new(40.0, 300.0));
     }
 
     #[test]

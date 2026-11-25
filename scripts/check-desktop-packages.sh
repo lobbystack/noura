@@ -120,9 +120,24 @@ case "$(uname -s)" in
   Darwin)
     dmg="$(find_one '*.dmg')"
     mkdir "$work/mount" "$work/Applications"
-    # The image carries a license agreement, and hdiutil cancels the mount
-    # unless something answers it.
-    PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "$work/mount" "$dmg" < <(yes)
+    # apps/desktop/Cargo.toml sets no license-file, so the image opens
+    # without a license agreement. An image with one would make hdiutil
+    # cancel this mount, since nothing answers the agreement.
+    hdiutil attach -nobrowse -readonly -mountpoint "$work/mount" "$dmg"
+    # Finder lays out the image's window while cargo-packager builds it and
+    # keeps the layout in the volume's .DS_Store. When Finder doesn't run,
+    # the image opens as a plain window.
+    if [ ! -f "$work/mount/.background/dmg-background.tiff" ]; then
+      echo "::error::$(basename "$dmg") has no background picture."
+      exit 1
+    fi
+    layout="$work/mount/.DS_Store"
+    for key in backgroundImageAlias WindowBounds iconSize Iloc; do
+      if [ ! -f "$layout" ] || ! LC_ALL=C grep -aq "$key" "$layout"; then
+        echo "::error::$(basename "$dmg") opens as a plain Finder window: its .DS_Store has no $key."
+        exit 1
+      fi
+    done
     cp -R "$work/mount/Noura.app" "$work/Applications/"
     hdiutil detach "$work/mount"
     # macOS 26 draws the layered icon the asset catalog holds.

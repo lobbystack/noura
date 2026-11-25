@@ -2960,3 +2960,54 @@ fn raw_saves_report_a_merge_only_when_another_edit_changed_the_text() {
         .unwrap();
     assert!(matches!(saved, RawSaveResult::Saved { .. }), "{saved:?}");
 }
+
+#[test]
+fn search_pages_skip_the_files_before_them_and_count_every_match() {
+    let (workspace, _app_data, engine) = engine();
+    for index in 0..7 {
+        std::fs::write(
+            workspace.path().join(format!("Plum {index}.md")),
+            format!("# Plum {index}\n\nplums\n"),
+        )
+        .unwrap();
+    }
+    std::fs::write(workspace.path().join("Pear.md"), "# Pear\n\npears\n").unwrap();
+    engine.reconcile().unwrap();
+    let input = SearchInput {
+        query: "plum".into(),
+        limit: Some(3),
+        ..Default::default()
+    };
+    let paths = |page: &[local_core::SearchResult]| -> Vec<String> {
+        page.iter().map(|hit| hit.relative_path.clone()).collect()
+    };
+
+    assert_eq!(engine.search_count(&input).unwrap(), 7);
+    let first = engine.search_page(&input, 0).unwrap();
+    assert_eq!(paths(&first), paths(&engine.search(&input).unwrap()));
+    let second = engine.search_page(&input, 3).unwrap();
+    let third = engine.search_page(&input, 6).unwrap();
+    assert_eq!((first.len(), second.len(), third.len()), (3, 3, 1));
+    let mut every: Vec<String> = [first, second, third]
+        .iter()
+        .flat_map(|page| paths(page))
+        .collect();
+    let all = engine
+        .search(&SearchInput {
+            limit: Some(50),
+            ..input.clone()
+        })
+        .unwrap();
+    assert_eq!(every, paths(&all), "the pages follow the ranking");
+    every.sort();
+    every.dedup();
+    assert_eq!(every.len(), 7);
+    // The filters count too.
+    let in_folder = SearchInput {
+        folder: Some("Elsewhere".into()),
+        ..input.clone()
+    };
+    assert_eq!(engine.search_count(&in_folder).unwrap(), 0);
+    // Past the last match, a page is empty.
+    assert!(engine.search_page(&input, 9).unwrap().is_empty());
+}

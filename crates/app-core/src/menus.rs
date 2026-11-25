@@ -125,7 +125,7 @@ pub(crate) fn menu_bar(platform: Platform, commands: &[Command]) -> Vec<Menu> {
     let file = vec![
         vec![Item(NEW_NOTE), Item(NEW_FOLDER), Item(NEW_WINDOW)],
         vec![Item(COMMAND_PALETTE), Item(QUICK_OPEN), Item(SEARCH)],
-        vec![Item(CLOSE_TAB), Item(CLOSE_WINDOW)],
+        vec![Item(CLOSE_TAB), Item(CLOSE_WINDOW), Item(REOPEN_CLOSED_TAB)],
         vec![Others(MenuName::File)],
     ];
     let edit = vec![

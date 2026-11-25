@@ -30,8 +30,17 @@ for argument in "$@"; do
 done
 
 host="$(rustc -vV | sed -n 's/^host: //p')"
+packager=(cargo packager)
 case "$host" in
-  *-apple-darwin) formats=app,dmg ;;
+  *-apple-darwin)
+    formats=app,dmg
+    # cargo-packager has Finder lay out the disk image's window, with the
+    # background, icon positions and size from apps/desktop/Cargo.toml, but
+    # skips that when CI is "true", as GitHub Actions sets it. Without it the
+    # image opens as a plain window. GitHub's macOS runners have a desktop
+    # session that runs Finder, so let it run there too.
+    packager=(env -u CI cargo packager)
+    ;;
   *-windows-msvc) formats=wix ;;
   *-linux-gnu) formats=deb,appimage ;;
   *)
@@ -69,9 +78,9 @@ if [ "$universal" = true ]; then
   lipo -create -output target/universal-apple-darwin/release/noura \
     target/aarch64-apple-darwin/release/noura \
     target/x86_64-apple-darwin/release/noura
-  cargo packager --release -p desktop --formats "$formats" --target universal-apple-darwin
+  "${packager[@]}" --release -p desktop --formats "$formats" --target universal-apple-darwin
 else
   generate_licenses "$host"
   cargo build --release --locked -p desktop
-  cargo packager --release -p desktop --formats "$formats"
+  "${packager[@]}" --release -p desktop --formats "$formats"
 fi

@@ -1,6 +1,7 @@
 //! The file tree and the document area, through AccessKit.
 
 use crate::support;
+use app_core::Platform;
 use egui::{
     Event, Key, Modifiers, MouseWheelSource, MouseWheelUnit, TouchPhase, accesskit::Role, vec2,
 };
@@ -8,12 +9,21 @@ use egui_kittest::{
     Harness,
     kittest::{NodeT, Queryable},
 };
-use support::{FakePicker, create_workspace, harness, settle};
+use support::{FakePicker, FakeSystem, create_workspace, harness, harness_on, settle};
 
 /// A workspace with two folders and two notes, opened at launch.
 fn opened(
     app_data: &std::path::Path,
     folder: &std::path::Path,
+) -> Harness<'static, app_ui::NouraUi> {
+    opened_on(app_data, folder, Platform::current())
+}
+
+/// [`opened`] with `platform`'s keys.
+fn opened_on(
+    app_data: &std::path::Path,
+    folder: &std::path::Path,
+    platform: Platform,
 ) -> Harness<'static, app_ui::NouraUi> {
     create_workspace(app_data, folder);
     for (path, bytes) in [
@@ -26,7 +36,8 @@ fn opened(
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
-    let mut harness = harness(app_data, FakePicker::default());
+    let system = FakeSystem::new(platform);
+    let mut harness = harness_on(app_data, FakePicker::default(), system, |_| {});
     settle(&mut harness);
     harness
 }
@@ -217,10 +228,14 @@ fn arrow_keys_home_end_and_type_ahead_move_through_the_tree() {
 }
 
 #[test]
-fn enter_or_space_toggles_a_folder_and_opens_a_file() {
+fn on_windows_and_linux_enter_or_space_toggles_a_folder_and_opens_a_file() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
-    let mut harness = opened(app_data.path(), &parent.path().join("Garden"));
+    let mut harness = opened_on(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        Platform::Windows,
+    );
     row(&harness, "Notes").focus();
     harness.run();
 
@@ -237,6 +252,76 @@ fn enter_or_space_toggles_a_folder_and_opens_a_file() {
     let name = document.get_by_role_and_label(Role::TextInput, "File name");
     assert_eq!(name.accesskit_node().value().as_deref(), Some("Readme"));
     document.get_by_role_and_label(Role::Document, "Note text");
+}
+
+#[test]
+fn on_macos_return_renames_and_cmd_down_or_cmd_o_opens() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = opened_on(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        Platform::MacOs,
+    );
+    let renaming = |harness: &Harness<'static, app_ui::NouraUi>, name: &str| {
+        harness
+            .query_by_role_and_label(Role::TextInput, &format!("New name for {name}"))
+            .is_some()
+    };
+    let cmd = Modifiers::MAC_CMD | Modifiers::COMMAND;
+
+    // Return renames a folder and a file, as in Finder.
+    row(&harness, "Notes").focus();
+    harness.run();
+    press(&mut harness, Key::Enter);
+    assert!(renaming(&harness, "Notes"));
+    assert_eq!(expanded(&harness, "Notes"), Some(false));
+    press(&mut harness, Key::Escape);
+    assert!(!renaming(&harness, "Notes"));
+
+    // Cmd+↓ opens a folder and a file.
+    harness.key_press_modifiers(cmd, Key::ArrowDown);
+    harness.run();
+    assert_eq!(expanded(&harness, "Notes"), Some(true));
+    press(&mut harness, Key::ArrowDown);
+    harness.key_press_modifiers(cmd, Key::ArrowDown);
+    harness.run();
+    let document = || {
+        harness
+            .get_by_role_and_label(Role::Region, "Document")
+            .get_by_role_and_label(Role::TextInput, "File name")
+            .accesskit_node()
+            .value()
+    };
+    assert_eq!(document().as_deref(), Some("Seeds"));
+
+    // Cmd+O opens the current row while the tree has the keyboard, not
+    // search.
+    row(&harness, "Readme").focus();
+    harness.run();
+    harness.key_press_modifiers(cmd, Key::O);
+    harness.run();
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Dialog, "Search")
+            .is_none()
+    );
+    let document = harness
+        .get_by_role_and_label(Role::Region, "Document")
+        .get_by_role_and_label(Role::TextInput, "File name")
+        .accesskit_node()
+        .value();
+    assert_eq!(document.as_deref(), Some("Readme"));
+    assert!(!renaming(&harness, "Readme"));
+
+    // Return on the file renames it, and F2 still does.
+    row(&harness, "Todo").focus();
+    harness.run();
+    press(&mut harness, Key::Enter);
+    assert!(renaming(&harness, "Todo"));
+    press(&mut harness, Key::Escape);
+    press(&mut harness, Key::F2);
+    assert!(renaming(&harness, "Todo"));
 }
 
 #[test]

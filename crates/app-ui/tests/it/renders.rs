@@ -351,6 +351,221 @@ fn the_main_screens_render_in_light_and_dark() {
     }
 }
 
+/// Save the part of the window `rect` covers, in points, as `name`.
+fn save_part(harness: &mut Ui, name: &str, rect: egui::Rect) {
+    let image = harness.render().expect("the window renders");
+    let scale = scale();
+    let x = (rect.min.x * scale).max(0.0) as u32;
+    let y = (rect.min.y * scale).max(0.0) as u32;
+    let width = ((rect.width() * scale) as u32).min(image.width().saturating_sub(x));
+    let height = ((rect.height() * scale) as u32).min(image.height().saturating_sub(y));
+    let part = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+    let path = out_dir().join(format!("{name}.png"));
+    part.save(&path).unwrap();
+    eprintln!("rendered {}", path.display());
+}
+
+/// Each PDF texture's name and size in pixels, as uploaded.
+fn pdf_textures(harness: &Ui) -> Vec<(String, [usize; 2])> {
+    let textures = harness.ctx.tex_manager();
+    let textures = textures.read();
+    let mut found: Vec<(String, [usize; 2])> = textures
+        .allocated()
+        .filter(|(_, meta)| meta.name.starts_with("pdf"))
+        .map(|(_, meta)| (meta.name.clone(), meta.size))
+        .collect();
+    found.sort();
+    found
+}
+
+/// A page 612 by 14,000 points, as a web page saved as PDF, fit to the
+/// tab's width at two pixels a point: the window, the top of the page at
+/// one window pixel per screen pixel, and the size of each texture the
+/// page drew against the size it shows at.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn a_tall_pdf_page_renders_at_the_screens_density() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Reading");
+    create_workspace(app_data.path(), &folder);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app-core/tests/fixtures/pdf");
+    std::fs::copy(fixture.join("tall.pdf"), folder.join("tall.pdf")).unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::Linux));
+    let mut harness = window(app, Theme::Light, Some(linux_controls()));
+    // The desktop app's GPU limit, past kittest's 2048.
+    harness.input_mut().max_texture_side = Some(8192);
+
+    harness
+        .get_by_role_and_label(Role::TreeItem, "tall.pdf")
+        .click();
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Image, "Page 1 of 2")
+            .is_some()
+    });
+    // Let every drawing the view asked for arrive.
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        harness.step();
+    }
+    settle(&mut harness);
+    save(&mut harness, "7-pdf-tall", Theme::Light);
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 2")
+        .rect();
+    let shown = page.intersect(harness.ctx.viewport_rect());
+    let top = egui::Rect::from_min_size(shown.min, egui::vec2(shown.width().min(400.0), 160.0));
+    save_part(&mut harness, "7-pdf-tall-top", top);
+    eprintln!(
+        "page shows at {:?}, {} by {} points, {} pixels a point",
+        page.min,
+        page.width(),
+        page.height(),
+        scale()
+    );
+    for (name, [width, height]) in pdf_textures(&harness) {
+        eprintln!(
+            "texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
+            width as f32 / page.width()
+        );
+    }
+
+    // Find scrolls 12,800 points down the page to line 800.
+    let field = harness.get_by_role_and_label(Role::TextInput, "Search PDF");
+    field.focus();
+    field.type_text("needle");
+    wait_until(&mut harness, |harness| {
+        harness.query_by_label("1 of 1").is_some()
+    });
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        harness.step();
+    }
+    settle(&mut harness);
+    save(&mut harness, "7-pdf-tall-needle", Theme::Light);
+    let pages = harness
+        .get_by_role_and_label(Role::ScrollView, "Pages")
+        .rect();
+    let line = egui::Rect::from_min_size(
+        pages.min + egui::vec2(0.0, pages.height() / 3.0 - 40.0),
+        egui::vec2(pages.width().min(400.0), 120.0),
+    );
+    save_part(&mut harness, "7-pdf-tall-needle-line", line);
+    for (name, [width, height]) in pdf_textures(&harness) {
+        eprintln!(
+            "after find: texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
+            width as f32 / page.width()
+        );
+    }
+}
+
+/// A note that embeds the page 612 by 14,000 points, at two pixels a
+/// point: the window, the top of the embed at one window pixel per screen
+/// pixel, and the size of each texture the embed drew against the size it
+/// shows at.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn a_tall_pdf_page_embedded_in_a_note_renders_at_the_screens_density() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Reading");
+    create_workspace(app_data.path(), &folder);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app-core/tests/fixtures/pdf");
+    std::fs::copy(fixture.join("tall.pdf"), folder.join("tall.pdf")).unwrap();
+    std::fs::write(
+        folder.join("Saved page.md"),
+        note(
+            'a',
+            "Saved page",
+            "The article, as saved.\n\n![[tall.pdf]]\n",
+        ),
+    )
+    .unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::Linux));
+    let mut harness = window(app, Theme::Light, Some(linux_controls()));
+    // The desktop app's GPU limit, past kittest's 2048.
+    harness.input_mut().max_texture_side = Some(8192);
+
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Saved page")
+        .click();
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Button, "Open tall.pdf in a tab")
+            .is_some()
+    });
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        harness.step();
+    }
+    settle(&mut harness);
+    save(&mut harness, "8-pdf-embed-tall", Theme::Light);
+    let embed = harness
+        .get_by_role_and_label(Role::Image, "tall.pdf")
+        .rect();
+    let shown = embed.intersect(harness.ctx.viewport_rect());
+    let top = egui::Rect::from_min_size(shown.min, egui::vec2(shown.width().min(400.0), 160.0));
+    save_part(&mut harness, "8-pdf-embed-tall-top", top);
+    eprintln!(
+        "embed shows at {:?}, {} by {} points, {} pixels a point",
+        embed.min,
+        embed.width(),
+        embed.height(),
+        scale()
+    );
+    for (name, [width, height]) in pdf_textures(&harness) {
+        eprintln!(
+            "texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
+            width as f32 / embed.width()
+        );
+    }
+
+    // Scroll the note thousands of points down the page.
+    let view = harness.ctx.viewport_rect();
+    harness.hover_at(egui::pos2(view.center().x, view.center().y + 100.0));
+    for _ in 0..12 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -500.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    for _ in 0..40 {
+        std::thread::sleep(Duration::from_millis(50));
+        harness.step();
+    }
+    settle(&mut harness);
+    save(&mut harness, "8-pdf-embed-tall-far", Theme::Light);
+    let embed = harness
+        .get_by_role_and_label(Role::Image, "tall.pdf")
+        .rect();
+    let shown = embed.intersect(harness.ctx.viewport_rect());
+    let part = egui::Rect::from_min_size(shown.min, egui::vec2(shown.width().min(400.0), 160.0));
+    save_part(&mut harness, "8-pdf-embed-tall-far-part", part);
+    eprintln!(
+        "far down: embed shows at {:?}, {} by {} points",
+        embed.min,
+        embed.width(),
+        embed.height()
+    );
+    for (name, [width, height]) in pdf_textures(&harness) {
+        eprintln!(
+            "far down: texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
+            width as f32 / embed.width()
+        );
+    }
+    let tab = harness.state().app().active_tab().unwrap().id();
+    let links = harness.state().app().note_links(tab).unwrap();
+    eprintln!(
+        "far down: app-core keeps {} bytes of embed tiles",
+        links.pdf_embed_tile_bytes_for_testing()
+    );
+}
+
 /// The title bar row of a Linux window with each button layout GNOME
 /// offers: its default, the owner's, every button, and buttons at the
 /// start.
@@ -813,4 +1028,84 @@ fn the_calendar_sidebar_renders_with_and_without_files() {
         settle(&mut harness);
         save(&mut harness, "calendar-sidebar-with-files", theme);
     }
+}
+
+/// A PDF tab at Actual Size before and after the interface zooms to 125%
+/// from a note, and partway through a pinch over its pages. Prints the
+/// page's width on the screen, in pixels, for each.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn a_pdf_tab_keeps_its_page_size_across_interface_zooms_and_pinches() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Reading");
+    create_workspace(app_data.path(), &folder);
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app-core/tests/fixtures/pdf");
+    std::fs::copy(fixture.join("text.pdf"), folder.join("text.pdf")).unwrap();
+    std::fs::write(folder.join("Plan.md"), note('a', "Plan", "To read.\n")).unwrap();
+    let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::Linux));
+    let mut harness = window(app, Theme::Light, Some(linux_controls()));
+    let app = harness.state_mut().app_mut();
+    app.open_file("Plan.md", app_core::OpenAs::Kept);
+    let note = app.active_tab().unwrap().id();
+    app.open_file("text.pdf", app_core::OpenAs::Kept);
+    let tab = app.active_tab().unwrap().id();
+    let page_pixels = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::Image, "Page 1 of 3")
+            .rect()
+            .width()
+            * harness.ctx.pixels_per_point()
+    };
+    let drawn = |harness: &mut Ui| {
+        wait_until(harness, |harness| {
+            let pdf = harness.state().app().pdf(tab).unwrap();
+            harness
+                .query_by_role_and_label(Role::Image, "Page 1 of 3")
+                .is_some()
+                && pdf.settles_in().is_none()
+                && pdf.tiles(1).any(|tile| tile.key.density() == pdf.density())
+        });
+        for _ in 0..10 {
+            std::thread::sleep(Duration::from_millis(30));
+            harness.step();
+        }
+    };
+    drawn(&mut harness);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Num0);
+    drawn(&mut harness);
+    save(&mut harness, "9-pdf-actual-size-100", Theme::Light);
+    eprintln!("100% interface: page {} pixels wide", page_pixels(&harness));
+
+    harness.state_mut().app_mut().activate_tab(note);
+    harness.run_steps(2);
+    for _ in 0..2 {
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Equals);
+        harness.run_steps(2);
+    }
+    harness.state_mut().app_mut().activate_tab(tab);
+    drawn(&mut harness);
+    save(&mut harness, "9-pdf-actual-size-125", Theme::Light);
+    eprintln!(
+        "{}% interface: page {} pixels wide",
+        harness.ctx.zoom_factor() * 100.0,
+        page_pixels(&harness)
+    );
+
+    // Pinch out over the page's first lines.
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 3")
+        .rect();
+    harness.hover_at(page.min + egui::vec2(100.0, 60.0));
+    harness.run_steps(2);
+    for _ in 0..4 {
+        harness.event(egui::Event::Zoom(1.1));
+        harness.step();
+    }
+    harness.step();
+    save(&mut harness, "9-pdf-pinching", Theme::Light);
+    eprintln!("mid-pinch: page {} pixels wide", page_pixels(&harness));
+    drawn(&mut harness);
+    save(&mut harness, "9-pdf-pinched", Theme::Light);
+    eprintln!("settled: page {} pixels wide", page_pixels(&harness));
 }

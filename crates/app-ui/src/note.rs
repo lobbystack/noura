@@ -67,8 +67,8 @@ struct OpenNote {
     links_source: Option<String>,
     /// Whether the editor checks spelling.
     checks_spelling: bool,
-    /// The PDFs the note's embeds asked to open in a tab.
-    pdf_opens: crate::note_images::PdfOpens,
+    /// What the note's view shares with the PDF embeds its editor draws.
+    pdfs: Arc<crate::note_images::NotePdfs>,
 }
 
 impl NoteView {
@@ -227,7 +227,7 @@ pub(crate) fn show(
             },
             links_source: None,
             checks_spelling: false,
-            pdf_opens: Arc::default(),
+            pdfs: Arc::default(),
         }
     });
     // The file shows another way now, as when a save left a note's
@@ -258,7 +258,7 @@ pub(crate) fn show(
             .set_embed_resolver(Box::new(crate::note_images::WorkspaceImages::new(
                 links.clone(),
                 ui.ctx().clone(),
-                note.pdf_opens.clone(),
+                note.pdfs.clone(),
             )));
         note.editor
             .set_link_resolver(Box::new(crate::note_links::WorkspaceLinks {
@@ -354,9 +354,10 @@ pub(crate) fn show(
             .show(ui, |ui| plugin_panel(ui, app, window, tab, &view));
     }
     body(ui, app, note, tab);
+    note.pdfs.frame_done();
     // An embed's Open in tab button opens its PDF at the page its link
     // names.
-    let opens = std::mem::take(&mut *note.pdf_opens.lock().unwrap());
+    let opens = std::mem::take(&mut *note.pdfs.opens.lock().unwrap());
     for (path, page) in opens {
         app.open_pdf_page(&path, page, app_core::OpenAs::Kept);
     }

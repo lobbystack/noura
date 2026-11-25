@@ -23,6 +23,9 @@ pub fn place(ctx: &Context) {
 pub fn place(_ctx: &Context) {}
 
 #[cfg(target_os = "macos")]
+pub(crate) use mac::is_noura_window;
+
+#[cfg(target_os = "macos")]
 mod mac {
     use std::{
         cell::Cell,
@@ -94,7 +97,7 @@ mod mac {
 
     /// Noura's windows run their content under a transparent title bar.
     /// Panels, such as the folder picker, don't count.
-    fn is_noura_window(window: &NSWindow) -> bool {
+    pub(crate) fn is_noura_window(window: &NSWindow) -> bool {
         !window.isKindOfClass(NSPanel::class())
             && window
                 .styleMask()

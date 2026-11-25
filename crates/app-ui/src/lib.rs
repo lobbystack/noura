@@ -52,7 +52,7 @@ use std::{
 use app_core::{App, Appearance, Area, CommandSource, DragOut, Menu, Screen, TabId};
 use egui::{Event, Id, ThemePreference, ViewportId};
 
-pub use common::take_window_menu_request;
+pub use common::{take_title_bar_double_click, take_window_menu_request};
 /// Finds misspelled words for the notes, such as the system's spell
 /// checker.
 pub use editor_egui::SpellChecker;
@@ -248,6 +248,12 @@ impl NouraUi {
     /// Whether this window has closed, so the desktop stops showing it.
     pub fn is_closed(&self) -> bool {
         self.app.is_closed()
+    }
+
+    /// Whether this window closed as the last one and hides until it
+    /// shows again, as on macOS. See [`App::hide_when_last_closes`].
+    pub fn is_hidden(&self) -> bool {
+        self.app.is_hidden()
     }
 
     /// Whether Quit ran in this window. The desktop then lets every

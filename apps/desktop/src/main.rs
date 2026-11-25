@@ -15,6 +15,7 @@
 // a pipe, so the smoke run's report does too.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod dock;
 mod file_drag;
 mod instance;
 mod licenses;
@@ -31,6 +32,7 @@ mod notifier;
 mod speech_shell;
 mod spelling;
 mod system;
+mod title_bar;
 mod updates;
 mod window_buttons;
 // Only Linux windows draw their own buttons from the desktop's layout.

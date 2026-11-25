@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use app_core::{
     App, Area, Command, EMPTY_COMMANDS, GROUP_LIMIT, Key, KeyPress, PaletteGroup, PaletteItem,
-    PaletteStatus, Platform, SearchState, command_id,
+    PaletteStatus, Platform, SEARCH_PAGE, SearchState, command_id,
 };
 use support::{FakeSystem, Fixture, document};
 
@@ -156,28 +156,152 @@ fn each_file_group_stops_at_the_limit_unfiltered() {
     let paths: Vec<String> = (0..GROUP_LIMIT + 3)
         .map(|index| format!("Note {index}.md"))
         .collect();
+    let memos: Vec<String> = (0..7).map(|index| format!("Memo {index}.md")).collect();
     let files: Vec<(&str, &[u8])> = paths
         .iter()
         .map(|path| (path.as_str(), b"x".as_slice()))
+        .chain(
+            memos
+                .iter()
+                .map(|path| (path.as_str(), b"a note".as_slice())),
+        )
         .collect();
     let fixture = Fixture::new(&files);
     let mut app = opened(&fixture);
 
     app.set_palette_query("note");
     settle(&mut app);
-    let found = rows(&app);
+    counted(&mut app);
+    let found = app.palette_results();
     let by_name = found
         .iter()
-        .filter(|(group, _)| *group == PaletteGroup::Files)
+        .filter(|row| matches!(row, PaletteItem::File(_)))
         .count();
     let by_contents = found
         .iter()
-        .filter(|(group, _)| *group == PaletteGroup::Contents)
+        .filter(|row| matches!(row, PaletteItem::Hit(_)))
         .count();
     assert_eq!(by_name, GROUP_LIMIT);
-    // The index finds "note" in every title; those not listed by name
-    // show by contents.
-    assert_eq!(by_contents, 3);
+    // The index finds "note" in every title and in the memos' text; those
+    // not listed by name show by contents.
+    assert_eq!(by_contents, GROUP_LIMIT);
+    // Each group ends with a row that shows every file it found.
+    let more: Vec<&PaletteItem> = found
+        .iter()
+        .filter(|row| matches!(row, PaletteItem::More { .. }))
+        .collect();
+    assert_eq!(
+        more,
+        [
+            &PaletteItem::More {
+                group: PaletteGroup::Files,
+                total: Some(GROUP_LIMIT + 3)
+            },
+            &PaletteItem::More {
+                group: PaletteGroup::Contents,
+                total: Some(GROUP_LIMIT + 3 + 7)
+            }
+        ]
+    );
+    assert_eq!(app.palette_total(), None, "unfiltered, the rows count");
+
+    // Choosing one filters search to its group and keeps what you typed.
+    let files_more = found
+        .iter()
+        .position(|row| {
+            matches!(
+                row,
+                PaletteItem::More {
+                    group: PaletteGroup::Files,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    app.select_palette_row(files_more);
+    assert!(app.run_palette_selection(Instant::now()));
+    let palette = app.palette().expect("search stays open");
+    assert_eq!(palette.scope, app_core::SearchScope::Names);
+    assert_eq!(palette.query(), "note");
+    assert_eq!(app.palette_results().len(), GROUP_LIMIT + 3);
+    assert_eq!(app.palette_total(), Some(GROUP_LIMIT + 3));
+}
+
+/// Poll until the contents search has counted its files.
+fn counted(app: &mut App) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app.palette().unwrap().hit_count.is_none() {
+        assert!(Instant::now() < deadline, "the search never counted");
+        std::thread::sleep(Duration::from_millis(2));
+        app.poll();
+    }
+}
+
+#[test]
+fn filtered_search_counts_every_file_and_lists_them_a_page_at_a_time() {
+    let paths: Vec<String> = (0..120)
+        .map(|index| format!("Plum {index:03}.md"))
+        .collect();
+    let files: Vec<(&str, &[u8])> = paths
+        .iter()
+        .map(|path| (path.as_str(), b"plums".as_slice()))
+        .collect();
+    let fixture = Fixture::new(&files);
+    let mut app = opened(&fixture);
+    let shown = |app: &App| app.palette_results().len();
+
+    // By name: every match ranks at once; the list grows a page at a time.
+    app.open_palette(app_core::SearchScope::Names);
+    app.set_palette_query("plum");
+    assert_eq!(app.palette_total(), Some(120));
+    assert_eq!(shown(&app), SEARCH_PAGE);
+    app.show_more_results();
+    assert_eq!(shown(&app), 2 * SEARCH_PAGE);
+    // Down at the last row lists the rest.
+    app.move_palette_selection(1_000);
+    assert_eq!(shown(&app), 120);
+    app.move_palette_selection(1_000);
+    assert_eq!(app.palette().unwrap().selected(), 119);
+    app.show_more_results();
+    assert_eq!(shown(&app), 120);
+
+    // By contents: the first page, then the count, then more pages.
+    app.set_palette_scope(app_core::SearchScope::Contents);
+    app.set_palette_query("plums");
+    settle(&mut app);
+    assert_eq!(shown(&app), SEARCH_PAGE);
+    counted(&mut app);
+    assert_eq!(app.palette_total(), Some(120));
+    app.show_more_results();
+    // While the page is on its way, asking again changes nothing.
+    app.show_more_results();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while shown(&app) < 2 * SEARCH_PAGE {
+        assert!(Instant::now() < deadline, "the next page never came");
+        std::thread::sleep(Duration::from_millis(2));
+        app.poll();
+    }
+    assert_eq!(shown(&app), 2 * SEARCH_PAGE);
+    app.show_more_results();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while shown(&app) < 120 {
+        assert!(Instant::now() < deadline, "the last page never came");
+        std::thread::sleep(Duration::from_millis(2));
+        app.poll();
+    }
+    let mut listed: Vec<String> = app
+        .palette_results()
+        .iter()
+        .filter_map(|row| row.path().map(str::to_owned))
+        .collect();
+    listed.sort();
+    listed.dedup();
+    assert_eq!(listed.len(), 120, "each file once");
+
+    // Typing again starts from the first page.
+    app.set_palette_query("plum");
+    settle(&mut app);
+    assert_eq!(shown(&app), SEARCH_PAGE);
 }
 
 #[test]
@@ -211,6 +335,7 @@ fn arrows_move_the_highlight_across_groups() {
         [
             (PaletteGroup::Files, "Close notes.md".to_owned()),
             (PaletteGroup::Commands, "Close Tab".to_owned()),
+            (PaletteGroup::Commands, "Reopen Closed Tab".to_owned()),
             (PaletteGroup::Commands, "Close Window".to_owned()),
         ]
     );
@@ -220,14 +345,14 @@ fn arrows_move_the_highlight_across_groups() {
     app.move_palette_selection(1);
     assert_eq!(app.palette().unwrap().selected(), 1);
     app.move_palette_selection(100);
-    assert_eq!(app.palette().unwrap().selected(), 2);
+    assert_eq!(app.palette().unwrap().selected(), 3);
 
     // Typing again highlights the first row.
     app.set_palette_query("close ");
     assert_eq!(app.palette().unwrap().selected(), 0);
 
     // Enter runs the highlighted row, not the first.
-    app.move_palette_selection(2);
+    app.move_palette_selection(3);
     app.run_palette_selection(Instant::now());
     assert_eq!(app.palette(), None);
     assert!(app.is_closed());

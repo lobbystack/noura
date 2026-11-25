@@ -6,6 +6,8 @@ locked.pdf: two pages behind the user password "open sesame", encrypted
 with the standard security handler, revision 3, 128-bit RC4.
 slivers.pdf: three pages that draw less than a pixel on one side or both:
 14400 by 1 points, 1 by 14400 points, and 1 by 1 point.
+tall.pdf: a page 612 by 14000 points of numbered lines, as a web page
+saved as one PDF page, with "needle" on line 800, then a Letter page.
 empty.pdf: a PDF with no pages.
 
 Standard library only. Run: python3 make_fixtures.py OUTPUT_DIR
@@ -92,6 +94,20 @@ def text_stream(lines) -> bytes:
     for line in lines:
         escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
         ops.append(b"(%s) Tj T*" % escaped.encode("latin-1"))
+    ops.append(b"ET")
+    return b"\n".join(ops)
+
+
+def tall_text(height: int, needle_line: int) -> bytes:
+    """Numbered 12-point lines from the top of a page `height` points tall
+    to its bottom, 16 points apart. Line `needle_line` holds "needle"."""
+    ops = [b"BT /F1 12 Tf 36 %d Td 16 TL" % (height - 48)]
+    for number in range(1, (height - 72) // 16 + 1):
+        if number == needle_line:
+            line = "Line %d. The needle is here, far down the page." % number
+        else:
+            line = "Line %d. A web page saved as one long PDF page." % number
+        ops.append(b"(%s) Tj T*" % line.encode("latin-1"))
     ops.append(b"ET")
     return b"\n".join(ops)
 
@@ -212,6 +228,11 @@ def main():
         folder / "slivers.pdf",
         [b"0 g 0 0 %d %d re f" % size for size in sizes],
         sizes=sizes,
+    )
+    write_pdf(
+        folder / "tall.pdf",
+        [tall_text(14000, 800), text_stream(["After the long page."])],
+        sizes=[(612, 14000), (612, 792)],
     )
     write_pdf(folder / "empty.pdf", [])
 

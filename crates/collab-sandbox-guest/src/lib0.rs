@@ -249,6 +249,10 @@ fn read_struct(r: &mut Reader<'_>, client: u64, clock: u64) -> Result<u64, Unrea
     let info = r.u8()?;
     let len = match info & REF_MASK {
         GC => return Err(Unreadable::GcStruct),
+        // yrs reads a skip only from the info byte 10 itself. It reads any
+        // other byte with these low bits as an item of content kind 10, which
+        // it can't decode, after fields this reader never checked.
+        SKIP if info != SKIP => return Err(Unreadable::YrsParse),
         SKIP => r.var(U32_LIMIT)?,
         content => {
             if info & HAS_PARENT_SUB != 0 {
@@ -367,6 +371,24 @@ mod tests {
         let mut bytes = insert(7, 0, "hi");
         bytes.push(0);
         assert_eq!(read_update(&bytes), Err(Unreadable::YrsParse));
+    }
+
+    /// yrs reads a skip only from the info byte 10 itself. The first case
+    /// came from the `guest_writer_record` fuzz target: card 1's skip of 87
+    /// with the parent-sub flag on, which yrs read as an item whose parent
+    /// names a client ID past 2^53.
+    #[test]
+    fn a_skip_with_flag_bits_fails_to_parse() {
+        let fuzzed = [
+            0x01, 0x02, 0x81, 0x80, 0x80, 0x80, 0x02, 0x00, 0x2a, 0x57, 0xc1, 0xbf, 0xa8, 0xdc,
+            0xdc, 0xdc, 0x81, 0xca, 0x04, 0x04, 0x04, 0x04, 0x1a, 0x00,
+        ];
+        assert_eq!(read_update(&fuzzed), Err(Unreadable::YrsParse));
+        for flag in [HAS_ORIGIN, HAS_RIGHT_ORIGIN, HAS_PARENT_SUB] {
+            let skip = [1, 1, 7, 0, SKIP | flag, 3, 0];
+            assert_eq!(read_update(&skip), Err(Unreadable::YrsParse));
+        }
+        assert!(read_update(&[1, 1, 7, 0, SKIP, 3, 0]).is_ok());
     }
 
     #[test]

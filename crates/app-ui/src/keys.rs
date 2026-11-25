@@ -69,6 +69,8 @@ fn key_from_egui(key: egui::Key) -> Option<Key> {
         E::ArrowDown => Key::ArrowDown,
         E::ArrowLeft => Key::ArrowLeft,
         E::ArrowRight => Key::ArrowRight,
+        E::PageUp => Key::PageUp,
+        E::PageDown => Key::PageDown,
         E::Comma => Key::Comma,
         E::Period => Key::Period,
         E::Minus => Key::Minus,
@@ -147,6 +149,8 @@ fn key_to_egui(key: Key) -> Option<egui::Key> {
         Key::ArrowDown => E::ArrowDown,
         Key::ArrowLeft => E::ArrowLeft,
         Key::ArrowRight => E::ArrowRight,
+        Key::PageUp => E::PageUp,
+        Key::PageDown => E::PageDown,
         Key::Comma => E::Comma,
         Key::Period => E::Period,
         Key::Minus => E::Minus,
@@ -157,7 +161,7 @@ fn key_to_egui(key: Key) -> Option<egui::Key> {
         Key::OpenBracket => E::OpenBracket,
         Key::CloseBracket => E::CloseBracket,
         Key::Menu => E::Menu,
-        Key::Letters => return None,
+        Key::Letters | Key::OneToEight => return None,
     })
 }
 
@@ -209,12 +213,20 @@ fn key_text(key: Key, is_mac: bool) -> &'static str {
         Key::Delete => "⌦",
         Key::Tab => "⇥",
         Key::Escape => "⎋",
+        Key::PageUp => "⇞",
+        Key::PageDown => "⇟",
         _ => "",
     };
     if is_mac && !mac_symbol.is_empty() {
         return mac_symbol;
     }
+    match key {
+        Key::PageUp => return "Page Up",
+        Key::PageDown => return "Page Down",
+        _ => {}
+    }
     match key_to_egui(key) {
+        None if key == Key::OneToEight => "1–8",
         None => "A–Z",
         Some(egui::Key::Minus) => "-",
         Some(
@@ -332,6 +344,22 @@ mod tests {
         assert_eq!(
             shortcut_text(&Shortcut::new(Key::F2), Platform::MacOs),
             "F2"
+        );
+        // The tab and page keys.
+        let page_down = Shortcut::ctrl(Key::PageDown);
+        assert_eq!(
+            shortcut_text(&page_down, Platform::Windows),
+            "Ctrl+Page Down"
+        );
+        assert_eq!(shortcut_text(&page_down, Platform::MacOs), "⌃⇟");
+        let tabs = Shortcut::command(Key::OneToEight);
+        assert_eq!(shortcut_text(&tabs, Platform::MacOs), "⌘1–8");
+        assert_eq!(shortcut_text(&tabs, Platform::Linux), "Ctrl+1–8");
+        let page = Shortcut::command(Key::Num2).with_ctrl();
+        assert_eq!(shortcut_text(&page, Platform::MacOs), "⌃⌘2");
+        assert_eq!(
+            shortcut_text(&Shortcut::new(Key::Num2).with_alt(), Platform::Windows),
+            "Alt+2"
         );
     }
 

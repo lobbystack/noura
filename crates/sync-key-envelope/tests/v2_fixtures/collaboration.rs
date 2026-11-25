@@ -621,6 +621,21 @@ fn client_checks(f: &mut Fixture) {
         .var(0)
         .done();
     f.case(update_case("update_with_own_skip", own_skip, None));
+    // yrs reads a skip only from the info byte 10 itself.
+    let flagged_skip = Lib0::default()
+        .var(1)
+        .run(2, ME, 0)
+        .raw(&[SKIP | HAS_PARENT_SUB])
+        .var(2)
+        .root_item(STRING)
+        .string("hi")
+        .var(0)
+        .done();
+    f.case(update_case(
+        "update_with_a_flagged_skip",
+        flagged_skip,
+        Some("yrs_parse"),
+    ));
     f.case(update_case(
         "update_deleting_others_text",
         deletes(OTHER, &[(0, 3)]),

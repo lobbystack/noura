@@ -4,8 +4,8 @@ use crate::support;
 use std::time::{Duration, Instant};
 
 use app_core::{
-    App, Area, CommandSource, FILES_SECTION, Key, KeyPress, OpenAs, Platform, command_id,
-    settings_section,
+    App, Area, CommandSource, FILES_SECTION, Key, KeyPress, OpenAs, Overlay, PdfZoom, Platform,
+    command_id, settings_section,
 };
 use support::{FakeSystem, Fixture, document};
 
@@ -49,9 +49,59 @@ fn close_tab_closes_the_active_tab() {
     assert_eq!(active(&app).as_deref(), Some("A"));
     run(&mut app, command_id::CLOSE_TAB);
     assert!(app.tabs().is_empty());
-    // With no tab open, it does nothing.
+    assert!(!app.is_closed());
+    // With no tab open, it closes the window, as in Safari and Chrome.
     run(&mut app, command_id::CLOSE_TAB);
+    assert!(app.is_closed());
+}
+
+#[test]
+fn where_the_app_stays_open_the_last_window_hides_and_a_menu_item_shows_it_again() {
+    let fixture = Fixture::new(&[("A.md", b"a"), ("B.md", b"b")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    app.hide_when_last_closes(true);
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("B.md", OpenAs::Kept);
+    let start = Instant::now();
+    let at = |seconds| start + Duration::from_secs(seconds);
+    let cmd_w = KeyPress::new(Key::W).with_cmd();
+
+    // Another window is open: this one closes for real.
+    let mut other = app.new_window().unwrap();
+    other.close_window();
+    assert!(other.is_closed());
+
+    assert!(app.press_key(&cmd_w, None, at(1)));
+    assert!(app.press_key(&cmd_w, None, at(2)));
     assert!(app.tabs().is_empty());
+    assert!(app.press_key(&cmd_w, None, at(3)));
+    assert!(app.is_hidden());
+    assert!(!app.is_closed(), "the workspace stays open");
+    // Close Tab and Close Window from the menu leave it hidden.
+    assert!(!app.run_command(command_id::CLOSE_TAB, CommandSource::Menu, at(4)));
+    assert!(app.is_hidden());
+
+    // New Window shows it, with no tabs, and opens no other window.
+    assert!(app.run_command(command_id::NEW_WINDOW, CommandSource::Menu, at(5)));
+    assert!(!app.is_hidden());
+    assert!(app.take_opened_windows().is_empty());
+    assert!(app.tabs().is_empty());
+    // Its tabs wait for Reopen Closed Tab.
+    run(&mut app, command_id::REOPEN_CLOSED_TAB);
+    run(&mut app, command_id::REOPEN_CLOSED_TAB);
+    let titles: Vec<&str> = app.tabs().iter().map(|tab| tab.title()).collect();
+    assert_eq!(titles, ["A", "B"]);
+
+    // Closed by its button, it hides too, and New Note shows it again.
+    app.close_window();
+    assert!(app.is_hidden());
+    assert!(app.run_command(command_id::NEW_NOTE, CommandSource::Menu, at(6)));
+    assert!(!app.is_hidden());
+    assert!(document(&app).is_some());
+    // Quit doesn't show it.
+    app.close_window();
+    assert!(app.run_command(command_id::QUIT, CommandSource::Menu, at(7)));
+    assert!(app.is_hidden());
 }
 
 #[test]
@@ -70,6 +120,113 @@ fn close_tab_pressed_twice_quickly_closes_two_tabs() {
     let titles: Vec<&str> = app.tabs().iter().map(|tab| tab.title()).collect();
     assert_eq!(titles, ["One"]);
     assert_eq!(document(&app).as_deref(), Some("One.md"));
+}
+
+#[test]
+fn close_tab_closes_settings_or_search_and_not_the_tab_under_them() {
+    let fixture = Fixture::new(&[("A.md", b"a"), ("B.md", b"b")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("B.md", OpenAs::Kept);
+    let cmd = |key| KeyPress::new(key).with_cmd();
+    let start = Instant::now();
+    let at = |seconds| start + Duration::from_secs(seconds);
+    let titles = |app: &App| -> Vec<String> {
+        app.tabs()
+            .iter()
+            .map(|tab| tab.title().to_owned())
+            .collect()
+    };
+
+    app.open_settings();
+    assert_eq!(app.overlay(), Some(Overlay::Settings));
+    assert!(app.press_key(&cmd(Key::W), None, at(1)));
+    assert!(app.settings().is_none());
+    assert_eq!(titles(&app), ["A", "B"]);
+
+    // The menu's report of the same press closes nothing more.
+    app.toggle_palette();
+    assert_eq!(app.overlay(), Some(Overlay::Palette));
+    assert!(app.press_key(&cmd(Key::W), Some(Area::Writing), at(2)));
+    assert!(!app.run_command(
+        command_id::CLOSE_TAB,
+        CommandSource::Menu,
+        at(2) + Duration::from_millis(20)
+    ));
+    assert_eq!(app.palette(), None);
+    assert_eq!(titles(&app), ["A", "B"]);
+    // File > Close Tab chosen while Settings shows closes Settings too.
+    app.open_settings();
+    assert!(app.run_command(command_id::CLOSE_TAB, CommandSource::Menu, at(3)));
+    assert!(app.settings().is_none());
+    assert_eq!(titles(&app), ["A", "B"]);
+    // With nothing over them, Close Tab closes the tab again.
+    assert!(app.press_key(&cmd(Key::W), None, at(4)));
+    assert_eq!(titles(&app), ["A"]);
+}
+
+#[test]
+fn keys_for_the_tabs_and_files_wait_while_settings_search_or_a_dialog_covers_them() {
+    let fixture = Fixture::new(&[("A.md", b"a"), ("B.md", b"b"), ("Folder/C.md", b"c")]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    app.open_file("A.md", OpenAs::Kept);
+    app.open_file("B.md", OpenAs::Kept);
+    let cmd = |key| KeyPress::new(key).with_cmd();
+    let mut at = Instant::now();
+    let mut press = |app: &mut App, press: KeyPress| {
+        at += Duration::from_secs(1);
+        app.press_key(&press, None, at);
+    };
+    let unchanged = |app: &App| {
+        let titles: Vec<&str> = app.tabs().iter().map(|tab| tab.title()).collect();
+        assert_eq!(titles, ["A", "B"]);
+        assert_eq!(active(app).as_deref(), Some("B"));
+        assert!(app.layout().sidebar_shown);
+        assert_eq!(app.renaming(), None);
+    };
+
+    app.open_settings();
+    for key in [
+        cmd(Key::N),
+        cmd(Key::Backslash),
+        cmd(Key::CloseBracket).with_shift(),
+        KeyPress::new(Key::Tab).with_ctrl(),
+        KeyPress::new(Key::F2),
+        cmd(Key::K),
+    ] {
+        press(&mut app, key);
+        unchanged(&app);
+        assert_eq!(app.overlay(), Some(Overlay::Settings), "{key:?}");
+    }
+    // Settings' own commands and zoom still work.
+    press(&mut app, cmd(Key::Equals));
+    assert_eq!(app.preferences().zoom, 110);
+    app.close_settings();
+
+    app.toggle_palette();
+    press(&mut app, cmd(Key::N));
+    press(&mut app, cmd(Key::Comma));
+    unchanged(&app);
+    assert!(
+        app.settings().is_none(),
+        "Settings doesn't open under search"
+    );
+    // Search's own keys change its filter.
+    press(&mut app, cmd(Key::O));
+    assert_eq!(app.overlay(), Some(Overlay::Palette));
+    app.close_palette();
+
+    // A dialog that asks something waits for its answer: Close Tab and
+    // Close Window do nothing.
+    app.request_trash("Folder");
+    assert_eq!(app.overlay(), Some(Overlay::Dialog));
+    press(&mut app, cmd(Key::W));
+    press(&mut app, cmd(Key::W).with_shift());
+    unchanged(&app);
+    assert!(!app.is_closed());
+    assert!(app.pending_trash().is_some());
+    app.cancel_trash();
+    assert_eq!(app.overlay(), None);
 }
 
 #[test]
@@ -309,4 +466,55 @@ fn commands_that_need_a_workspace_do_nothing_without_one() {
 
     assert_eq!(app.palette(), None);
     assert!(app.tabs().is_empty());
+}
+
+#[test]
+fn zoom_keys_zoom_the_pdf_while_its_tab_is_active_and_the_interface_elsewhere() {
+    let fixture = Fixture::new(&[
+        ("text.pdf", &crate::pdf_viewer::pdf("text.pdf")),
+        ("Plan.md", b"# Plan\n"),
+    ]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    let mut at = Instant::now();
+    let mut press = |app: &mut App, key| {
+        at += Duration::from_secs(1);
+        assert!(
+            app.press_key(&KeyPress::new(key).with_cmd(), None, at),
+            "{key:?}"
+        );
+    };
+    app.open_file("text.pdf", OpenAs::Kept);
+    let pdf = app.active_tab().unwrap().id();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while app.pdf(pdf).unwrap().state() != &app_core::PdfState::Ready {
+        assert!(Instant::now() < deadline, "the PDF never opened");
+        std::thread::sleep(Duration::from_millis(5));
+        app.poll();
+    }
+    let zoom = |app: &App| app.pdf(pdf).unwrap().zoom();
+
+    // As in Preview: Command-= and Command-minus step the PDF's zoom, and
+    // Command-0 shows its pages at their own size.
+    press(&mut app, Key::Equals);
+    assert_ne!(zoom(&app), PdfZoom::FitWidth);
+    press(&mut app, Key::Num0);
+    assert_eq!(zoom(&app), PdfZoom::Scale(1.0));
+    press(&mut app, Key::Minus);
+    assert_eq!(zoom(&app), PdfZoom::Scale(0.9));
+    assert_eq!(app.preferences().zoom, 100);
+
+    // In a note, they zoom the interface, and leave the PDF alone.
+    app.open_file("Plan.md", OpenAs::Kept);
+    press(&mut app, Key::Equals);
+    assert_eq!(app.preferences().zoom, 110);
+    press(&mut app, Key::Num0);
+    assert_eq!(app.preferences().zoom, 100);
+    assert_eq!(zoom(&app), PdfZoom::Scale(0.9));
+
+    // While Settings covers the PDF, they zoom the interface too.
+    app.open_file("text.pdf", OpenAs::Kept);
+    app.open_settings();
+    press(&mut app, Key::Equals);
+    assert_eq!(app.preferences().zoom, 110);
+    assert_eq!(zoom(&app), PdfZoom::Scale(0.9));
 }

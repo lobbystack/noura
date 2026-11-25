@@ -30,6 +30,7 @@ mod error;
 mod files;
 pub mod folder_sync;
 mod ignored;
+mod image_density;
 mod inbox;
 mod items;
 mod keys;
@@ -43,6 +44,7 @@ mod notes;
 mod objects;
 mod operations;
 mod pdf;
+mod pdf_embed;
 mod plugin_inputs;
 mod plugin_objects;
 mod plugins;
@@ -86,7 +88,8 @@ pub use app::{
 };
 pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{
-    Area, Command, CommandSource, ShortcutEntry, ShortcutGroup, command_id, default_shortcuts,
+    Area, Command, CommandSource, Overlay, ShortcutEntry, ShortcutGroup, command_id,
+    default_shortcuts,
 };
 pub use diagnostics::{LOG_FILE, log_folder};
 pub use error::AppError;
@@ -103,8 +106,8 @@ pub use keys::{Key, KeyPress, Shortcut};
 pub use layout::{FILES_SECTION, Layout, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH};
 pub use links::{
     EMBED_PREVIEW_CHARS, IMAGE_EXTENSIONS, ImageVersion, LINK_SUGGESTION_LIMIT, LinkSuggestion,
-    MAX_IMAGE_BYTES, NoteEmbed, NoteEmbedState, NoteImage, NoteLinks, PdfEmbedState,
-    is_external_link, is_image, is_remote_image,
+    MAX_IMAGE_BYTES, NoteEmbed, NoteEmbedState, NoteImage, NoteLinks, is_external_link, is_image,
+    is_remote_image,
 };
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
@@ -136,6 +139,7 @@ pub mod web_client {
         WebFetchResponse, WebSearchRequest, WebSearchResponse, WebSearchResult,
     };
 }
+pub use image_density::points_per_pixel;
 pub use login::{LoginItem, NoLoginItem, OpenAtLogin};
 pub use mcp_setup::{MCP_TEST_WAIT, McpProbe, McpSetup, McpTest};
 pub use menus::{Menu, MenuItem, MenuName, SystemItem};
@@ -146,11 +150,13 @@ pub use notes::{
 pub use objects::ObjectRef;
 pub use operations::Imported;
 pub use pdf::{
-    EMBED_WIDTH, EmbedProblem, MAX_PDF_BYTES, PdfMatch, PdfPicture, PdfSearch, PdfState, PdfView,
-    PdfZoom, THUMBNAIL_WIDTH, ZOOM_STEPS,
+    EMBED_WIDTH, EmbedProblem, MAX_PDF_BYTES, MAX_THUMBNAILS, MAX_TILE_BYTES, PAGE_GAP, PdfArea,
+    PdfJump, PdfMatch, PdfPicture, PdfSearch, PdfState, PdfTile, PdfTileKey, PdfView, PdfZoom,
+    THUMBNAIL_MAX_HEIGHT, THUMBNAIL_WIDTH, TILE_HEIGHT, TILE_WIDTH, ZOOM_STEPS,
 };
 #[cfg(feature = "test-hooks")]
 pub use pdf::{PdfDrawFailure, PdfRenderHold};
+pub use pdf_embed::{MAX_EMBED_TILE_BYTES, PdfEmbedArea, PdfEmbedState, PdfEmbedViewer};
 /// A stand-in for GitHub's release servers, for
 /// [`App::set_plugin_release_transport`].
 #[cfg(feature = "test-hooks")]
@@ -170,12 +176,12 @@ pub use plugins::{
 };
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;
-pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
+pub use quick_open::QuickOpenMatch;
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use remote_images::RemoteImageState;
 pub use saves::{NoPendingSaves, PendingSaves};
-pub use search::{SEARCH_LIMIT, SearchHit, SearchQuery, SearchState};
+pub use search::{SEARCH_LIMIT, SEARCH_PAGE, SearchHit, SearchQuery, SearchState};
 pub use settings::{
     ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
     THIRD_PARTY_LICENSES, VERSION, settings_section,
@@ -186,7 +192,7 @@ pub use updates::{
     FIRST_UPDATE_CHECK, PendingUpdate, UPDATE_CHECK_INTERVAL, UpdateError, UpdateErrorKind,
     UpdateSource, UpdateStatus, Updates,
 };
-pub use viewers::{ImageState, ImageView};
+pub use viewers::{IMAGE_ZOOM_STEPS, ImageScroll, ImageState, ImageView, ImageZoom};
 pub use watch::Rescans;
 pub use workspace::{Workspace, WorkspaceService};
 pub use writes::{PendingWork, PendingWrite, PendingWrites, WriteFailure};

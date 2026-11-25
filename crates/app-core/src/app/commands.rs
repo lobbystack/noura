@@ -5,9 +5,9 @@ use std::{sync::Arc, time::Instant};
 
 use super::{App, Change, SearchScope};
 use crate::{
-    Area, Command, CommandSource, KeyPress, Menu, MenuName, Platform, ShortcutEntry, ShortcutGroup,
-    Tab,
-    commands::{Run, area_keys, command_id},
+    Area, Command, CommandSource, KeyPress, Menu, MenuName, Overlay, Platform, ShortcutEntry,
+    ShortcutGroup, Tab,
+    commands::{Covered, Run, area_keys, command_id, default_shortcuts},
     layout::FILES_SECTION,
     menus,
     plugins::COMMAND_PREFIX,
@@ -34,7 +34,7 @@ impl App {
             Platform::Windows => "Exit",
             Platform::Linux => "Quit",
         };
-        let kernel: [(&str, &str, Run); 21] = [
+        let kernel: [(&str, &str, Run); 22] = [
             (NEW_NOTE, "New Note", Arc::new(|app| app.new_note(None))),
             (
                 NEW_FOLDER,
@@ -60,6 +60,11 @@ impl App {
             (SHARE_LINK, "Share Link…", Arc::new(App::share_open_note)),
             (SAVE, "Save", Arc::new(App::save_active_note)),
             (CLOSE_TAB, "Close Tab", Arc::new(App::close_active_tab)),
+            (
+                REOPEN_CLOSED_TAB,
+                "Reopen Closed Tab",
+                Arc::new(App::reopen_closed_tab),
+            ),
             (NEW_WINDOW, "New Window", Arc::new(App::open_new_window)),
             (CLOSE_WINDOW, "Close Window", Arc::new(App::close_window)),
             (NEXT_TAB, "Next Tab", Arc::new(|app| app.cycle_tab(1))),
@@ -73,9 +78,17 @@ impl App {
                 "Toggle Sidebar",
                 Arc::new(App::toggle_sidebar),
             ),
-            (ZOOM_IN, "Zoom In", Arc::new(App::zoom_in)),
-            (ZOOM_OUT, "Zoom Out", Arc::new(App::zoom_out)),
-            (ZOOM_RESET, "Actual Size", Arc::new(App::actual_size)),
+            (ZOOM_IN, "Zoom In", Arc::new(|app| app.zoom_view(Zoom::In))),
+            (
+                ZOOM_OUT,
+                "Zoom Out",
+                Arc::new(|app| app.zoom_view(Zoom::Out)),
+            ),
+            (
+                ZOOM_RESET,
+                "Actual Size",
+                Arc::new(|app| app.zoom_view(Zoom::ActualSize)),
+            ),
             (SETTINGS, "Settings…", Arc::new(App::open_settings)),
             (
                 ABOUT,
@@ -89,8 +102,10 @@ impl App {
             ),
             (QUIT, quit, Arc::new(App::request_quit)),
         ];
+        let platform = self.platform();
         for (id, label, run) in kernel {
-            let mut command = Command::new(id, label, Area::Anywhere);
+            let mut command = Command::new(id, label, Area::Anywhere)
+                .with_shortcuts(default_shortcuts(id, platform));
             if id == NEW_WINDOW {
                 command = command.in_menu(MenuName::File);
             }
@@ -104,7 +119,7 @@ impl App {
     /// then one Go to command per rail page, then the commands running
     /// plugins add, which have no shortcuts.
     pub fn commands(&self) -> Vec<Command> {
-        let mut commands = self.registry.list(&self.rail.ordered());
+        let mut commands = self.registry.list(&self.rail.ordered(), self.platform());
         commands.extend(
             self.session
                 .plugins()
@@ -132,7 +147,26 @@ impl App {
     /// it ran: nothing runs for an unknown ID, or for the second report of
     /// a key press that the menu and the window both report.
     pub fn run_command(&mut self, id: &str, source: CommandSource, at: Instant) -> bool {
+        // A key or a menu item reaches what covers the window first. The
+        // palette and buttons can't be used while something covers them.
+        let from_keys = matches!(source, CommandSource::Key | CommandSource::Menu);
+        if self.hidden && from_keys && id != command_id::QUIT {
+            // The window hid as the last one, and a menu item shows it
+            // again first, as on macOS. Shown, it is the new window, and
+            // it has no tab to close.
+            if [command_id::CLOSE_TAB, command_id::CLOSE_WINDOW].contains(&id) {
+                return false;
+            }
+            self.show_window();
+            if id == command_id::NEW_WINDOW {
+                return true;
+            }
+        }
+        let covered = from_keys.then(|| self.overlay()).flatten();
         if id.starts_with(COMMAND_PREFIX) {
+            if covered.is_some() {
+                return false;
+            }
             // The plugin runs it on its own thread and draws its views
             // again; the window shows them once they arrive.
             let ran = self.session.plugins().run_command(id, self.key);
@@ -147,8 +181,53 @@ impl App {
         if !self.registry.is_new_run(id, source, at) {
             return false;
         }
-        run(self);
-        true
+        match covered.map(|overlay| overlay.takes(id)) {
+            None | Some(Covered::Runs) => {
+                run(self);
+                true
+            }
+            Some(Covered::Closes) => {
+                self.close_overlay();
+                true
+            }
+            Some(Covered::Waits) => false,
+        }
+    }
+
+    /// What covers the window now, the one on top: a dialog that asks
+    /// something, search or Settings. Keys and menu items that act on the
+    /// window's tabs and files don't reach past it.
+    pub fn overlay(&self) -> Option<Overlay> {
+        let asking = self.unsaved_prompt().is_some()
+            || self.share_screen().open
+            || self.ai_tool_prompt().is_some()
+            || self.plugin_install.is_some();
+        if asking {
+            return Some(Overlay::Dialog);
+        }
+        if self.palette.is_some() {
+            return Some(Overlay::Palette);
+        }
+        if self.settings.is_some() {
+            return Some(Overlay::Settings);
+        }
+        let reviewing = self
+            .tabs
+            .active()
+            .and_then(|tab| self.note(tab.id()))
+            .and_then(|note| note.conflict())
+            .is_some_and(|conflict| conflict.is_reviewing());
+        (self.pending_trash.is_some() || reviewing).then_some(Overlay::Dialog)
+    }
+
+    /// Close search or Settings, as Close Tab does while it covers the
+    /// window.
+    fn close_overlay(&mut self) {
+        match self.overlay() {
+            Some(Overlay::Palette) => self.close_palette(),
+            Some(Overlay::Settings) => self.close_settings(),
+            Some(Overlay::Dialog) | None => {}
+        }
     }
 
     /// The command a key press runs while `focus` has the keyboard: a
@@ -244,6 +323,20 @@ impl App {
         self.activate_tab(id);
     }
 
+    /// Show the tab at place `number`, counting from 1, or the last tab
+    /// with `None`, as Mod-1 to Mod-9 do. Nothing happens when fewer tabs
+    /// are open.
+    pub fn show_tab_number(&mut self, number: Option<usize>) {
+        let tabs = self.tabs.list();
+        let tab = match number {
+            Some(number) => number.checked_sub(1).and_then(|index| tabs.get(index)),
+            None => tabs.last(),
+        };
+        if let Some(id) = tab.map(Tab::id) {
+            self.activate_tab(id);
+        }
+    }
+
     /// New Window: open another window on the open workspace, which
     /// [`App::take_opened_windows`] hands the client.
     fn open_new_window(&mut self) {
@@ -253,9 +346,13 @@ impl App {
         }
     }
 
+    /// Close the active tab, or the window once no tab is open, as Cmd+W
+    /// does in Safari and Chrome.
     fn close_active_tab(&mut self) {
-        if let Some(id) = self.tabs.active().map(Tab::id) {
-            self.close_tab(id);
+        match self.tabs.active().map(Tab::id) {
+            Some(id) => self.close_tab(id),
+            None if self.tabs.list().is_empty() => self.close_window(),
+            None => {}
         }
     }
 
@@ -276,6 +373,37 @@ impl App {
         }
         if self.is_section_collapsed(FILES_SECTION) {
             self.toggle_section(FILES_SECTION);
+        }
+    }
+}
+
+/// What Zoom In, Zoom Out and Actual Size do.
+#[derive(Debug, Clone, Copy)]
+enum Zoom {
+    In,
+    Out,
+    ActualSize,
+}
+
+impl App {
+    /// Zoom In, Zoom Out and Actual Size zoom the PDF or the image while
+    /// its tab is active, as Preview does, and the interface anywhere
+    /// else, as while Settings or search covers the tab.
+    fn zoom_view(&mut self, zoom: Zoom) {
+        let covered = self.overlay().is_some();
+        let tab = self.active_tab().map(Tab::id).filter(|_| !covered);
+        let pdf = tab.filter(|tab| self.pdf(*tab).is_some());
+        let image = tab.filter(|tab| self.image(*tab).is_some());
+        match (pdf, image, zoom) {
+            (Some(tab), _, Zoom::In) => self.pdf_zoom_in(tab),
+            (Some(tab), _, Zoom::Out) => self.pdf_zoom_out(tab),
+            (Some(tab), _, Zoom::ActualSize) => self.pdf_actual_size(tab),
+            (None, Some(tab), Zoom::In) => self.image_zoom_in(tab),
+            (None, Some(tab), Zoom::Out) => self.image_zoom_out(tab),
+            (None, Some(tab), Zoom::ActualSize) => self.image_actual_size(tab),
+            (None, None, Zoom::In) => self.zoom_in(),
+            (None, None, Zoom::Out) => self.zoom_out(),
+            (None, None, Zoom::ActualSize) => self.actual_size(),
         }
     }
 }

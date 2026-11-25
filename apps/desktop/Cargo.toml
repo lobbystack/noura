@@ -13,21 +13,21 @@ name = "noura"
 path = "src/main.rs"
 
 [dependencies]
-app-core = { version = "0.3.2", path = "../../crates/app-core" }
-app-ui = { version = "0.3.2", path = "../../crates/app-ui" }
+app-core = { version = "0.3.3", path = "../../crates/app-core" }
+app-ui = { version = "0.3.3", path = "../../crates/app-ui" }
 auto-launch.workspace = true
 # Global shortcuts for plugins, and Noura's menu bar or tray item.
 global-hotkey.workspace = true
 png = "0.18.1"
-plugin-host = { version = "0.3.2", path = "../../crates/plugin-host" }
+plugin-host = { version = "0.3.3", path = "../../crates/plugin-host" }
 # Recording, transcribe.cpp and pasting (ADR 0006).
-speech = { version = "0.3.2", path = "../../crates/speech" }
+speech = { version = "0.3.3", path = "../../crates/speech" }
 tray-icon.workspace = true
 cargo-packager-updater.workspace = true
 dunce.workspace = true
 eframe.workspace = true
 # The note editor paints its text through eframe's wgpu renderer.
-editor-egui = { version = "0.3.2", path = "../../crates/editor-egui" }
+editor-egui = { version = "0.3.3", path = "../../crates/editor-egui" }
 egui.workspace = true
 # One running copy per user: a second launch asks the running copy to come
 # forward through a local socket.
@@ -38,11 +38,11 @@ logroller.workspace = true
 muda.workspace = true
 # `noura mcp --workspace <folder>` serves the workspace to AI tools, and
 # Settings tests that command.
-noura-mcp = { version = "0.3.2", path = "../../crates/mcp-server" }
+noura-mcp = { version = "0.3.3", path = "../../crates/mcp-server" }
 opener.workspace = true
 rfd.workspace = true
 # NSSpellChecker on macOS and ISpellChecker on Windows; nothing on Linux.
-spell-check = { version = "0.3.2", path = "../../crates/spell-check" }
+spell-check = { version = "0.3.3", path = "../../crates/spell-check" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 winit.workspace = true
@@ -63,7 +63,7 @@ drag.workspace = true
 block2.workspace = true
 objc2.workspace = true
 objc2-app-kit = { workspace = true, features = ["std", "NSApplication", "NSButton", "NSControl", "NSEvent", "NSPanel", "NSResponder", "NSScreen", "NSView", "NSWindow"] }
-objc2-foundation = { workspace = true, features = ["std", "block2", "NSArray", "NSBundle", "NSError", "NSGeometry", "NSNotification", "NSOperation", "NSSet", "NSString"] }
+objc2-foundation = { workspace = true, features = ["std", "block2", "NSArray", "NSBundle", "NSError", "NSGeometry", "NSNotification", "NSOperation", "NSSet", "NSString", "NSUserDefaults"] }
 objc2-user-notifications = { workspace = true, features = ["std", "block2", "UNNotification", "UNNotificationAction", "UNNotificationCategory", "UNNotificationContent", "UNNotificationRequest", "UNNotificationResponse", "UNNotificationTrigger", "UNUserNotificationCenter"] }
 
 # While Explorer drags files over a window, the window asks Windows where
@@ -137,6 +137,19 @@ resources = [
 info-plist-path = "packaging/Info.plist"
 signing-identity = "-"
 entitlements = "packaging/Entitlements.plist"
+
+# The window Finder shows when the disk image opens: Noura, an arrow and the
+# Applications folder on a dark background. Finder writes the layout into the
+# image's .DS_Store while cargo-packager builds it, with 128 pt icons and
+# 16 pt labels. The size includes the title bar. Positions are icon centers
+# in points from the top left of the window's content, and
+# packaging/dmg-background.svg draws the arrow and the label pills around
+# them; scripts/render-dmg-background.sh renders it into the TIFF.
+[package.metadata.packager.dmg]
+background = "packaging/dmg-background.tiff"
+window-size = { width = 640, height = 432 }
+app-position = { x = 160, y = 196 }
+application-folder-position = { x = 480, y = 196 }
 
 # The AppImage takes Wayland and xkbcommon from the system. The host's Mesa
 # drivers load into the app and need the host's libwayland-client: with the

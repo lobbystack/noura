@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="424" viewBox="0 0 640 424">
+  <!--
+    The background of the window Finder shows when Noura's disk image
+    opens. scripts/render-dmg-background.sh renders it at 1x and 2x into
+    dmg-background.tiff, which cargo-packager puts in the image.
+
+    Units are points from the top left of the window's content area, the
+    coordinates Finder uses for icon positions. Cargo.toml's
+    [package.metadata.packager.dmg] places Noura.app at (160, 196) and the
+    Applications link at (480, 196); Finder centers each 128 pt icon on that
+    point. Keep the arrow and pills in step with those positions.
+
+    The window is 432 pt tall with its title bar. macOS 26 and later draw a
+    32 pt title bar, which leaves the 400 pt this design fills. Earlier
+    versions draw a 28 pt one, and Finder paints white below the picture,
+    so the canvas runs on to 424 pt.
+
+    Colors: ink, lavender and lavender-light from the website's global.css,
+    and the website's #c5c4ff for the arrow.
+  -->
+  <defs>
+    <radialGradient id="glow" cx="520" cy="40" r="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9391fe" stop-opacity="0.34"/>
+      <stop offset="0.35" stop-color="#9391fe" stop-opacity="0.14"/>
+      <stop offset="0.7" stop-color="#9391fe" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#9391fe" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="640" height="424" fill="#0f0f10"/>
+  <rect width="640" height="424" fill="url(#glow)"/>
+  <!-- From Noura toward Applications, centered in the gap between the
+       app's icon (right edge at 211) and the folder's (left edge at 421). -->
+  <g fill="#c5c4ff" stroke="#c5c4ff" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M266 196 H342" fill="none" stroke-width="12"/>
+    <path d="M339 177 L367 196 L339 215 Z" stroke-width="8"/>
+  </g>
+  <!-- Finder draws each label in dark text centered 84 pt below the
+       icon's center, on these pills. -->
+  <rect x="100" y="266" width="120" height="28" rx="14" fill="#e5e5ff"/>
+  <rect x="420" y="266" width="120" height="28" rx="14" fill="#e5e5ff"/>
+</svg>

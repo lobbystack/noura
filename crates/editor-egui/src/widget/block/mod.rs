@@ -215,9 +215,8 @@ impl<'ast> MdRender {
                         NodeValue::Math(m) => chars += m.literal.chars().count(),
                         NodeValue::SoftBreak | NodeValue::LineBreak => chars += 1,
                         NodeValue::Image(link) => {
-                            let (dims, _) = self.embed_texture_size(&link.url);
                             image_height = image_height
-                                .max(self.image_size(dims, width, self.image_dims(d)).y);
+                                .max(self.embed_size(&link.url, width, self.image_dims(d)).y);
                         }
                         _ => {}
                     }

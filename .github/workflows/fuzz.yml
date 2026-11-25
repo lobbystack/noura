@@ -4,8 +4,8 @@ name: Fuzz
 # for a fixed time each night. A crash fails the run, which keeps every
 # crashing input as a regression case: it copies the inputs into
 # crates/collab-sandbox/fuzz/regressions, where
-# crates/collab-sandbox/tests/fuzz.rs replays them on every test run, and
-# opens a pull request that adds them.
+# crates/collab-sandbox/tests/fuzz.rs and the guest's tests replay them,
+# pushes them to a branch and links a pull request from the run's summary.
 on:
   schedule:
     - cron: '23 4 * * *'
@@ -23,7 +23,6 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
-      pull-requests: write
     env:
       SECONDS_PER_TARGET: '600'
     steps:
@@ -53,7 +52,7 @@ jobs:
               found=1
             fi
             # The guest targets build the sandbox's own records, so their
-            # crashes replay through the sandbox's targets.
+            # crashes share the sandbox targets' folders, which both replay.
             folder="${target#guest_}"
             mkdir -p "fuzz/regressions/$folder"
             for input in fuzz/artifacts/"$target"/*; do
@@ -63,25 +62,36 @@ jobs:
             done
           done
           echo "found=$found" >> "$GITHUB_OUTPUT"
-      # GitHub starts no workflow for a pull request that this job's own
-      # token opens, so the pull request's body asks for a push to start
-      # its CI.
+      # The repository doesn't let workflows open pull requests, so the
+      # summary links one to open by hand, which also starts its CI.
       - name: Keep the crashing inputs as regression cases
         if: steps.run.outputs.found == '1'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          git add crates/collab-sandbox/fuzz/regressions
+          if git diff --cached --quiet; then
+            echo "The fuzz run failed with no crashing input to keep: see the log of **Run each target**." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           branch="fuzz/regressions-$GITHUB_RUN_ID"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "$branch"
-          git add crates/collab-sandbox/fuzz/regressions
           git commit -m "Keep the inputs fuzz run $GITHUB_RUN_ID crashed on as regression cases"
           git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "$branch"
-          gh pr create --base main --head "$branch" \
-            --title "Fuzz regressions from run $GITHUB_RUN_ID" \
-            --body "The nightly fuzz run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID crashed the collaboration sandbox. This adds the inputs to crates/collab-sandbox/fuzz/regressions, so crates/collab-sandbox/tests/fuzz.rs fails on them until the sandbox handles them. GitHub runs no CI on a pull request that a workflow opens with its own token: push a commit to $branch, or close and reopen this pull request, to start it."
+          {
+            echo "### Fuzz run $GITHUB_RUN_ID crashed"
+            echo
+            echo "Branch \`$branch\` keeps these inputs:"
+            echo
+            git show --name-only --format= HEAD | while read -r input; do
+              echo "- \`$input\`"
+            done
+            echo
+            echo "[Open a pull request]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$GITHUB_REF_NAME...$branch?expand=1) to add them. Its tests fail until the sandbox handles them."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Fail on a crash
         if: steps.run.outputs.found == '1'
         run: exit 1

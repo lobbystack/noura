@@ -8,7 +8,10 @@ mod phosphor;
 
 use std::{collections::HashMap, sync::Arc};
 
-use egui::{Color32, ColorImage, Context, Id, Painter, Rect, TextureHandle, TextureOptions, pos2};
+use egui::{
+    Color32, ColorImage, Context, Id, Painter, Rect, TextureHandle, TextureOptions,
+    emath::GuiRounding as _, pos2,
+};
 use resvg::{tiny_skia, usvg};
 
 /// An icon, as its outline and its filled form.
@@ -91,16 +94,18 @@ icons! {
     BROADCAST => BROADCAST_REGULAR, BROADCAST_FILL;
 }
 
-/// Draw `icon` in `rect`, in `color`, filled when `filled`.
+/// Draw `icon` in `rect`, in `color`, filled when `filled`, centred and
+/// on the pixel grid: each of the texture's pixels covers one screen pixel,
+/// where an icon that started half a pixel in would draw soft and dim.
 pub(crate) fn paint(painter: &Painter, icon: Icon, rect: Rect, color: Color32, filled: bool) {
-    let side = (rect.width().min(rect.height()) * painter.pixels_per_point()).round() as u32;
+    let pixels_per_point = painter.pixels_per_point();
+    let side = (rect.width().min(rect.height()) * pixels_per_point).round() as u32;
     let Some(texture) = texture(painter.ctx(), icon, filled, side) else {
         return;
     };
-    let square = Rect::from_center_size(
-        rect.center(),
-        egui::Vec2::splat(rect.width().min(rect.height())),
-    );
+    let size = egui::Vec2::splat(side as f32 / pixels_per_point);
+    let corner = (rect.center() - size / 2.0).round_to_pixels(pixels_per_point);
+    let square = Rect::from_min_size(corner, size);
     painter.image(
         texture.id(),
         square,
