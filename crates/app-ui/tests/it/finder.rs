@@ -618,3 +618,72 @@ fn mod_o_and_mod_shift_f_open_search_filtered_and_the_chip_removes_the_filter() 
     assert!(chip(&harness, "Remove Contents filter").is_some());
     assert!(harness.unnamed_widgets().is_empty());
 }
+
+#[test]
+fn search_says_how_many_files_it_found_and_lists_more_as_you_reach_the_end_or_show_all() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let names: Vec<String> = (0..120)
+        .map(|index| format!("Plum {index:03}.md"))
+        .collect();
+    let files: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), "x")).collect();
+    let mut harness = opened(app_data.path(), &folder, &files);
+
+    // Unfiltered, the Files group lists five and ends with Show all.
+    shortcut(&mut harness, Modifiers::COMMAND, Key::K);
+    type_text(&mut harness, "plum");
+    let files_group = harness.get_by_role_and_label(Role::ListBox, "Files");
+    let listed: Vec<String> = files_group
+        .query_all_by_role(Role::ListBoxOption)
+        .filter_map(|option| option.accesskit_node().label())
+        .collect();
+    assert_eq!(listed.len(), 6);
+    assert_eq!(listed[5], "Show all 120");
+    for _ in 0..5 {
+        press(&mut harness, Key::ArrowDown);
+    }
+    press(&mut harness, Key::Enter);
+
+    // Filtered to names: the count, and the first page.
+    assert!(dialog(&harness, "Search").is_some(), "search stays open");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Remove Names filter")
+            .is_some()
+    );
+    assert!(harness.query_by_label("120 files").is_some());
+    assert_eq!(options(&harness).len(), 50);
+    // Down at the end of the list lists the next page, and the list
+    // scrolls along.
+    for _ in 0..49 {
+        harness.key_press(Key::ArrowDown);
+        harness.step();
+    }
+    run(&mut harness);
+    assert_eq!(options(&harness).len(), 100);
+    let highlighted = harness
+        .query_all_by_role(Role::ListBoxOption)
+        .find(|option| option.accesskit_node().is_selected() == Some(true))
+        .and_then(|option| option.accesskit_node().label());
+    assert_eq!(highlighted.as_deref(), Some("Plum 049"));
+
+    // Scrolling to the end of the list lists the next page too.
+    let row = harness
+        .get_by_role_and_label(Role::ListBoxOption, "Plum 049")
+        .rect();
+    harness.hover_at(row.center());
+    harness.run();
+    for _ in 0..20 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -300.0),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    run(&mut harness);
+    assert_eq!(options(&harness).len(), 120);
+}

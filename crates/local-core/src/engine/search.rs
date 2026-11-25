@@ -61,6 +61,23 @@ impl WorkspaceEngine {
             .search(input)
     }
 
+    /// The files [`WorkspaceEngine::search`] finds, skipping the first
+    /// `offset`, at most `input.limit` of them.
+    pub fn search_page(&self, input: &SearchInput, offset: u32) -> Result<Vec<SearchResult>> {
+        self.index
+            .lock()
+            .map_err(|_| lock_error("search_query"))?
+            .search_page(input, offset)
+    }
+
+    /// How many files [`WorkspaceEngine::search`] finds for `input` in all.
+    pub fn search_count(&self, input: &SearchInput) -> Result<u64> {
+        self.index
+            .lock()
+            .map_err(|_| lock_error("search_count"))?
+            .search_count(input)
+    }
+
     /// The object types the index holds, sorted, for a search's type
     /// filter.
     pub fn object_types(&self) -> Result<Vec<String>> {

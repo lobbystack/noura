@@ -176,12 +176,12 @@ pub use plugins::{
 };
 pub use preferences::{ACTUAL_SIZE, Appearance, LineWidth, Preferences, TextSize, ZOOM_LEVELS};
 pub use problems::Problem;
-pub use quick_open::{QUICK_OPEN_LIMIT, QuickOpenMatch};
+pub use quick_open::QuickOpenMatch;
 pub use rail::{FILES_PAGE, INBOX_PAGE, Page};
 pub use recents::{RECENT_LIMIT, RecentWorkspace};
 pub use remote_images::RemoteImageState;
 pub use saves::{NoPendingSaves, PendingSaves};
-pub use search::{SEARCH_LIMIT, SearchHit, SearchQuery, SearchState};
+pub use search::{SEARCH_LIMIT, SEARCH_PAGE, SearchHit, SearchQuery, SearchState};
 pub use settings::{
     ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
     THIRD_PARTY_LICENSES, VERSION, settings_section,

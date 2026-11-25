@@ -7,6 +7,11 @@
 //! filter, the rows and the highlighted row; Enter opens the highlighted
 //! file the way the file tree opens one, or runs the highlighted command
 //! through the same dispatch as keys and menus.
+//!
+//! Filtered, search says how many files it found and lists them a page at
+//! a time, the next page once you scroll or move the highlight near the
+//! end. Unfiltered, a group that holds more files than it lists ends with
+//! a Show all row that filters search to that group.
 
 use std::{sync::Arc, time::Instant};
 
@@ -132,6 +137,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
     let mut close = false;
     let mut run = false;
     let mut clicked = None;
+    let mut more = false;
     let mut remove_filter = false;
     // The legacy palette's top edge sits a third of the way down.
     let top = ctx.content_rect().height() / 3.0;
@@ -234,7 +240,14 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
                     finder::filters(ui, app);
                 }
                 ui.add_space(6.0);
-                clicked = results(ui, app, view, &theme);
+                if let Some(total) = app.palette_total().filter(|total| *total > 0) {
+                    let files = if total == 1 { "file" } else { "files" };
+                    note(ui, &theme, &format!("{total} {files}"));
+                    ui.add_space(4.0);
+                }
+                let (row, near_end) = results(ui, app, view, &theme);
+                clicked = row;
+                more = near_end;
             });
         });
     if modal.should_close() {
@@ -244,6 +257,9 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut PaletteView) {
     if remove_filter {
         app.set_palette_scope(SearchScope::All);
         ctx.memory_mut(|memory| memory.request_focus(field_id()));
+    }
+    if more {
+        app.show_more_results();
     }
     if let Some(row) = clicked {
         app.select_palette_row(row);
@@ -302,11 +318,19 @@ fn give_back_keyboard(ctx: &egui::Context, view: &mut PaletteView) {
 }
 
 /// What search lists: its rows in groups, or what shows instead. Returns
-/// the row you clicked.
-fn results(ui: &mut Ui, app: &App, view: &mut PaletteView, theme: &Palette) -> Option<usize> {
-    let selected = app.palette()?.selected();
+/// the row you clicked, and whether the list shows its end, where the next
+/// page belongs.
+fn results(
+    ui: &mut Ui,
+    app: &App,
+    view: &mut PaletteView,
+    theme: &Palette,
+) -> (Option<usize>, bool) {
+    let Some(selected) = app.palette().map(|palette| palette.selected()) else {
+        return (None, false);
+    };
     let status = app.palette_status();
-    let clicked = match status {
+    let (clicked, near_end) = match status {
         PaletteStatus::Results => {
             let platform = app.platform();
             let rows: Vec<(PaletteGroup, Row)> = app
@@ -318,16 +342,16 @@ fn results(ui: &mut Ui, app: &App, view: &mut PaletteView, theme: &Palette) -> O
         }
         PaletteStatus::Searching => {
             note(ui, theme, "Searching\u{2026}");
-            None
+            (None, false)
         }
         PaletteStatus::NoResults => {
             note(ui, theme, "No results");
-            None
+            (None, false)
         }
-        PaletteStatus::Idle | PaletteStatus::Failed => None,
+        PaletteStatus::Idle | PaletteStatus::Failed => (None, false),
     };
     finder::failure(ui, app, theme);
-    clicked
+    (clicked, near_end)
 }
 
 /// How search draws `item`.
@@ -342,6 +366,20 @@ fn row(item: &PaletteItem, platform: Platform) -> Row {
             height: ROW_HEIGHT,
         },
         PaletteItem::Hit(hit) => finder::hit_row(hit),
+        PaletteItem::More { total, .. } => {
+            let label = total.map_or_else(
+                || "Show all".to_owned(),
+                |total| format!("Show all {total}"),
+            );
+            Row {
+                label,
+                detail: String::new(),
+                second_line: None,
+                description: String::new(),
+                shortcut: None,
+                height: ROW_HEIGHT,
+            }
+        }
         PaletteItem::Command(command) => {
             let keys = command
                 .shortcuts
@@ -383,16 +421,19 @@ pub(crate) struct Row {
     pub(crate) height: f32,
 }
 
+/// How close to the end of the list, in rows, the next page loads.
+const MORE_AHEAD: f32 = 3.0;
+
 /// The rows, one list box per group named after it, with the highlighted
 /// row selected. A group shows its heading only when another group shows
-/// too. Returns the row you clicked.
+/// too. Returns the row you clicked, and whether the list shows its end.
 fn list(
     ui: &mut Ui,
     view: &mut PaletteView,
     theme: &Palette,
     rows: &[(PaletteGroup, Row)],
     selected: usize,
-) -> Option<usize> {
+) -> (Option<usize>, bool) {
     let mut groups: Vec<(PaletteGroup, Vec<(usize, &Row)>)> = Vec::new();
     for (index, (group, row)) in rows.iter().enumerate() {
         match groups.last_mut() {
@@ -402,7 +443,7 @@ fn list(
     }
     let headings = groups.len() > 1;
     let mut clicked = None;
-    ScrollArea::vertical()
+    let output = ScrollArea::vertical()
         .id_salt("palette-list")
         .max_height(LIST_HEIGHT)
         .auto_shrink([false, true])
@@ -436,7 +477,9 @@ fn list(
                 });
             }
         });
-    clicked
+    let seen = output.state.clamped_offset().y + output.inner_rect.height();
+    let near_end = seen >= output.content_size.y - MORE_AHEAD * ROW_HEIGHT;
+    (clicked, near_end)
 }
 
 /// Row `index` of the list. Returns `index` when you click it.

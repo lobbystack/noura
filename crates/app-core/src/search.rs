@@ -4,7 +4,7 @@
 
 use std::sync::{
     Arc,
-    mpsc::{Receiver, Sender, channel},
+    mpsc::{Receiver, Sender, TryRecvError, channel},
 };
 
 use local_core::{CoreError, SearchInput, SearchResult};
@@ -53,15 +53,33 @@ impl Workspace {
     /// The files that match `query`, best match first: a match in the
     /// title comes before a match in the body alone.
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, AppError> {
-        let input = SearchInput {
-            query: query.text.clone(),
-            object_type: query.object_type.clone(),
-            folder: Some(query.folder.clone()),
-            tag: Some(query.tag.clone()),
-            limit: Some(SEARCH_LIMIT),
-        };
-        let results = self.engine().search(&input).map_err(search_error)?;
+        self.search_page(query, 0, SEARCH_LIMIT as usize)
+    }
+
+    /// The files [`Workspace::search`] finds, skipping the first `offset`,
+    /// at most `limit` of them.
+    pub fn search_page(
+        &self,
+        query: &SearchQuery,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, AppError> {
+        let input = search_input(query, limit);
+        let offset = u32::try_from(offset).unwrap_or(u32::MAX);
+        let results = self
+            .engine()
+            .search_page(&input, offset)
+            .map_err(search_error)?;
         Ok(results.into_iter().map(hit).collect())
+    }
+
+    /// How many files match `query` in all.
+    pub fn search_count(&self, query: &SearchQuery) -> Result<usize, AppError> {
+        let count = self
+            .engine()
+            .search_count(&search_input(query, 0))
+            .map_err(search_error)?;
+        Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 
     /// The object types the index holds, sorted, for the type filter.
@@ -69,6 +87,19 @@ impl Workspace {
         self.engine().object_types().map_err(search_error)
     }
 }
+
+fn search_input(query: &SearchQuery, limit: usize) -> SearchInput {
+    SearchInput {
+        query: query.text.clone(),
+        object_type: query.object_type.clone(),
+        folder: Some(query.folder.clone()),
+        tag: Some(query.tag.clone()),
+        limit: Some(u32::try_from(limit).unwrap_or(u32::MAX)),
+    }
+}
+
+/// How many hits one page of search's contents holds.
+pub const SEARCH_PAGE: usize = 50;
 
 /// What a search shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,8 +119,11 @@ pub enum SearchState {
 enum Job {
     /// List the object types the index holds, for the type filter.
     Types,
-    /// Find the files that match a query.
-    Search(SearchQuery),
+    /// Find a page of the files that match a query, skipping the first
+    /// `offset`. The first page's search counts every match afterwards.
+    Search { query: SearchQuery, offset: usize },
+    /// Count every file that matches a query.
+    Count(SearchQuery),
 }
 
 /// A job to run, numbered so its answer can be matched to it.
@@ -113,10 +147,27 @@ impl Request {
                 number,
                 result: workspace.search_types(),
             },
-            Job::Search(query) => Answer::Hits {
+            Job::Search { query, offset } => Answer::Hits {
                 number,
-                result: workspace.search(&query),
+                offset,
+                result: workspace.search_page(&query, offset, SEARCH_PAGE),
             },
+            Job::Count(query) => Answer::Count {
+                number,
+                result: workspace.search_count(&query),
+            },
+        }
+    }
+
+    /// The count of every match that follows this request's first page.
+    fn count(&self) -> Option<Self> {
+        match &self.job {
+            Job::Search { query, offset: 0 } => Some(Self {
+                number: self.number,
+                workspace: self.workspace.clone(),
+                job: Job::Count(query.clone()),
+            }),
+            _ => None,
         }
     }
 
@@ -128,7 +179,12 @@ impl Request {
                 number: self.number,
                 result: Err(result),
             },
-            Job::Search(_) => Answer::Hits {
+            Job::Search { offset, .. } => Answer::Hits {
+                number: self.number,
+                offset,
+                result: Err(result),
+            },
+            Job::Count(_) => Answer::Count {
                 number: self.number,
                 result: Err(result),
             },
@@ -143,7 +199,12 @@ enum Answer {
     },
     Hits {
         number: u64,
+        offset: usize,
         result: Result<Vec<SearchHit>, AppError>,
+    },
+    Count {
+        number: u64,
+        result: Result<usize, AppError>,
     },
 }
 
@@ -152,8 +213,11 @@ enum Answer {
 pub(crate) struct Answers {
     /// The object types the index holds.
     pub(crate) types: Option<Result<Vec<String>, AppError>>,
-    /// The newest search's hits.
-    pub(crate) hits: Option<Result<Vec<SearchHit>, AppError>>,
+    /// The newest search's page of hits, and how many hits come before
+    /// it.
+    pub(crate) hits: Option<(usize, Result<Vec<SearchHit>, AppError>)>,
+    /// How many files match the newest search in all.
+    pub(crate) count: Option<Result<usize, AppError>>,
 }
 
 /// Runs searches, and lists the types the index holds, on a background
@@ -170,6 +234,8 @@ pub(crate) struct Searcher {
     next: u64,
     /// The number of the search whose answer is wanted, or 0 for none.
     wanted_hits: u64,
+    /// The number of the search whose count is wanted, or 0 for none.
+    wanted_count: u64,
     /// The number of the type list that is wanted, or 0 for none.
     wanted_types: u64,
 }
@@ -185,6 +251,7 @@ impl Searcher {
             answered: Arc::new(answered),
             next: 1,
             wanted_hits: 0,
+            wanted_count: 0,
             wanted_types: 0,
         }
     }
@@ -193,12 +260,14 @@ impl Searcher {
     /// are dropped.
     pub(crate) fn cancel(&mut self) {
         self.wanted_hits = 0;
+        self.wanted_count = 0;
         self.wanted_types = 0;
     }
 
     /// Forget the searches asked for so far, but not the type list.
     pub(crate) fn cancel_search(&mut self) {
         self.wanted_hits = 0;
+        self.wanted_count = 0;
     }
 
     /// List the object types `workspace`'s index holds in the background.
@@ -210,7 +279,16 @@ impl Searcher {
     /// Search `workspace` for `query` in the background, in place of any
     /// search asked for before. [`Searcher::take`] returns the answer.
     pub(crate) fn start(&mut self, workspace: Arc<Workspace>, query: SearchQuery) {
-        self.wanted_hits = self.send(workspace, Job::Search(query));
+        let offset = 0;
+        self.wanted_hits = self.send(workspace, Job::Search { query, offset });
+        self.wanted_count = self.wanted_hits;
+    }
+
+    /// Search `workspace` for the page of `query`'s hits after the first
+    /// `offset`, as you reach the end of the ones that show. The count
+    /// the search started with stays wanted.
+    pub(crate) fn more(&mut self, workspace: Arc<Workspace>, query: SearchQuery, offset: usize) {
+        self.wanted_hits = self.send(workspace, Job::Search { query, offset });
     }
 
     /// Hand `job` to the search thread, starting it if needed, and return
@@ -260,8 +338,15 @@ impl Searcher {
                 Answer::Types { number, result } if number == self.wanted_types => {
                     newest.types = Some(result);
                 }
-                Answer::Hits { number, result } if number == self.wanted_hits => {
-                    newest.hits = Some(result);
+                Answer::Hits {
+                    number,
+                    offset,
+                    result,
+                } if number == self.wanted_hits => {
+                    newest.hits = Some((offset, result));
+                }
+                Answer::Count { number, result } if number == self.wanted_count => {
+                    newest.count = Some(result);
                 }
                 _ => {}
             }
@@ -271,17 +356,50 @@ impl Searcher {
 }
 
 /// The search thread: answer the newest waiting type list, then the
-/// newest waiting search, until the searcher goes away.
+/// newest waiting search, until the searcher goes away. Once a search's
+/// first page is on its way and nothing waits, count every match, so the
+/// first page never waits for the count. A new search drops the count
+/// still to come; a later page of the same search doesn't.
 fn serve(requests: &Receiver<Request>, answers: &Sender<Answer>, answered: &dyn Fn()) {
-    while let Ok(first) = requests.recv() {
+    let mut count: Option<Request> = None;
+    loop {
+        let first = match count.take() {
+            Some(counting) => match requests.try_recv() {
+                Ok(request) => {
+                    count = Some(counting);
+                    request
+                }
+                Err(TryRecvError::Empty) => {
+                    if answers.send(counting.run()).is_err() {
+                        return;
+                    }
+                    answered();
+                    continue;
+                }
+                Err(TryRecvError::Disconnected) => return,
+            },
+            None => match requests.recv() {
+                Ok(request) => request,
+                Err(_) => return,
+            },
+        };
         let mut types = None;
         let mut search = None;
         let waiting = std::iter::once(first).chain(std::iter::from_fn(|| requests.try_recv().ok()));
         for request in waiting {
             match request.job {
                 Job::Types => types = Some(request),
-                Job::Search(_) => search = Some(request),
+                Job::Search { offset: 0, .. } => {
+                    count = None;
+                    search = Some(request);
+                }
+                Job::Search { .. } | Job::Count(_) => search = Some(request),
             }
+        }
+        if let Some(request) = &search
+            && let Some(counting) = request.count()
+        {
+            count = Some(counting);
         }
         for request in types.into_iter().chain(search) {
             if answers.send(request.run()).is_err() {

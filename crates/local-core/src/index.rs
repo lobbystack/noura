@@ -644,6 +644,12 @@ impl IndexStore {
     /// above a match anywhere else, then the full-text rank decides. A
     /// heading inside the file ranks as ordinary body text.
     pub fn search(&self, input: &SearchInput) -> Result<Vec<SearchResult>> {
+        self.search_page(input, 0)
+    }
+
+    /// The files [`IndexStore::search`] finds, skipping the first
+    /// `offset`, at most `input.limit` of them.
+    pub fn search_page(&self, input: &SearchInput, offset: u32) -> Result<Vec<SearchResult>> {
         let folder = match input.folder.as_deref() {
             None | Some("") => None,
             Some(folder) => Some(search_folder(folder)?),
@@ -666,7 +672,7 @@ impl IndexStore {
                  AND (?3 IS NULL OR substr(f.relative_path,1,length(?3)+1)=?3||'/') \
                  AND (?6 IS NULL OR EXISTS(SELECT 1 FROM object_tags t \
                    WHERE t.file_id=f.id AND t.tag=?6)) \
-                 ORDER BY 8 DESC,6 LIMIT ?4",
+                 ORDER BY 8 DESC,6 LIMIT ?4 OFFSET ?7",
             )
             .map_err(|error| CoreError::index(error, "search_query"))?;
         let rows = statement
@@ -677,7 +683,8 @@ impl IndexStore {
                     folder,
                     input.limit.unwrap_or(50),
                     query.any_word_in_file_name,
-                    tag
+                    tag,
+                    offset
                 ],
                 |row| {
                     Ok(SearchResult {
@@ -694,6 +701,35 @@ impl IndexStore {
             .map_err(|error| CoreError::index(error, "search_query"))?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|error| CoreError::index(error, "search_query"))
+    }
+
+    /// How many files [`IndexStore::search`] finds for `input` in all,
+    /// however many its limit lets through.
+    pub fn search_count(&self, input: &SearchInput) -> Result<u64> {
+        let folder = match input.folder.as_deref() {
+            None | Some("") => None,
+            Some(folder) => Some(search_folder(folder)?),
+        };
+        let tag = input.tag.as_deref().and_then(tag_key);
+        let Some(query) = PlainTextQuery::new(&input.query) else {
+            return Ok(0);
+        };
+        self.connection
+            .prepare_cached(
+                "SELECT count(*) FROM object_fts fts JOIN files f ON f.id=fts.rowid \
+                 LEFT JOIN objects o ON o.file_id=f.id \
+                 WHERE object_fts MATCH ?1 AND (?2 IS NULL OR o.object_type=?2) \
+                 AND (?3 IS NULL OR substr(f.relative_path,1,length(?3)+1)=?3||'/') \
+                 AND (?4 IS NULL OR EXISTS(SELECT 1 FROM object_tags t \
+                   WHERE t.file_id=f.id AND t.tag=?4))",
+            )
+            .and_then(|mut statement| {
+                statement.query_row(
+                    params![query.all_words, input.object_type, folder, tag],
+                    |row| row.get(0),
+                )
+            })
+            .map_err(|error| CoreError::index(error, "search_count"))
     }
 
     /// The object types the index holds, sorted.

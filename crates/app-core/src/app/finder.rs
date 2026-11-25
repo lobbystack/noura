@@ -3,7 +3,7 @@
 //! search filtered to contents offers.
 
 use super::{App, Change, SearchScope};
-use crate::{SearchState, quick_open};
+use crate::{SEARCH_PAGE, SearchState, quick_open};
 
 impl App {
     /// Rank the tree's files for what search's field holds, and highlight
@@ -15,6 +15,7 @@ impl App {
         };
         palette.names = quick_open::rank(tree.file_paths(), &palette.query.text);
         palette.selected = 0;
+        palette.shown = SEARCH_PAGE;
         self.listeners.emit(Change::Palette);
     }
 
@@ -68,6 +69,8 @@ impl App {
             return;
         };
         palette.selected = 0;
+        palette.shown = SEARCH_PAGE;
+        palette.hit_count = None;
         if palette.scope == SearchScope::Names || palette.query.text.trim().is_empty() {
             self.searcher.cancel_search();
             palette.state = SearchState::Idle;
@@ -84,7 +87,8 @@ impl App {
     /// changed.
     pub(super) fn take_search_answer(&mut self) -> bool {
         let answers = self.searcher.take();
-        if self.palette.is_none() || (answers.types.is_none() && answers.hits.is_none()) {
+        let nothing = answers.types.is_none() && answers.hits.is_none() && answers.count.is_none();
+        if self.palette.is_none() || nothing {
             return false;
         }
         let kept = self.selected_key();
@@ -101,9 +105,24 @@ impl App {
             Some(Err(_)) | None => {}
         }
         match answers.hits {
-            Some(Ok(hits)) => palette.state = SearchState::Done(hits),
-            Some(Err(error)) => palette.state = SearchState::Failed(error),
+            Some((0, Ok(hits))) => palette.state = SearchState::Done(hits),
+            Some((0, Err(error))) => palette.state = SearchState::Failed(error),
+            // A later page joins the hits before it; one that failed
+            // leaves them as they are.
+            Some((offset, Ok(more))) => {
+                if let SearchState::Done(hits) = &mut palette.state
+                    && hits.len() == offset
+                {
+                    hits.extend(more);
+                }
+            }
+            Some((_, Err(error))) => {
+                tracing::debug!(%error.code, "a later page of search results failed");
+            }
             None => {}
+        }
+        if let Some(Ok(count)) = answers.count {
+            palette.hit_count = Some(count);
         }
         self.keep_selection(kept);
         self.listeners.emit(Change::Palette);

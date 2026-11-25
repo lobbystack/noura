@@ -20,9 +20,6 @@ use crate::{
     files::{parent_of, shown_name, sort_key},
 };
 
-/// Search lists at most this many files by name.
-pub const QUICK_OPEN_LIMIT: usize = 50;
-
 /// One file search lists by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickOpenMatch {
@@ -72,8 +69,8 @@ pub(crate) fn file_match(path: &str) -> QuickOpenMatch {
     }
 }
 
-/// The files among `paths` that match `query`, best first. Nothing typed
-/// matches nothing.
+/// Every file among `paths` that matches `query`, best first. Nothing
+/// typed matches nothing.
 pub(crate) fn rank<'a>(
     paths: impl IntoIterator<Item = &'a str>,
     query: &str,
@@ -129,6 +126,5 @@ pub(crate) fn rank<'a>(
         })
         .collect();
     ranked.sort_by(Ranked::cmp);
-    ranked.truncate(QUICK_OPEN_LIMIT);
     ranked.into_iter().map(|ranked| ranked.found).collect()
 }
