@@ -6989,6 +6989,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "futures",
+ "image",
  "jiff",
  "local-core",
  "reqwest 0.13.4",
