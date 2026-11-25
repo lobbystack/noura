@@ -16,6 +16,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod file_drag;
+#[cfg(target_os = "windows")]
+mod graphics;
 mod instance;
 mod licenses;
 #[cfg(target_os = "linux")]
@@ -317,6 +319,8 @@ fn run_app(smoke: Option<String>, shortcut: Option<String>) -> eframe::Result {
     };
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
+        #[cfg(target_os = "windows")]
+        wgpu_options: graphics::configuration(eframe::wgpu::Backends::from_env()),
         viewport: windows::builder(None),
         event_loop_builder: Some(Box::new(configure_event_loop)),
         ..Default::default()
