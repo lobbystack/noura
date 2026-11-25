@@ -19,10 +19,10 @@ base64.workspace = true
 # the static Linux binary.
 sqlx = { workspace = true, features = ["postgres", "macros", "migrate", "tls-rustls-ring-webpki"] }
 sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
-sync-store = { version = "0.3.2", path = "../sync-store" }
+sync-store = { version = "0.3.3", path = "../sync-store" }
 tokio = { workspace = true, features = ["sync", "rt", "time"] }
 
 [dev-dependencies]
-sync-store = { version = "0.3.2", path = "../sync-store", features = ["conformance"] }
-sync-store-postgres = { version = "0.3.2", path = ".", features = ["testing"] }
+sync-store = { version = "0.3.3", path = "../sync-store", features = ["conformance"] }
+sync-store-postgres = { version = "0.3.3", path = ".", features = ["testing"] }
 tokio.workspace = true
