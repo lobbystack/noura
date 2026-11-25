@@ -138,6 +138,19 @@ info-plist-path = "packaging/Info.plist"
 signing-identity = "-"
 entitlements = "packaging/Entitlements.plist"
 
+# The window Finder shows when the disk image opens: Noura, an arrow and the
+# Applications folder on a dark background. Finder writes the layout into the
+# image's .DS_Store while cargo-packager builds it, with 128 pt icons and
+# 16 pt labels. The size includes the title bar. Positions are icon centers
+# in points from the top left of the window's content, and
+# packaging/dmg-background.svg draws the arrow and the label pills around
+# them; scripts/render-dmg-background.sh renders it into the TIFF.
+[package.metadata.packager.dmg]
+background = "packaging/dmg-background.tiff"
+window-size = { width = 640, height = 432 }
+app-position = { x = 160, y = 196 }
+application-folder-position = { x = 480, y = 196 }
+
 # The AppImage takes Wayland and xkbcommon from the system. The host's Mesa
 # drivers load into the app and need the host's libwayland-client: with the
 # copy from the Ubuntu 22.04 build machine, no Vulkan or EGL driver loads
