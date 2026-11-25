@@ -300,7 +300,11 @@ fn the_pages_scroll_with_the_wheel_and_the_keyboard_and_the_toolbar_has_no_page_
     });
     press(&mut harness, Key::Home);
     assert_eq!(page(&harness), 1);
-    assert!(shows_page_at_top(&harness, "Page 1 of 3"));
+    // Page 1 may have dropped its tiles while page 3 showed, and draws
+    // again.
+    wait_until(&mut harness, "page 1 draws at the top", |harness| {
+        shows_page_at_top(harness, "Page 1 of 3")
+    });
     press(&mut harness, Key::PageDown);
     press(&mut harness, Key::PageDown);
     assert_eq!(page(&harness), 2);
