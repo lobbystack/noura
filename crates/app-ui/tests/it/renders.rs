@@ -1451,28 +1451,17 @@ fn open_project_tasks(harness: &mut Ui, project: &str) {
     settle(harness);
 }
 
-/// Open search with `query` typed, and let it search the files' contents
-/// before the window draws it. The palette keeps the height it first
-/// draws at, so results that arrive later would sit out of sight below
-/// its last row.
+/// Open search, type `query`, and wait until it searched the files'
+/// contents.
 fn search_for(harness: &mut Ui, query: &str) {
-    let app = harness.state_mut().app_mut();
-    app.open_palette(app_core::SearchScope::All);
-    app.set_palette_query(query);
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let (mut found, mut steady) = (0, 0);
-    while steady < 20 {
-        assert!(Instant::now() < deadline, "the search never finished");
-        std::thread::sleep(Duration::from_millis(20));
-        app.poll();
-        let now = app.palette_results().len();
-        if now == found && now > 0 {
-            steady += 1;
-        } else {
-            (found, steady) = (now, 0);
-        }
-    }
-    settle(harness);
+    press(harness, Modifiers::COMMAND, Key::K);
+    harness
+        .get_by_role_and_label(Role::TextInput, "Search")
+        .type_text(query);
+    wait_until(harness, |harness| {
+        harness.state().app().palette_status() == app_core::PaletteStatus::Results
+            && harness.state().app().palette().unwrap().state != app_core::SearchState::Searching
+    });
 }
 
 /// Send `question` from the AI page's message box with the pointer, as a
