@@ -682,7 +682,7 @@ impl Windows {
                 tracing::error!(%error, "the native menu bar failed to update");
             }
             #[cfg(target_os = "windows")]
-            match native_menu.cover_windows() {
+            match native_menu.cover_windows(ctx.style().visuals.dark_mode) {
                 // A new window's native window comes a pass or two after
                 // its viewport.
                 Ok(covered) if covered < self.others.len() => {
