@@ -261,3 +261,56 @@ fn a_folder_outside_the_workspace_is_refused() {
         assert!(!error.message.is_empty());
     }
 }
+
+#[test]
+fn a_chat_and_its_messages_show_the_chat_s_title() {
+    let chat = "---\nid: chat_01jbcdefghjkmnpqrstvwxyz0a\ntype: chat\ntitle: Plan the relaunch\n\
+                retention: permanent\nretention_days: null\n\
+                created: 2026-09-02T12:00:00Z\nupdated: 2026-09-02T12:00:00Z\n---\n";
+    let message = "---\nid: chat-message_01jbcdefghjkmnpqrstvwxyz0b\ntype: chat-message\n\
+                   chat_id: chat_01jbcdefghjkmnpqrstvwxyz0a\nrun_id: run_1\nkind: user\n\
+                   status: completed\ncontent_type: text/markdown\n\
+                   created: 2026-09-02T12:01:00Z\nupdated: 2026-09-02T12:01:00Z\n---\n\
+                   What is left before the launch?\n";
+    // A chat whose title is blank keeps its file's name.
+    let untitled = "---\nid: chat_01jbcdefghjkmnpqrstvwxyz0c\ntype: chat\ntitle: ' '\n\
+                    retention: permanent\nretention_days: null\n\
+                    created: 2026-09-02T12:00:00Z\nupdated: 2026-09-02T12:00:00Z\n---\n";
+    let fixture = Fixture::new(&[
+        ("Chats/plan-the-relaunch--wxyz0a/chat.md", chat.as_bytes()),
+        (
+            "Chats/plan-the-relaunch--wxyz0a/messages/2026-09-02/\
+             chat-message_01jbcdefghjkmnpqrstvwxyz0b.md",
+            message.as_bytes(),
+        ),
+        ("Chats/untitled--wxyz0c/chat.md", untitled.as_bytes()),
+    ]);
+    let workspace = open(&fixture);
+
+    let shown = |text: &str| -> Vec<(String, String, Option<String>)> {
+        let mut hits: Vec<_> = search(&workspace, text)
+            .into_iter()
+            .map(|hit| (hit.title, hit.folder, hit.object_type))
+            .collect();
+        hits.sort();
+        hits
+    };
+    let chat = |kind: &str| {
+        (
+            "Plan the relaunch".to_owned(),
+            "Chats".to_owned(),
+            Some(kind.to_owned()),
+        )
+    };
+    // The chat's folder names it, so its messages match too.
+    assert_eq!(shown("relaunch"), [chat("chat"), chat("chat-message")]);
+    assert_eq!(shown("before launch"), [chat("chat-message")]);
+    assert_eq!(
+        shown("untitled"),
+        [(
+            "chat".to_owned(),
+            "Chats".to_owned(),
+            Some("chat".to_owned())
+        )]
+    );
+}

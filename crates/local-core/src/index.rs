@@ -642,7 +642,9 @@ impl IndexStore {
     /// Files whose text holds every word of `input.query`, read as plain
     /// text. A match in the file name, which is the note's title, ranks
     /// above a match anywhere else, then the full-text rank decides. A
-    /// heading inside the file ranks as ordinary body text.
+    /// heading inside the file ranks as ordinary body text. A chat keeps
+    /// its title in its `title` property, so a chat and each of its
+    /// messages come back with that title.
     pub fn search(&self, input: &SearchInput) -> Result<Vec<SearchResult>> {
         self.search_page(input, 0)
     }
@@ -661,7 +663,13 @@ impl IndexStore {
         let mut statement = self
             .connection
             .prepare_cached(
-                "SELECT NULLIF(fts.stable_id,''),o.object_type,f.relative_path,fts.title,\
+                "SELECT NULLIF(fts.stable_id,''),o.object_type,f.relative_path,\
+                 COALESCE((SELECT json_extract(c.frontmatter_json,'$.title') FROM objects c \
+                   WHERE c.object_type='chat' AND c.stable_id=CASE o.object_type \
+                   WHEN 'chat' THEN o.stable_id \
+                   WHEN 'chat-message' THEN json_extract(o.frontmatter_json,'$.chat_id') END \
+                   AND json_type(c.frontmatter_json,'$.title')='text' \
+                   AND trim(json_extract(c.frontmatter_json,'$.title'))<>'' LIMIT 1),fts.title),\
                  snippet(object_fts,4,char(2),char(3),' … ',18),\
                  bm25(object_fts,0.0,2.0,8.0,1.0,1.0,3.0),f.hash,\
                  fts.rowid IN (SELECT rowid FROM object_fts WHERE object_fts MATCH ?5),\
