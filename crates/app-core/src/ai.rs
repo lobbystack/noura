@@ -164,7 +164,6 @@ struct Target {
     plugin: String,
     plugin_name: String,
     tool: String,
-    description: String,
 }
 
 /// A tool call of a run that `run-tools` handed to Noura.
@@ -676,7 +675,6 @@ impl Ai {
                 run: run.id.clone(),
                 call: pending.call.id.clone(),
                 tool: target.tool.clone(),
-                description: target.description.clone(),
                 plugin_id: target.plugin.clone(),
                 plugin_name: target.plugin_name.clone(),
                 input: tools::indented(&pending.call.arguments),
@@ -1914,7 +1912,6 @@ fn pending_calls(
                     plugin: plugin.to_owned(),
                     plugin_name: "Noura".to_owned(),
                     tool: name.to_owned(),
-                    description: tool.description.clone(),
                 })
             });
             let target = kernel.or_else(|| {
@@ -1927,7 +1924,6 @@ fn pending_calls(
                             .cloned()
                             .unwrap_or_else(|| tool.plugin_id.clone()),
                         tool: tool.name.clone(),
-                        description: tool.description.clone(),
                     })
             });
             PendingCall {

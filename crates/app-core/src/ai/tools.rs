@@ -35,10 +35,9 @@ pub struct AiToolPrompt {
     /// The run that asked, and the model's ID for the call.
     pub run: String,
     pub call: String,
-    /// The tool, as its plugin names it.
+    /// The tool, as its plugin names it. Its description is written for
+    /// the model, so the prompt leaves it out.
     pub tool: String,
-    /// What the tool does, as its plugin says.
-    pub description: String,
     pub plugin_id: String,
     pub plugin_name: String,
     /// The call's input, as indented JSON.
