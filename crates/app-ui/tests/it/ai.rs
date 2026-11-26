@@ -113,7 +113,7 @@ fn opened() -> Option<Opened> {
 }
 
 /// Set up the provider Local in the app data, before the harness starts.
-fn set_up_provider(app_data: &std::path::Path) {
+pub(crate) fn set_up_provider(app_data: &std::path::Path) {
     let mut app = App::launch(app_data);
     let deadline = Instant::now() + Duration::from_secs(20);
     while app.is_busy() || app.workspace().is_none() {

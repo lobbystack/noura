@@ -3,6 +3,9 @@
 //! without running the app: the folder chooser, a note open beside the
 //! sidebar, a row's menu, the command palette, Settings and the Tasks
 //! page, and the Calendar page's month, week and day at two window sizes.
+//! `website_screens` and `website_parts` draw the screenshots and the
+//! pieces of the interface `scripts/website-screens.sh` turns into the
+//! website's images.
 //!
 //! It needs a GPU or a software Vulkan driver, so it runs only when asked:
 //!
@@ -16,12 +19,20 @@
 
 use crate::support;
 use std::{
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use app_core::{App, Platform};
+use app_core::{
+    App, Platform,
+    ai_client::{
+        AiProviderEventStream, AiProviderStreamEvent, AiStreamer, AiToolCall,
+        ResolvedAiStreamRequest,
+    },
+};
 use app_ui::{NouraUi, WindowControl, WindowControls};
 use egui::{Key, Modifiers, Theme, accesskit::Role};
 use egui_kittest::{
@@ -32,7 +43,65 @@ use support::{FakePicker, FakeSystem, create_workspace, plugins};
 
 type Ui = Harness<'static, NouraUi>;
 
-const TASKS_MANIFEST: &str = include_str!("../../../plugins/tasks/plugin.toml");
+/// A plugin Noura ships: its ID, its manifest, and its crate's library
+/// name, which names its built component.
+type Shipped = (&'static str, &'static str, &'static str);
+
+const TASKS: Shipped = (
+    "tasks",
+    include_str!("../../../plugins/tasks/plugin.toml"),
+    "tasks_plugin",
+);
+const CALENDAR: Shipped = (
+    "calendar",
+    include_str!("../../../plugins/calendar/plugin.toml"),
+    "calendar_plugin",
+);
+const PROJECTS: Shipped = (
+    "projects",
+    include_str!("../../../plugins/projects/plugin.toml"),
+    "projects_plugin",
+);
+const AI: Shipped = (
+    "ai",
+    include_str!("../../../plugins/ai/plugin.toml"),
+    "ai_plugin",
+);
+
+const DICTATION: Shipped = (
+    "dictation",
+    include_str!("../../../plugins/dictation/plugin.toml"),
+    "dictation_plugin",
+);
+const TRANSCRIPTION: Shipped = (
+    "transcription",
+    include_str!("../../../plugins/transcription/plugin.toml"),
+    "transcription_plugin",
+);
+
+/// Install each of `shipped` from a folder in `parent` and turn it on in
+/// the workspace `app_data` opens at launch. False, with none installed,
+/// when one of them isn't built.
+fn install(app_data: &Path, parent: &Path, shipped: &[Shipped]) -> bool {
+    install_turned(app_data, parent, shipped, true)
+}
+
+/// As [`install`], with each plugin on or off as `on` says.
+fn install_turned(app_data: &Path, parent: &Path, shipped: &[Shipped], on: bool) -> bool {
+    let Some(components) = shipped
+        .iter()
+        .map(|(.., name)| plugins::built(name))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return false;
+    };
+    for ((id, manifest, name), component) in shipped.iter().zip(components) {
+        let place = parent.join(format!("{id}-plugin"));
+        let plugin = plugins::folder(&place, manifest, &format!("{name}.wasm"), &component);
+        plugins::install_turned(app_data, &plugin, id, on);
+    }
+    true
+}
 
 /// The window's size in points.
 const SIZE: [f32; 2] = [1200.0, 780.0];
@@ -54,7 +123,8 @@ can catch up in five minutes.\n\n\
 ## Goals\n\n\
 - Cut the home page to one clear story and a single call to action\n\
 - Load in under a second on a phone over 4G\n\
-- Move the journal off the old CMS without breaking a single link\n\n\
+- Move the journal off the old CMS without breaking a single link\n\
+- Give every catalogue photo real alt text\n\n\
 ## Timeline\n\n\
 1. Content audit and sitemap, by **November 28**\n\
 2. Design review with the studio\n\
@@ -76,15 +146,15 @@ fn note(id: char, title: &str, body: &str) -> String {
     )
 }
 
-fn task(id: char, properties: &str) -> String {
+fn task(id: char, properties: &str, body: &str) -> String {
     format!(
         "---\nid: task_01jbcdefghjkmnpqrstvwxyz0{id}\ntype: task\n{properties}\
-         created: 2026-11-01T10:00:00Z\nupdated: 2026-11-01T10:00:00Z\n---\n"
+         created: 2026-11-01T10:00:00Z\nupdated: 2026-11-01T10:00:00Z\n---\n{body}"
     )
 }
 
-/// The fixture workspace: a studio's notes, journal, reading list and
-/// tasks.
+/// The fixture workspace: a studio's notes, journal, reading list,
+/// projects and tasks.
 fn write_workspace(folder: &Path) {
     let write = |path: &str, text: &str| {
         let path = folder.join(path);
@@ -122,30 +192,116 @@ fn write_workspace(folder: &Path) {
          - Keyboard shortcuts on the welcome screen\n",
     );
     write(
-        "tasks/Send the sitemap to the studio.md",
-        &task('a', "status: todo\npriority: high\ndue: 2026-11-18\n"),
+        "Projects/Studio admin/Studio admin.md",
+        "---\nid: project_01jbcdefghjkmnpqrstvwxyz0b\ntype: project\nstatus: active\n\
+         created: 2026-09-01T10:00:00Z\nupdated: 2026-11-19T15:00:00Z\n---\n\
+         Invoices, renewals and supplies.\n",
     );
     write(
-        "tasks/Book the photographer.md",
-        &task('b', "status: todo\npriority: medium\ndue: 2026-11-22\n"),
+        "Projects/Spring launch/Spring launch.md",
+        "---\nid: project_01jbcdefghjkmnpqrstvwxyz0a\ntype: project\nstatus: active\n\
+         created: 2026-10-20T10:00:00Z\nupdated: 2026-11-20T16:30:00Z\n---\n\
+         The new website, live with the spring catalogue.\n",
     );
-    write(
-        "tasks/Draft the launch email.md",
-        &task('c', "status: todo\npriority: low\ndue: 2026-11-26\n"),
-    );
-    write(
-        "tasks/Audit the journal links.md",
-        &task('d', "status: todo\npriority: medium\ndue: 2026-12-02\n"),
-    );
-    write(
-        "tasks/Pick an analytics tool.md",
-        &task('e', "status: todo\n"),
-    );
-    write(
-        "tasks/Order sample prints.md",
-        &task('f', "status: done\ncompleted: 2026-11-19T15:00:00Z\n"),
-    );
+    for (id, title, properties, body) in STUDIO_TASKS {
+        write(&format!("Tasks/{title}.md"), &task(id, properties, body));
+    }
 }
+
+/// The studio's tasks: (ID suffix, title, properties, body).
+const STUDIO_TASKS: [(char, &str, &str, &str); 15] = [
+    (
+        'a',
+        "Send the sitemap to the studio",
+        "status: todo\npriority: high\ndue: 2026-11-18\nproject: '[[Spring launch]]'\n",
+        "Final sitemap from the content audit, with the journal's sections.\n",
+    ),
+    (
+        'b',
+        "Book the photographer",
+        "status: todo\npriority: medium\ndue: 2026-11-22\nproject: '[[Spring launch]]'\n",
+        "",
+    ),
+    (
+        'c',
+        "Draft the launch email",
+        "status: todo\npriority: low\ndue: 2026-11-26\nproject: '[[Spring launch]]'\n",
+        "",
+    ),
+    (
+        'd',
+        "Audit the journal links",
+        "status: todo\npriority: medium\nassignee: Mara\ndue: 2026-12-02\nproject: '[[Spring launch]]'\n",
+        "",
+    ),
+    (
+        'e',
+        "Pick an analytics tool",
+        "status: todo\ndue: 2026-11-27\nproject: '[[Spring launch]]'\n",
+        "",
+    ),
+    (
+        'f',
+        "Order sample prints",
+        "status: done\ncompleted: 2026-11-19T15:00:00Z\nproject: '[[Studio admin]]'\n",
+        "",
+    ),
+    (
+        'g',
+        "Prototype the product grid",
+        "status: in-progress\npriority: high\nassignee: Theo\ndue: 2026-11-23\nproject: '[[Spring launch]]'\n",
+        "Three and four columns on the catalogue page, with and without prices \
+         under the photos. Print both for Monday's review.\n",
+    ),
+    (
+        'h',
+        "Raise the contrast on the captions",
+        "status: todo\npriority: medium\nassignee: Mara\ndue: 2026-11-24\nproject: '[[Spring launch]]'\n",
+        "Mara's note from the review: the grey captions fail on the cream background.\n",
+    ),
+    (
+        'j',
+        "Renew the studio domain",
+        "status: todo\npriority: urgent\ndue: 2026-11-25\nproject: '[[Studio admin]]'\n",
+        "",
+    ),
+    (
+        'k',
+        "Write alt text for the catalogue photos",
+        "status: todo\npriority: low\ndue: 2026-11-30\nproject: '[[Spring launch]]'\n",
+        "",
+    ),
+    (
+        'm',
+        "Invoice the November retainer",
+        "status: todo\npriority: medium\ndue: 2026-11-30\nproject: '[[Studio admin]]'\n",
+        "",
+    ),
+    (
+        'n',
+        "Map the old journal URLs to the new ones",
+        "status: todo\npriority: medium\ndue: 2026-12-04\nproject: '[[Spring launch]]'\n",
+        "",
+    ),
+    (
+        'p',
+        "Finish the content audit",
+        "status: done\npriority: high\ncompleted: 2026-11-20T17:00:00Z\nproject: '[[Spring launch]]'\n",
+        "",
+    ),
+    (
+        'q',
+        "Export the brand colors for the developers",
+        "status: done\ncompleted: 2026-11-21T11:00:00Z\n",
+        "",
+    ),
+    (
+        'r',
+        "Back up the photo archive",
+        "status: todo\npriority: low\ndue: 2026-12-01\nproject: '[[Studio admin]]'\n",
+        "",
+    ),
+];
 
 /// Where the renders land.
 fn out_dir() -> PathBuf {
@@ -230,12 +386,21 @@ fn wait_until(harness: &mut Ui, mut done: impl FnMut(&Ui) -> bool) {
 }
 
 fn save(harness: &mut Ui, screen: &str, theme: Theme) {
-    let name = match theme {
+    let image = harness.render().expect("the window renders");
+    write_png(&image, &format!("{screen}-{}", theme_name(theme)));
+}
+
+/// The name a render in `theme` ends with.
+fn theme_name(theme: Theme) -> &'static str {
+    match theme {
         Theme::Light => "light",
         Theme::Dark => "dark",
-    };
-    let image = harness.render().expect("the window renders");
-    let path = out_dir().join(format!("{screen}-{name}.png"));
+    }
+}
+
+/// Write `image` to `name.png` among the renders.
+fn write_png(image: &image::RgbaImage, name: &str) {
+    let path = out_dir().join(format!("{name}.png"));
     image.save(&path).unwrap();
     eprintln!("rendered {}", path.display());
 }
@@ -243,16 +408,11 @@ fn save(harness: &mut Ui, screen: &str, theme: Theme) {
 /// Save the window's title bar row, and the sidebar's first rows under
 /// it, as `name`.
 fn save_title_row(harness: &mut Ui, name: &str, theme: Theme) {
-    let theme = match theme {
-        Theme::Light => "light",
-        Theme::Dark => "dark",
-    };
+    let theme = theme_name(theme);
     let image = harness.render().expect("the window renders");
     let height = (96.0 * scale()) as u32;
     let row = image::imageops::crop_imm(&image, 0, 0, image.width(), height).to_image();
-    let path = out_dir().join(format!("{name}-{theme}.png"));
-    row.save(&path).unwrap();
-    eprintln!("rendered {}", path.display());
+    write_png(&row, &format!("{name}-{theme}"));
 }
 
 fn press(harness: &mut Ui, modifiers: Modifiers, key: Key) {
@@ -270,22 +430,13 @@ fn the_main_screens_render_in_light_and_dark() {
         save(&mut harness, "1-welcome", theme);
     }
 
-    let component = plugins::built("tasks_plugin");
     for theme in [Theme::Light, Theme::Dark] {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let folder = parent.path().join("Studio");
         create_workspace(app_data.path(), &folder);
         write_workspace(&folder);
-        if let Some(component) = &component {
-            let plugin = plugins::folder(
-                parent.path(),
-                TASKS_MANIFEST,
-                "tasks_plugin.wasm",
-                component,
-            );
-            plugins::install_and_enable(app_data.path(), &plugin, "tasks");
-        }
+        let tasks = install(app_data.path(), parent.path(), &[TASKS]);
         let system = FakeSystem::new(Platform::Linux);
         system.set_now("2026-11-22T14:00:00Z");
         let app = App::launch_with(app_data.path(), system);
@@ -336,7 +487,7 @@ fn the_main_screens_render_in_light_and_dark() {
         save(&mut harness, "5-settings", theme);
         press(&mut harness, Modifiers::NONE, Key::Escape);
 
-        if component.is_some() {
+        if tasks {
             harness
                 .get_by_role_and_label(Role::Navigation, "Pages")
                 .get_by_role_and_label(Role::Link, "Tasks")
@@ -360,9 +511,7 @@ fn save_part(harness: &mut Ui, name: &str, rect: egui::Rect) {
     let width = ((rect.width() * scale) as u32).min(image.width().saturating_sub(x));
     let height = ((rect.height() * scale) as u32).min(image.height().saturating_sub(y));
     let part = image::imageops::crop_imm(&image, x, y, width, height).to_image();
-    let path = out_dir().join(format!("{name}.png"));
-    part.save(&path).unwrap();
-    eprintln!("rendered {}", path.display());
+    write_png(&part, name);
 }
 
 /// Each PDF texture's name and size in pixels, as uploaded.
@@ -608,37 +757,19 @@ fn the_title_bar_row_renders_with_each_button_layout() {
     }
 }
 
-const CALENDAR_MANIFEST: &str = include_str!("../../../plugins/calendar/plugin.toml");
-const PROJECTS_MANIFEST: &str = include_str!("../../../plugins/projects/plugin.toml");
-
 /// The plugin pages' headers: Calendar's month in Month, Week and Day,
 /// Tasks and Projects, each with its buttons, in light and dark.
 #[test]
 #[ignore = "draws the screens to PNG files, which needs a GPU"]
 fn the_plugin_page_headers_render() {
-    let built = [
-        ("tasks", TASKS_MANIFEST, "tasks_plugin"),
-        ("calendar", CALENDAR_MANIFEST, "calendar_plugin"),
-        ("projects", PROJECTS_MANIFEST, "projects_plugin"),
-    ]
-    .map(|(id, manifest, name)| (id, manifest, name, plugins::built(name)));
-    if built.iter().any(|(.., component)| component.is_none()) {
-        return;
-    }
     for theme in [Theme::Light, Theme::Dark] {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let folder = parent.path().join("Studio");
         create_workspace(app_data.path(), &folder);
         write_workspace(&folder);
-        for (id, manifest, name, component) in &built {
-            let plugin = plugins::folder(
-                &parent.path().join(id),
-                manifest,
-                &format!("{name}.wasm"),
-                component.as_ref().unwrap(),
-            );
-            plugins::install_and_enable(app_data.path(), &plugin, id);
+        if !install(app_data.path(), parent.path(), &[TASKS, CALENDAR, PROJECTS]) {
+            return;
         }
         let system = FakeSystem::new(Platform::Linux);
         system.set_now("2026-11-22T14:00:00Z");
@@ -831,30 +962,14 @@ fn write_calendar_workspace(folder: &Path) {
 #[test]
 #[ignore = "draws the screens to PNG files, which needs a GPU"]
 fn the_calendar_renders_each_mode_at_two_sizes() {
-    let (Some(calendar), Some(tasks)) = (
-        plugins::built("calendar_plugin"),
-        plugins::built("tasks_plugin"),
-    ) else {
-        return;
-    };
     for theme in [Theme::Light, Theme::Dark] {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let folder = parent.path().join("Studio");
         create_workspace(app_data.path(), &folder);
         write_calendar_workspace(&folder);
-        for (id, manifest, entry, component) in [
-            ("tasks", TASKS_MANIFEST, "tasks_plugin.wasm", &tasks),
-            (
-                "calendar",
-                CALENDAR_MANIFEST,
-                "calendar_plugin.wasm",
-                &calendar,
-            ),
-        ] {
-            let place = parent.path().join(format!("{id}-plugin"));
-            let plugin = plugins::folder(&place, manifest, entry, component);
-            plugins::install_and_enable(app_data.path(), &plugin, id);
+        if !install(app_data.path(), parent.path(), &[TASKS, CALENDAR]) {
+            return;
         }
         let system = FakeSystem::new(Platform::Linux);
         system.set_now("2026-11-22T14:00:00Z");
@@ -935,17 +1050,7 @@ fn the_files_tab_and_the_tab_bar_render() {
                 .click();
             settle(&mut harness);
         }
-        loop {
-            let close = harness
-                .query_all_by_role(Role::Button)
-                .filter_map(|node| node.accesskit_node().label())
-                .find(|label| label.starts_with("Close "));
-            let Some(close) = close else {
-                break;
-            };
-            harness.get_by_role_and_label(Role::Button, &close).click();
-            settle(&mut harness);
-        }
+        close_tabs(&mut harness);
         save(&mut harness, "all-tabs-closed", theme);
 
         let tree = |harness: &mut Ui, name: &str, modifiers: Modifiers| {
@@ -954,7 +1059,7 @@ fn the_files_tab_and_the_tab_bar_render() {
                 .click_modifiers(modifiers);
             settle(harness);
         };
-        for folder in ["Design", "Journal", "tasks"] {
+        for folder in ["Design", "Journal"] {
             tree(&mut harness, folder, Modifiers::NONE);
         }
         tree(&mut harness, "Website relaunch", Modifiers::COMMAND);
@@ -962,11 +1067,13 @@ fn the_files_tab_and_the_tab_bar_render() {
         tree(&mut harness, "Type specimens", Modifiers::COMMAND);
         tree(&mut harness, "Brand colors", Modifiers::NONE);
         save(&mut harness, "tabs-preview-and-kept", theme);
+        for name in ["Ideas", "Meeting notes", "2026-11-20", "2026-11-21"] {
+            tree(&mut harness, name, Modifiers::COMMAND);
+        }
+        // The tasks open last: with their folder open, the notes under it
+        // scroll out of the sidebar.
+        tree(&mut harness, "Tasks", Modifiers::NONE);
         for name in [
-            "Ideas",
-            "Meeting notes",
-            "2026-11-20",
-            "2026-11-21",
             "Book the photographer",
             "Draft the launch email",
             "Order sample prints",
@@ -978,27 +1085,35 @@ fn the_files_tab_and_the_tab_bar_render() {
     }
 }
 
+/// Close every tab with its close button.
+fn close_tabs(harness: &mut Ui) {
+    loop {
+        let close = harness
+            .query_all_by_role(Role::Button)
+            .filter_map(|node| node.accesskit_node().label())
+            .find(|label| label.starts_with("Close "));
+        let Some(close) = close else {
+            break;
+        };
+        harness.get_by_role_and_label(Role::Button, &close).click();
+        settle(harness);
+    }
+}
+
 /// Calendar's sidebar with Files in every sidebar off, as at first, and
 /// on, in light and dark.
 #[test]
 #[ignore = "draws the screens to PNG files, which needs a GPU"]
 fn the_calendar_sidebar_renders_with_and_without_files() {
-    let Some(component) = plugins::built("calendar_plugin") else {
-        return;
-    };
     for theme in [Theme::Light, Theme::Dark] {
         let app_data = tempfile::tempdir().unwrap();
         let parent = tempfile::tempdir().unwrap();
         let folder = parent.path().join("Studio");
         create_workspace(app_data.path(), &folder);
         write_calendar_workspace(&folder);
-        let plugin = plugins::folder(
-            &parent.path().join("calendar"),
-            CALENDAR_MANIFEST,
-            "calendar_plugin.wasm",
-            &component,
-        );
-        plugins::install_and_enable(app_data.path(), &plugin, "calendar");
+        if !install(app_data.path(), parent.path(), &[CALENDAR]) {
+            return;
+        }
         let system = FakeSystem::new(Platform::Linux);
         system.set_now("2026-11-22T14:00:00Z");
         let app = App::launch_with(app_data.path(), system);
@@ -1108,4 +1223,585 @@ fn a_pdf_tab_keeps_its_page_size_across_interface_zooms_and_pinches() {
     drawn(&mut harness);
     save(&mut harness, "9-pdf-pinched", Theme::Light);
     eprintln!("settled: page {} pixels wide", page_pixels(&harness));
+}
+
+/// The question the website's AI screenshot asks.
+const QUESTION: &str = "What's left before the website relaunch?";
+
+/// The answer to [`QUESTION`], from the relaunch note and the studio's
+/// tasks. Noura's prompt covers all but its first lines, so the lines
+/// under it are short enough to hide behind it whole.
+const ANSWER: &str = "Going by **Website relaunch** and your tasks, four things \
+stand between you and launch:\n\n\
+1. **Send the sitemap to the studio**, four days late\n\
+2. **Book the photographer**, due today\n\
+3. **Prototype the product grid**, with Theo\n\
+4. **Audit the journal links**, by December 2\n\n\
+I'll add a task to settle the `/shop` redirects and analytics.";
+
+/// A provider that answers with `text` a few words at a time, then asks
+/// to create a task with `task` as its input. Later answers say Done.
+struct Answers {
+    text: &'static str,
+    task: serde_json::Value,
+    requests: std::sync::atomic::AtomicUsize,
+}
+
+impl Answers {
+    fn new(text: &'static str, task: serde_json::Value) -> Self {
+        Self {
+            text,
+            task,
+            requests: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl AiStreamer for Answers {
+    fn stream(
+        &self,
+        _request: ResolvedAiStreamRequest,
+    ) -> Pin<Box<dyn Future<Output = app_core::ai_client::Result<AiProviderEventStream>> + Send + '_>>
+    {
+        let first = self
+            .requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            == 0;
+        Box::pin(async move {
+            let text = if first { self.text } else { "Done." };
+            let mut events: Vec<_> = text
+                .split_inclusive(' ')
+                .map(|words| AiProviderStreamEvent::TextDelta(words.to_owned()))
+                .collect();
+            let tool_calls = if first {
+                vec![AiToolCall {
+                    call_id: "call_1".into(),
+                    name: "tasks__create".into(),
+                    arguments: self.task.clone(),
+                }]
+            } else {
+                Vec::new()
+            };
+            events.push(AiProviderStreamEvent::Completed {
+                usage: None,
+                stop_reason: None,
+                tool_calls,
+            });
+            let stream: AiProviderEventStream =
+                Box::pin(futures::stream::iter(events.into_iter().map(Ok)));
+            Ok(stream)
+        })
+    }
+}
+
+/// AppKit's close, minimize and zoom buttons, which it draws over the
+/// window, so the renders lack them: each one's color and its edge's.
+const WINDOW_BUTTON_COLORS: [([u8; 3], [u8; 3]); 3] = [
+    ([0xFF, 0x5F, 0x57], [0xE2, 0x46, 0x3F]),
+    ([0xFE, 0xBC, 0x2E], [0xE1, 0xA1, 0x16]),
+    ([0x28, 0xC8, 0x40], [0x17, 0xA8, 0x2C]),
+];
+
+/// The width of each of AppKit's window buttons, in points, which holds
+/// its 12-point circle.
+const WINDOW_BUTTON_WIDTH: f32 = 14.0;
+
+/// Paint the window's buttons where the desktop app places them, as
+/// circles with a faint edge, smoothed, on `image` drawn at `scale`
+/// pixels a point.
+fn paint_window_buttons(image: &mut image::RgbaImage, scale: f32) {
+    let spot = app_ui::window_buttons(1.0);
+    let radius = 6.0 * scale;
+    let edge = 0.5 * scale;
+    for (index, (fill, rim)) in WINDOW_BUTTON_COLORS.into_iter().enumerate() {
+        let offset = (index as f32 - 1.0) * (WINDOW_BUTTON_WIDTH + spot.gap);
+        let center = (spot.center + egui::vec2(offset, 0.0)) * scale;
+        let first = |middle: f32| (middle - radius - 1.0).floor().max(0.0) as u32;
+        let last = |middle: f32| (middle + radius + 1.0).ceil() as u32;
+        for y in first(center.y)..last(center.y).min(image.height()) {
+            for x in first(center.x)..last(center.x).min(image.width()) {
+                let distance = egui::pos2(x as f32 + 0.5, y as f32 + 0.5).distance(center);
+                // How much of the pixel the circle covers, and how much of
+                // that lies inside the edge.
+                let covered = (radius - distance + 0.5).clamp(0.0, 1.0);
+                if covered == 0.0 {
+                    continue;
+                }
+                let inside = (radius - edge - distance + 0.5).clamp(0.0, 1.0) / covered;
+                let pixel = image.get_pixel_mut(x, y);
+                for channel in 0..3 {
+                    let color = f32::from(rim[channel])
+                        + (f32::from(fill[channel]) - f32::from(rim[channel])) * inside;
+                    let under = f32::from(pixel[channel]);
+                    pixel[channel] = (under + (color - under) * covered).round() as u8;
+                }
+            }
+        }
+    }
+}
+
+/// Move the pointer off the window, so nothing shows as hovered.
+fn leave(harness: &mut Ui) {
+    harness.event(egui::Event::PointerGone);
+    settle(harness);
+}
+
+/// Save the window as `name`, with the window buttons AppKit would draw.
+fn save_mac(harness: &mut Ui, name: &str) {
+    leave(harness);
+    let mut image = harness.render().expect("the window renders");
+    paint_window_buttons(&mut image, harness.ctx.pixels_per_point());
+    write_png(&image, name);
+}
+
+/// Open the rail's page `page` and wait until the node `role` labeled
+/// `ready` shows.
+fn open_rail_page(harness: &mut Ui, page: &str, role: Role, ready: &str) {
+    harness
+        .get_by_role_and_label(Role::Navigation, "Pages")
+        .get_by_role_and_label(Role::Link, page)
+        .click();
+    wait_until(harness, |harness| {
+        harness.query_by_role_and_label(role, ready).is_some()
+    });
+}
+
+/// Where the Noura binary sits in a Mac install, which Settings' MCP
+/// configuration names.
+const MAC_PROGRAM: &str = "/Applications/Noura.app/Contents/MacOS/noura";
+
+/// A macOS window in `theme` on the studio's workspace at `folder`, at
+/// 2 pm on Sunday November 22: Tasks, Calendar, Projects and AI on,
+/// Dictation and Transcription installed but off, the AI provider
+/// `answers`, and the MCP server installed. Keep the folders while the
+/// window draws.
+fn website_window(
+    theme: Theme,
+    answers: Answers,
+    folder: &Path,
+) -> (Ui, (tempfile::TempDir, tempfile::TempDir)) {
+    // macOS draws shortcuts such as ⌘K from San Francisco, as the desktop
+    // app does.
+    if let Ok(bytes) = std::fs::read("/System/Library/Fonts/SFNS.ttf") {
+        app_ui::fonts::set_fallback(bytes);
+    }
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), folder);
+    write_calendar_workspace(folder);
+    assert!(
+        install(
+            app_data.path(),
+            parent.path(),
+            &[TASKS, CALENDAR, PROJECTS, AI]
+        ) && install_turned(
+            app_data.path(),
+            parent.path(),
+            &[DICTATION, TRANSCRIPTION],
+            false
+        ),
+        "build the plugins with crates/plugin-sdk/build-plugins.sh"
+    );
+    crate::ai::set_up_provider(app_data.path());
+    let system = FakeSystem::new(Platform::MacOs);
+    system.set_now("2026-11-22T14:00:00Z");
+    let mut app = App::launch_with(app_data.path(), system);
+    app.set_ai_client(Arc::new(answers));
+    let probe = crate::ai_tools::FakeProbe(Ok("noura 0.3.3".into()));
+    app.set_mcp_server(Ok(MAC_PROGRAM.into()), Arc::new(probe));
+    (window(app, theme, None), (app_data, parent))
+}
+
+/// Open the Design, Journal and Reading folders, and keep three notes open
+/// in tabs, as in a day's work, with Website relaunch showing. The note's
+/// row keeps the keyboard, so the editor shows no caret; focus rings show
+/// only after a key press, and none came yet.
+fn open_relaunch_note(harness: &mut Ui) {
+    for folder in ["Design", "Journal", "Reading"] {
+        harness
+            .get_by_role_and_label(Role::TreeItem, folder)
+            .click();
+        settle(harness);
+    }
+    for note in ["Type specimens", "Meeting notes", "Website relaunch"] {
+        harness
+            .get_by_role_and_label(Role::TreeItem, note)
+            .click_modifiers(Modifiers::COMMAND);
+        settle(harness);
+    }
+    wait_until(harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::MultilineTextInput, "Note text")
+            .is_some()
+    });
+    harness
+        .get_by_role_and_label(Role::TreeItem, "Website relaunch")
+        .focus();
+    settle(harness);
+}
+
+/// Open the Tasks page on the tasks of the project `project`, which don't
+/// repeat its name beside each one.
+fn open_project_tasks(harness: &mut Ui, project: &str) {
+    open_rail_page(harness, "Tasks", Role::ListBox, "Views");
+    harness
+        .get_by_role_and_label(Role::ListBox, "Projects")
+        .get_by_role_and_label(Role::ListBoxOption, project)
+        .click();
+    settle(harness);
+}
+
+/// Open search with `query` typed, and let it search the files' contents
+/// before the window draws it. The palette keeps the height it first
+/// draws at, so results that arrive later would sit out of sight below
+/// its last row.
+fn search_for(harness: &mut Ui, query: &str) {
+    let app = harness.state_mut().app_mut();
+    app.open_palette(app_core::SearchScope::All);
+    app.set_palette_query(query);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let (mut found, mut steady) = (0, 0);
+    while steady < 20 {
+        assert!(Instant::now() < deadline, "the search never finished");
+        std::thread::sleep(Duration::from_millis(20));
+        app.poll();
+        let now = app.palette_results().len();
+        if now == found && now > 0 {
+            steady += 1;
+        } else {
+            (found, steady) = (now, 0);
+        }
+    }
+    settle(harness);
+}
+
+/// Send `question` from the AI page's message box with the pointer, as a
+/// key would show the focus ring on the tool prompt's Deny, and wait for
+/// the prompt.
+fn ask(harness: &mut Ui, question: &str) {
+    open_rail_page(harness, "AI", Role::Form, MESSAGE);
+    let field = || (Role::MultilineTextInput, MESSAGE);
+    harness.get_by_role_and_label(field().0, field().1).focus();
+    settle(harness);
+    harness
+        .get_by_role_and_label(field().0, field().1)
+        .type_text(question);
+    settle(harness);
+    harness
+        .get_by_role_and_label(Role::Form, MESSAGE)
+        .get_by_role_and_label(Role::Button, "Send")
+        .click();
+    wait_until(harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::AlertDialog, TOOL_PROMPT)
+            .is_some()
+    });
+}
+
+/// Noura's prompt before a tool call.
+const TOOL_PROMPT: &str = "Allow this tool call?";
+
+/// The AI page's message box.
+const MESSAGE: &str = "Message Noura";
+
+/// The screenshots on noura.app, in light, in a macOS window with the
+/// buttons AppKit adds: `files`, the relaunch note beside the tree,
+/// `tasks`, `calendar`'s month, and `ai`, an answer about the workspace
+/// with Noura asking before the tool call that follows it.
+/// `scripts/website-screens.sh` turns them into the site's images.
+#[test]
+#[ignore = "draws the website's screenshots, which needs a GPU"]
+fn website_screens() {
+    let studio = tempfile::tempdir().unwrap();
+    let (mut harness, _folders) = website_window(
+        Theme::Light,
+        Answers::new(
+            ANSWER,
+            serde_json::json!({
+                "title": "Settle the /shop redirects and analytics",
+                "properties": { "priority": "high", "due": "2026-11-23" },
+            }),
+        ),
+        &studio.path().join("Studio"),
+    );
+    open_relaunch_note(&mut harness);
+    save_mac(&mut harness, "files");
+
+    open_project_tasks(&mut harness, "Spring launch");
+    harness
+        .get_by_role_and_label(Role::ListBoxOption, "Prototype the product grid")
+        .click();
+    settle(&mut harness);
+    save_mac(&mut harness, "tasks");
+
+    open_rail_page(&mut harness, "Calendar", Role::Grid, "Calendar");
+    save_mac(&mut harness, "calendar");
+
+    ask(&mut harness, QUESTION);
+    save_mac(&mut harness, "ai");
+}
+
+/// The question of the website's AI part.
+const PART_QUESTION: &str = "Turn the open questions in Website relaunch into tasks.";
+
+/// The answer to [`PART_QUESTION`].
+const PART_ANSWER: &str = "**Website relaunch** leaves two questions open:\n\n\
+- Do we keep the `/shop` redirects?\n\
+- Which analytics, if any\n\n\
+I'll add a task for each, due at Monday's design review.";
+
+/// The app's own background around a part of the window, in points.
+const PART_MARGIN: f32 = 14.0;
+
+/// Save the part of the window `rect` covers, in points and rounded to
+/// whole ones, as `name-light` or `name-dark`, with the pointer off the
+/// window.
+fn save_component(harness: &mut Ui, name: &str, theme: Theme, rect: egui::Rect) {
+    leave(harness);
+    let rect = egui::Rect::from_min_max(rect.min.round(), rect.max.round());
+    save_part(harness, &format!("{name}-{}", theme_name(theme)), rect);
+}
+
+/// The rectangle around every node inside `area` that has one, in points.
+fn around_all_in(harness: &Ui, area: egui::Rect) -> egui::Rect {
+    let scale = harness.ctx.pixels_per_point();
+    harness
+        .query_all(egui_kittest::kittest::By::new())
+        .filter_map(|node| node.accesskit_node().bounding_box())
+        .map(|bounds| {
+            egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32) / scale,
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32) / scale,
+            )
+        })
+        .filter(|rect| area.contains_rect(*rect))
+        .fold(egui::Rect::NOTHING, egui::Rect::union)
+}
+
+/// The rectangle around the nodes `role` labeled with each of `labels`.
+fn around(harness: &Ui, role: Role, labels: &[&str]) -> egui::Rect {
+    labels
+        .iter()
+        .map(|label| harness.get_by_role_and_label(role, label).rect())
+        .fold(egui::Rect::NOTHING, egui::Rect::union)
+}
+
+/// Where the text `text` shows, in points.
+fn text_rect(harness: &Ui, text: &str) -> egui::Rect {
+    harness
+        .query_all(egui_kittest::kittest::By::new().role(Role::Label))
+        .find(|node| node.accesskit_node().value().as_deref() == Some(text))
+        .unwrap_or_else(|| panic!("{text} doesn't show"))
+        .rect()
+}
+
+/// `rect` with [`PART_MARGIN`] above and below it, and as wide as
+/// `column`, whose edges draw lines.
+fn in_column(rect: egui::Rect, column: egui::Rangef) -> egui::Rect {
+    egui::Rect::from_x_y_ranges(column, rect.y_range().expand(PART_MARGIN))
+}
+
+/// The studio's workspace at `/Users/Shared/Studio` on a Mac, so the MCP
+/// configuration in Settings names a folder as a person's would, or in a
+/// temporary folder elsewhere. It refuses a folder that's there already,
+/// and removes the one it made.
+struct SharedStudio {
+    path: PathBuf,
+    temporary: Option<tempfile::TempDir>,
+}
+
+impl SharedStudio {
+    fn new() -> Self {
+        let shared = Path::new("/Users/Shared");
+        if !shared.is_dir() {
+            let temporary = tempfile::tempdir().unwrap();
+            return Self {
+                path: temporary.path().join("Studio"),
+                temporary: Some(temporary),
+            };
+        }
+        let path = shared.join("Studio");
+        assert!(
+            !path.exists(),
+            "{} is there already; move it away to draw the website's parts",
+            path.display()
+        );
+        Self {
+            path,
+            temporary: None,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for SharedStudio {
+    fn drop(&mut self) {
+        if self.temporary.is_none() {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// The line under the MCP configuration in Settings.
+const MOVED: &str = "If you move this workspace or Noura, copy the configuration again.";
+
+/// The pieces of the interface the website shows in its feature cards,
+/// each cropped from the window with some of the app's background around
+/// it, in light and dark: `file-tree`, `task-rows`, `ai-approval`,
+/// `plugins`, `mcp`, `calendar-day` and `palette`.
+/// `scripts/website-screens.sh` turns them into the site's images.
+#[test]
+#[ignore = "draws the website's screenshots, which needs a GPU"]
+fn website_parts() {
+    for theme in [Theme::Light, Theme::Dark] {
+        let studio = SharedStudio::new();
+        let (mut harness, _folders) = website_window(
+            theme,
+            Answers::new(
+                PART_ANSWER,
+                serde_json::json!({
+                    "title": "Decide on the /shop redirects",
+                    "properties": { "due": "2026-11-23", "project": "[[Spring launch]]" },
+                }),
+            ),
+            studio.path(),
+        );
+        open_relaunch_note(&mut harness);
+        // The sidebar's rows keep 8 points from its edges, and the line
+        // under its title row lies 10 above the Files heading.
+        let rows = harness.get_by_role_and_label(Role::Tree, "Files").rect();
+        let sidebar = rows.x_range().expand(7.5);
+        let heading = harness.get_by_role_and_label(Role::Button, "Files").rect();
+        let tree = egui::Rect::from_x_y_ranges(
+            sidebar,
+            heading.top() - 10.0
+                ..=around(&harness, Role::TreeItem, &["Meeting notes"]).bottom() + PART_MARGIN,
+        );
+        save_component(&mut harness, "file-tree", theme, tree);
+
+        // The palette over the empty window, before any chat, with its
+        // caret on as it shows between blinks.
+        close_tabs(&mut harness);
+        harness
+            .ctx
+            .all_styles_mut(|style| style.visuals.text_cursor.blink = false);
+        search_for(&mut harness, "journal");
+        let field = harness
+            .get_by_role_and_label(Role::TextInput, "Search")
+            .rect();
+        let found = harness
+            .query_all_by_role(Role::ListBoxOption)
+            .map(|result| result.rect())
+            .filter(|result| field.x_range().contains(result.center().x))
+            .fold(field, egui::Rect::union);
+        // The palette's frame holds its field and results 8 points in, and
+        // 16 below the last.
+        let palette = egui::Rect::from_min_max(
+            found.min - egui::vec2(8.0, 8.0),
+            found.max + egui::vec2(8.0, 16.0),
+        );
+        save_component(&mut harness, "palette", theme, palette.expand(PART_MARGIN));
+        press(&mut harness, Modifiers::NONE, Key::Escape);
+        harness
+            .ctx
+            .all_styles_mut(|style| style.visuals.text_cursor.blink = true);
+
+        open_project_tasks(&mut harness, "Studio admin");
+        let list = harness
+            .get_by_role_and_label(Role::ListBoxOption, "Order sample prints")
+            .rect();
+        let rows = text_rect(&harness, "Upcoming").union(list);
+        save_component(
+            &mut harness,
+            "task-rows",
+            theme,
+            in_column(rows, list.x_range().expand(7.5)),
+        );
+
+        ask(&mut harness, PART_QUESTION);
+        let message = harness
+            .get_by_role_and_label(Role::MultilineTextInput, MESSAGE)
+            .rect();
+        // The thread between the Orb's name and the message box, with the
+        // 24 points the prompt's frame keeps around its text.
+        let thread = egui::Rect::from_x_y_ranges(
+            message.left() - 40.0..=harness.ctx.viewport_rect().right(),
+            100.0..=message.top() - 20.0,
+        );
+        let conversation = around_all_in(&harness, thread).expand(24.0 + PART_MARGIN);
+        save_component(&mut harness, "ai-approval", theme, conversation);
+        harness.get_by_role_and_label(Role::Button, "Deny").click();
+        settle(&mut harness);
+
+        harness
+            .get_by_role_and_label(Role::Button, "Settings")
+            .click();
+        settle(&mut harness);
+        harness
+            .get_by_role_and_label(Role::Navigation, "Settings sections")
+            .get_by_role_and_label(Role::Button, "Plugins")
+            .click();
+        settle(&mut harness);
+        let plugins = text_rect(&harness, "Plugins")
+            .union(around(&harness, Role::Button, &["Transcription settings"]))
+            .union(around(&harness, Role::Switch, &["Enable Transcription"]));
+        save_component(&mut harness, "plugins", theme, plugins.expand(PART_MARGIN));
+        harness
+            .get_by_role_and_label(Role::Navigation, "Settings sections")
+            .get_by_role_and_label(Role::Button, "External tools")
+            .click();
+        settle(&mut harness);
+        // From the warning's frame, 12 points around its text, to the line
+        // under the configuration.
+        let warning = text_rect(&harness, "Assistants edit files directly");
+        let mcp = egui::Rect::from_min_max(
+            egui::pos2(
+                text_rect(&harness, "Configuration").left(),
+                warning.top() - 12.0,
+            ),
+            egui::pos2(
+                harness
+                    .get_by_role_and_label(Role::Button, "Copy")
+                    .rect()
+                    .right(),
+                text_rect(&harness, MOVED).bottom(),
+            ),
+        );
+        save_component(&mut harness, "mcp", theme, mcp.expand(PART_MARGIN));
+        press(&mut harness, Modifiers::NONE, Key::Escape);
+
+        open_rail_page(&mut harness, "Calendar", Role::Grid, "Calendar");
+        harness
+            .get_by_role_and_label(Role::RadioButton, "Day")
+            .click();
+        settle(&mut harness);
+        harness
+            .get_by_role_and_label(Role::Button, "Next day")
+            .click();
+        settle(&mut harness);
+        // A narrower window, so the day's column reads at a card's width:
+        // from its date to the 2 PM label, which sits on its hour's line,
+        // between the sidebar and the window's edge.
+        harness.set_size(egui::vec2(860.0, 780.0));
+        settle(&mut harness);
+        let day = egui::Rect::from_x_y_ranges(
+            harness
+                .get_by_role_and_label(Role::Splitter, "Resize panel")
+                .rect()
+                .right()..=harness.ctx.viewport_rect().right(),
+            harness
+                .get_by_role_and_label(Role::ColumnHeader, "Monday, November 23, 2026")
+                .rect()
+                .top()
+                ..=harness
+                    .get_by_role_and_label(Role::RowHeader, "2 PM")
+                    .rect()
+                    .top()
+                    + 12.0,
+        );
+        save_component(&mut harness, "calendar-day", theme, day);
+    }
 }

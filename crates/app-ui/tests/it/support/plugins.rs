@@ -74,6 +74,12 @@ pub fn kit_manifest() -> String {
 /// Install the plugin in `folder` in the workspace that `app_data` opens
 /// at launch, and turn it on there, before the harness starts.
 pub fn install_and_enable(app_data: &Path, folder: &Path, id: &str) {
+    install_turned(app_data, folder, id, true);
+}
+
+/// Install the plugin in `folder` in the workspace that `app_data` opens
+/// at launch, on or off as `on` says, before the harness starts.
+pub fn install_turned(app_data: &Path, folder: &Path, id: &str, on: bool) {
     let mut app = app_core::App::launch(app_data);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while app.is_busy() || app.workspace().is_none() {
@@ -87,5 +93,5 @@ pub fn install_and_enable(app_data: &Path, folder: &Path, id: &str) {
     app.review_plugin_folder(folder.to_owned());
     assert_eq!(app.plugin_install().unwrap().problem, None);
     assert!(app.approve_plugin_install());
-    assert!(app.set_plugin_enabled(id, true));
+    assert!(app.set_plugin_enabled(id, on));
 }
