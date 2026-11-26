@@ -26,7 +26,7 @@
 			label: 'Tasks',
 			icon: 'checks',
 			src: asset('/screens/tasks.webp'),
-			alt: 'The Spring launch project in noura’s Tasks view, with tasks grouped by due date and one task’s details open beside the list',
+			alt: 'The Spring launch project in noura’s Tasks view, with tasks grouped by due date and one task, assigned to Theo, open beside the list',
 			caption:
 				'Track due dates and priorities. Each task is its own Markdown file.',
 		},

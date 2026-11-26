@@ -305,7 +305,7 @@ cargo run -p desktop`;
 		</div>
 		<div class="ai-visual">
 			<div class="ai-part">
-				<AppPart name="ai-approval" theme="light" />
+				<AppPart name="ai-dialog" theme="light" />
 			</div>
 		</div>
 	</section>
@@ -754,17 +754,18 @@ cargo run -p desktop`;
 		grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
 		gap: 72px;
 	}
-	/* The approval prompt sits centered, or bleeds off the right edge when it doesn't fit. */
+	/* The approval prompt floats in the middle, or runs off the right edge when it doesn't fit. */
 	.ai-visual {
 		display: flex;
+		align-self: center;
 		align-items: center;
 		justify-content: safe center;
 		overflow: hidden;
-		padding: 56px 48px;
+		padding: 88px 48px 96px;
 		border-radius: 32px;
 		background:
 			radial-gradient(
-				circle at 50% 45%,
+				circle at 50% 50%,
 				rgba(147, 145, 254, 0.42),
 				transparent 62%
 			),
@@ -1165,6 +1166,12 @@ cargo run -p desktop`;
 			padding: 84px 24px 64px;
 		}
 	}
+	@media (max-width: 720px) {
+		.ai-visual {
+			--part-scale: 0.8;
+			padding: 64px 24px 72px;
+		}
+	}
 	@media (max-width: 600px) {
 		.pill {
 			min-height: 38px;
@@ -1243,8 +1250,9 @@ cargo run -p desktop`;
 			margin-top: 64px;
 		}
 		.ai-visual {
-			--part-scale: 0.6;
-			padding: 40px 20px;
+			/* The dialog's transparent shadow margin can sit in the padding. */
+			--part-scale: 0.64;
+			padding: 40px 8px 48px;
 			border-radius: 24px;
 		}
 		.ai,
