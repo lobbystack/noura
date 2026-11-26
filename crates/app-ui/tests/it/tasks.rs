@@ -1030,6 +1030,78 @@ fn the_selected_task_shows_beside_the_list_and_each_field_writes_its_file() {
     });
 }
 
+/// Each painted text whose whole text is `text`, and whether it shows
+/// cut short.
+fn painted(harness: &Ui, text: &str) -> Vec<bool> {
+    fn visit(shape: &egui::Shape, text: &str, found: &mut Vec<bool>) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, text, found);
+                }
+            }
+            egui::Shape::Text(shape) if shape.galley.job.text == text => {
+                found.push(shape.galley.elided);
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        visit(&clipped.shape, text, &mut found);
+    }
+    found
+}
+
+#[test]
+fn a_rows_title_keeps_its_room_before_its_details() {
+    let Some(Opened {
+        mut harness,
+        folder,
+        _folders,
+    }) = opened()
+    else {
+        return;
+    };
+    let title = "Write alt text for the catalogue photos";
+    std::fs::write(
+        folder.join(format!("tasks/{title}.md")),
+        task(
+            "c",
+            "status: todo\npriority: high\nassignee: Theo\ndue: 2030-01-02\n\
+             project: '[[Garden]]'\n",
+        ),
+    )
+    .unwrap();
+    harness.set_size(egui::vec2(1200.0, 800.0));
+    harness
+        .get_by_role_and_label(Role::ListBox, "Views")
+        .get_by_role_and_label(Role::ListBoxOption, "All")
+        .click();
+    wait_until(&mut harness, |harness| {
+        task_list(harness).contains(&title.to_owned())
+    });
+    // With a task open beside the list, the list is at its narrowest.
+    harness
+        .get_by_role_and_label(Role::ListBox, "No date")
+        .get_by_role_and_label(Role::ListBoxOption, "Read the manual")
+        .click();
+    wait_until(&mut harness, |harness| {
+        title_value(harness).as_deref() == Some("Read the manual")
+    });
+    // The project ends the detail, so it's the first to give way.
+    let row = harness.get_by_role_and_label(Role::ListBoxOption, title);
+    let detail = row.accesskit_node().description().unwrap_or_default();
+    assert!(
+        detail.ends_with("Theo \u{b7} High \u{b7} Garden"),
+        "{detail}"
+    );
+
+    // The title shows whole, and the detail is cut short.
+    assert_eq!(painted(&harness, title), [false]);
+    assert_eq!(painted(&harness, &detail), [true]);
+}
+
 #[test]
 fn the_assignee_row_names_who_does_the_task_and_emptying_it_clears_it() {
     let Some(Opened {

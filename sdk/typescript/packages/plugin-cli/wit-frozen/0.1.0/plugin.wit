@@ -1204,6 +1204,10 @@ interface ui {
   // the same line. A board's card shows the detail under the label.
   record item {
     label: string,
+    // Quieter text at the end of the line, such as a due date. When the
+    // line is short of room, the label keeps its width and the detail is
+    // cut short from its end, or left out, so put what matters most
+    // first.
     detail: option<string>,
     // A checkbox before the label, checked or not, which you check or
     // uncheck by click or the space bar. Each change sends `checked`, and

@@ -440,8 +440,9 @@ fn a_task_due_before_today_in_the_devices_time_zone_shows_as_overdue() {
     );
 }
 
+/// The project ends a row's detail, so a narrow row cuts it first.
 #[test]
-fn each_row_shows_its_due_date_project_and_priority_and_a_checkbox() {
+fn each_row_shows_its_due_date_priority_and_project_and_a_checkbox() {
     let (fixture, system) = garden();
     let mut app = fixture.app_with(system);
     let Some(_folder) = with_tasks(&mut app) else {
@@ -465,7 +466,7 @@ fn each_row_shows_its_due_date_project_and_priority_and_a_checkbox() {
             row("Pay rent", Some("Today · Urgent"), false),
             row("Call the vet", Some("23:30 · Low"), false),
             row("Order seeds", Some("Tomorrow"), false),
-            row("Sharpen tools", Some("Garden · High"), false),
+            row("Sharpen tools", Some("High · Garden"), false),
             row("Read the manual", None, false),
             row("Sweep", None, false),
             row("Mulch", Some("Yesterday"), true),

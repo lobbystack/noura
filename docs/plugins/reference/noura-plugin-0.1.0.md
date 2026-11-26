@@ -2491,6 +2491,11 @@ the same line. A board's card shows the detail under the label.
 
 - <a id="item.label"></a>`label`: `string`
 - <a id="item.detail"></a>`detail`: option<`string`>
+  <p>Quieter text at the end of the line, such as a due date. When the
+  line is short of room, the label keeps its width and the detail is
+  cut short from its end, or left out, so put what matters most
+  first.
+
 - <a id="item.checked"></a>`checked`: option<`bool`>
   <p>A checkbox before the label, checked or not, which you check or
   uncheck by click or the space bar. Each change sends `checked`, and
