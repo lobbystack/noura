@@ -1103,6 +1103,7 @@ impl View {
             value: value.to_owned(),
             style,
             focus,
+            icon: None,
         };
         self.add(parent, id, NodeKind::Editable(editable))
     }

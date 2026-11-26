@@ -1384,13 +1384,16 @@ interface ui {
     color: option<color>,
   }
 
-  // An icon Noura draws beside a heading or in an empty state.
+  // An icon Noura draws beside a heading, in an empty state or before
+  // editable text.
   enum icon {
     calendar,
     done,
     folder,
     note,
     tasks,
+    // A person, such as before the name of whom a task is assigned to.
+    person,
   }
 
   // How prominent a heading is.
@@ -1454,6 +1457,10 @@ interface ui {
     // Whether it takes the keyboard: when it appears holding true, or
     // when the plugin draws it with true after drawing it with false.
     focus: bool,
+    // An icon before a line's text that says what it holds, as the date
+    // picker's calendar does, such as a person before a name. Other
+    // styles draw none.
+    icon: option<icon>,
   }
 
   // A compact button that shows a date and opens a date picker: Today,

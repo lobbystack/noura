@@ -2759,7 +2759,8 @@ covers, in this device's time zone.
 
 #### <a id="icon"></a>`enum icon`
 
-An icon Noura draws beside a heading or in an empty state.
+An icon Noura draws beside a heading, in an empty state or before
+editable text.
 
 ##### Enum Cases
 
@@ -2768,6 +2769,9 @@ An icon Noura draws beside a heading or in an empty state.
 - <a id="icon.folder"></a>`folder`
 - <a id="icon.note"></a>`note`
 - <a id="icon.tasks"></a>`tasks`
+- <a id="icon.person"></a>`person`
+  <p>A person, such as before the name of whom a task is assigned to.
+
 
 #### <a id="heading_level"></a>`enum heading-level`
 
@@ -2857,6 +2861,11 @@ Escape puts back the value drawn and lets go of the keyboard.
 - <a id="editable.focus"></a>`focus`: `bool`
   <p>Whether it takes the keyboard: when it appears holding true, or
   when the plugin draws it with true after drawing it with false.
+
+- <a id="editable.icon"></a>`icon`: option<[`icon`](#icon)>
+  <p>An icon before a line's text that says what it holds, as the date
+  picker's calendar does, such as a person before a name. Other
+  styles draw none.
 
 
 #### <a id="date_picker"></a>`record date-picker`

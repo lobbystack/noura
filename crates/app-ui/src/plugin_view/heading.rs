@@ -12,13 +12,15 @@ use crate::{
     theme::{BODY_SIZE, PERIOD_TITLE_SIZE, Palette, SUPPORTING_SIZE, TITLE_SIZE, Weight, font},
 };
 
-fn icon(icon: PluginIcon) -> icons::Icon {
+/// The icon Noura draws for a plugin's `icon`.
+pub(super) fn icon(icon: PluginIcon) -> icons::Icon {
     match icon {
         PluginIcon::Calendar => icons::CALENDAR,
         PluginIcon::Done => icons::DONE,
         PluginIcon::Folder => icons::FOLDER,
         PluginIcon::Note => icons::NOTE,
         PluginIcon::Tasks => icons::TASKS,
+        PluginIcon::Person => icons::USER_CIRCLE,
     }
 }
 

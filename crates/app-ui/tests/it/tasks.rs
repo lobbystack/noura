@@ -1085,6 +1085,18 @@ fn the_assignee_row_names_who_does_the_task_and_emptying_it_clears_it() {
         assignee(harness).as_deref() == Some("Alice")
             && detail(harness).as_deref() == Some("Alice \u{b7} High")
     });
+    // The name sits after a person icon, as the due date sits after a
+    // calendar, where the date's text starts.
+    let field = harness.get_by_role_and_label(Role::TextInput, "Assignee");
+    let name = field.get_by_role(Role::TextRun).rect();
+    let due = harness
+        .get_by_role_and_label(Role::Button, "Due date")
+        .rect();
+    assert!(
+        (name.left() - field.rect().left() - 28.0).abs() < 1.0
+            && (field.rect().left() - due.left()).abs() < 1.0,
+        "the name at {name:?} doesn't line up with the due date's text in {due:?}"
+    );
 
     // Escape puts the name back and writes nothing.
     harness
