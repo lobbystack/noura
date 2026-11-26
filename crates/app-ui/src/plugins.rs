@@ -132,6 +132,19 @@ fn list_row(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) -
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 16.0;
         let width = ui.available_width() - 32.0 - 16.0;
+        // The name and the summary end 8 points before the chevron, cut
+        // short when the row is narrower than they are.
+        let room = (width - 40.0 - 16.0 - 16.0 - 8.0).max(0.0);
+        let line = |text: String, font: egui::FontId| {
+            egui::WidgetText::from(text).into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                room,
+                font,
+            )
+        };
+        let name = line(row.name.clone(), font(ui.ctx(), BODY_SIZE, Weight::Medium));
+        let summary = line(plugin_summary(row), egui::FontId::proportional(BODY_SIZE));
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(width, 44.0), egui::Sense::click());
         let label = format!("{} settings", row.name);
@@ -148,16 +161,6 @@ fn list_row(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) -
                 icon,
                 palette.muted_foreground,
                 false,
-            );
-            let name = painter.layout_no_wrap(
-                row.name.clone(),
-                font(ui.ctx(), BODY_SIZE, Weight::Medium),
-                palette.foreground,
-            );
-            let summary = painter.layout_no_wrap(
-                plugin_summary(row),
-                egui::FontId::proportional(BODY_SIZE),
-                palette.muted_foreground,
             );
             let left = rect.left() + 40.0 + 16.0;
             painter.galley(egui::pos2(left, rect.top()), name, palette.foreground);

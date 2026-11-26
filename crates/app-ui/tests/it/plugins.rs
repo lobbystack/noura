@@ -324,3 +324,59 @@ fn a_view_that_breaks_the_rules_draws_an_error_in_its_place() {
             .is_some()
     );
 }
+
+/// Where each painted text whose whole text is `text` shows, in points,
+/// and whether it shows cut short.
+fn painted(harness: &Ui, text: &str) -> Vec<(egui::Rect, bool)> {
+    fn visit(shape: &egui::Shape, text: &str, found: &mut Vec<(egui::Rect, bool)>) {
+        match shape {
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    visit(shape, text, found);
+                }
+            }
+            egui::Shape::Text(shape) if shape.galley.job.text == text => {
+                found.push((shape.visual_bounding_rect(), shape.galley.elided));
+            }
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    for clipped in &harness.output().shapes {
+        visit(&clipped.shape, text, &mut found);
+    }
+    found
+}
+
+#[test]
+fn a_plugin_rows_text_gives_way_before_its_chevron_in_a_narrow_window() {
+    let Some(hello) = plugins::built("hello_plugin") else {
+        return;
+    };
+    let mut opened = opened(|app_data, parent| {
+        let folder = plugins::folder(parent, HELLO_MANIFEST, "hello_plugin.wasm", &hello);
+        install_and_enable(app_data, &folder, "hello");
+    });
+    let harness = &mut opened.harness;
+    harness.set_size(egui::vec2(520.0, 700.0));
+    open_plugins_page(harness);
+
+    // The chevron fills the row's last 16 points, before its switch.
+    let row = harness
+        .get_by_role_and_label(Role::Button, "Hello settings")
+        .rect();
+    let chevron = row.right() - 16.0;
+    // The name and the version end before it, inside the row, the version
+    // cut short.
+    for (text, cut) in [("Hello", false), ("Version 0.1.0", true)] {
+        let shown = painted(harness, text);
+        assert!(!shown.is_empty(), "{text} isn't drawn");
+        for (rect, elided) in shown {
+            assert_eq!(elided, cut, "{text}");
+            assert!(
+                rect.right() <= chevron && row.contains_rect(rect),
+                "{text} at {rect:?} runs into the chevron at {chevron} in {row:?}"
+            );
+        }
+    }
+}
