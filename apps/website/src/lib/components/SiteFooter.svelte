@@ -1,14 +1,12 @@
 <script lang="ts">
-	import { asset, resolve } from '$app/paths';
+	import { resolve } from '$app/paths';
 	import { siteConfig } from '$lib/site-config';
 	import { openCookieSettings } from '$lib/cookie-consent.svelte';
 </script>
 
 <footer>
 	<div class="footer-brand">
-		<span
-			><img src={asset('/logo.png')} alt="" width="26" height="26" />noura</span
-		>
+		<span class="wordmark">noura</span>
 		<p>The open workspace for humans and AI.</p>
 	</div>
 	<div class="footer-links">
@@ -44,16 +42,15 @@
 		grid-template-columns: 1fr auto;
 		gap: 40px 70px;
 	}
-	.footer-brand span {
-		display: inline-flex;
-		align-items: center;
-		gap: 10px;
-		font-size: 20px;
+	.wordmark {
+		display: block;
+		font-size: 22px;
 		font-weight: 780;
-		letter-spacing: -0.04em;
+		line-height: 1;
+		letter-spacing: -0.045em;
 	}
 	.footer-brand p {
-		margin: 8px 0 0;
+		margin: 12px 0 0;
 		color: #6f6d76;
 		font-size: 14px;
 	}
