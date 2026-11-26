@@ -6,7 +6,8 @@
 #   windows at 2400 by 1560 pixels
 # - apps/website/static/og.png, the 1200 by 630 social card
 # - apps/website/static/parts/<part>-{light,dark}.webp, pieces of the
-#   interface for the feature cards, with a README.md listing their sizes
+#   interface for the feature cards, with a README.md listing their sizes.
+#   ai-dialog keeps its transparent background.
 #
 # The ignored tests renders::website_screens and renders::website_parts in
 # crates/app-ui draw them through wgpu, so this needs a GPU or a software
@@ -71,7 +72,9 @@ magick -size 1200x630 -define gradient:direction=SouthEast gradient:'#f2f0ff-#de
 shows() {
   case "$1" in
     ai-approval) echo "A question about the workspace, the answer, and Noura asking before the AI creates a task" ;;
+    ai-dialog) echo "Noura's prompt before the AI creates a task, alone with its shadow on a transparent background" ;;
     plugins) echo "Settings > Plugins, with Dictation and Transcription turned off" ;;
+    plugins-compact) echo "The same plugins in a narrow window, each switch close to its name, for phones" ;;
     task-rows) echo "The Studio admin project's tasks: three upcoming and one done" ;;
     file-tree) echo "The sidebar's files, with three folders open and the Website relaunch note selected" ;;
     mcp) echo "The MCP configuration in Settings > External tools, with its Copy button" ;;
@@ -89,7 +92,7 @@ mkdir -p "$parts"
   echo
   echo "| Part | Pixels | Shows |"
   echo "| --- | --- | --- |"
-  for part in ai-approval plugins task-rows file-tree mcp palette calendar-day; do
+  for part in ai-approval ai-dialog plugins plugins-compact task-rows file-tree mcp palette calendar-day; do
     for theme in light dark; do
       webp "$renders/$part-$theme.png" "$parts/$part-$theme.webp"
     done

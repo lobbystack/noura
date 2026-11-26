@@ -1590,6 +1590,149 @@ fn in_column(rect: egui::Rect, column: egui::Rangef) -> egui::Rect {
     egui::Rect::from_x_y_ranges(column, rect.y_range().expand(PART_MARGIN))
 }
 
+/// How `common::dialog_frame` draws the tool prompt, in points: the
+/// width the prompt sets, the margin around it, the fill's corner radius,
+/// and the stroke drawn outside the fill.
+const PROMPT_WIDTH: f32 = 440.0;
+const PROMPT_MARGIN: f32 = 24.0;
+const PROMPT_RADIUS: f32 = 24.0;
+const PROMPT_STROKE: f32 = 1.0;
+
+/// How far the cut-out reaches past the prompt's stroke for its shadow,
+/// which falls 20 points down and blurs over 25: left and right, top,
+/// and bottom, in points.
+const PROMPT_SHADOW: [f32; 3] = [16.0, 8.0, 40.0];
+
+/// How far `point` lies outside the rounded rectangle `rect` whose
+/// corners curve with `radius`, negative inside.
+fn outside(point: egui::Pos2, rect: egui::Rect, radius: f32) -> f32 {
+    let q = (point - rect.center()).abs() - (rect.size() / 2.0 - egui::Vec2::splat(radius));
+    q.max(egui::Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - radius
+}
+
+/// The tool prompt the window shows, with its shadow, on a transparent
+/// background. The window's dimmed background around the prompt must be
+/// a single color.
+///
+/// Inside its fill the prompt keeps the window's pixels. Its rounded
+/// edge and stroke are drawn again from `common::dialog_frame`, so no
+/// backdrop shows through them. The shadow is black, so in light, where
+/// the backdrop is bright, how much it darkens the backdrop gives its
+/// alpha; dark draws the same shadow, which `shadow` carries over from
+/// light.
+fn cut_out_dialog(
+    harness: &mut Ui,
+    theme: Theme,
+    shadow: &mut Option<Vec<f32>>,
+) -> image::RgbaImage {
+    let image = harness.render().expect("the window renders");
+    let scale = harness.ctx.pixels_per_point();
+    let content = harness
+        .get_by_role_and_label(Role::AlertDialog, TOOL_PROMPT)
+        .query_all(egui_kittest::kittest::By::new())
+        .filter_map(|node| node.accesskit_node().bounding_box())
+        .map(|bounds| {
+            egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32) / scale,
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32) / scale,
+            )
+        })
+        .fold(egui::Rect::NOTHING, egui::Rect::union);
+    let fill = egui::Rect::from_min_max(
+        content.min - egui::Vec2::splat(PROMPT_MARGIN),
+        egui::pos2(
+            content.left() + PROMPT_WIDTH + PROMPT_MARGIN,
+            content.bottom() + PROMPT_MARGIN,
+        ),
+    );
+    let outer = fill.expand(PROMPT_STROKE);
+    let [side, top, bottom] = PROMPT_SHADOW;
+    let cut = egui::Rect::from_min_max(
+        outer.min - egui::vec2(side, top),
+        outer.max + egui::vec2(side, bottom),
+    );
+    let (fill, outer, cut) = (fill * scale, outer * scale, cut * scale);
+    let (radius, outer_radius) = (
+        PROMPT_RADIUS * scale,
+        (PROMPT_RADIUS + PROMPT_STROKE) * scale,
+    );
+    let (left, top) = (cut.left().round() as u32, cut.top().round() as u32);
+    let (width, height) = (cut.width().round() as u32, cut.height().round() as u32);
+    let covered = |x: u32, y: u32, rect: egui::Rect, radius: f32| {
+        let center = egui::pos2(x as f32 + 0.5, y as f32 + 0.5);
+        (0.5 - outside(center, rect, radius)).clamp(0.0, 1.0)
+    };
+
+    // The shadow's alpha where only the shadow covers the backdrop, then
+    // under the prompt's edge, from just outside its stroke.
+    let shadow = shadow.get_or_insert_with(|| {
+        let backdrop = f32::from(image.get_pixel(left, top)[0]);
+        let mut alpha: Vec<f32> = (0..height)
+            .flat_map(|y| (0..width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let (x, y) = (left + x, top + y);
+                if covered(x, y, outer, outer_radius) > 0.0 {
+                    return f32::NAN;
+                }
+                (1.0 - f32::from(image.get_pixel(x, y)[0]) / backdrop).clamp(0.0, 1.0)
+            })
+            .collect();
+        let inner = outer.shrink(outer_radius);
+        for index in 0..alpha.len() {
+            if !alpha[index].is_nan() {
+                continue;
+            }
+            let at = egui::pos2(
+                (left + index as u32 % width) as f32 + 0.5,
+                (top + index as u32 / width) as f32 + 0.5,
+            );
+            let corner = inner.clamp(at);
+            let out = (at - corner).normalized();
+            let beyond = corner + out * (outer_radius + 3.0);
+            let (x, y) = (beyond.x as i64 - left as i64, beyond.y as i64 - top as i64);
+            alpha[index] = if out == egui::Vec2::ZERO
+                || !(0..width as i64).contains(&x)
+                || !(0..height as i64).contains(&y)
+            {
+                0.0
+            } else {
+                alpha[(y * width as i64 + x) as usize]
+            };
+        }
+        alpha
+    });
+
+    let palette = match theme {
+        Theme::Light => app_ui::theme::Palette::light(),
+        Theme::Dark => app_ui::theme::Palette::dark(),
+    };
+    let stroke = if theme == Theme::Dark { 0.1 } else { 0.05 };
+    let rgb = |color: egui::Color32| [color.r(), color.g(), color.b()].map(f32::from);
+    image::RgbaImage::from_fn(width, height, |x, y| {
+        let (at_x, at_y) = (left + x, top + y);
+        let body = covered(at_x, at_y, fill, radius);
+        let ring = covered(at_x, at_y, outer, outer_radius) - body;
+        let face = if body >= 1.0 {
+            let pixel = image.get_pixel(at_x, at_y);
+            [pixel[0], pixel[1], pixel[2]].map(f32::from)
+        } else {
+            rgb(palette.popover)
+        };
+        // The shadow, the stroke over it, then the fill over both.
+        let mut alpha = shadow[(y * width + x) as usize];
+        let mut color = [0.0; 3];
+        for (layer, cover) in [(rgb(palette.foreground), ring * stroke), (face, body)] {
+            let under = alpha * (1.0 - cover);
+            alpha = cover + under;
+            if alpha > 0.0 {
+                color = std::array::from_fn(|c| (layer[c] * cover + color[c] * under) / alpha);
+            }
+        }
+        let [r, g, b] = color.map(|c| c.round() as u8);
+        image::Rgba([r, g, b, (alpha * 255.0).round() as u8])
+    })
+}
+
 /// The studio's workspace at `/Users/Shared/Studio` on a Mac, so the MCP
 /// configuration in Settings names a folder as a person's would, or in a
 /// temporary folder elsewhere. It refuses a folder that's there already,
@@ -1640,11 +1783,14 @@ const MOVED: &str = "If you move this workspace or Noura, copy the configuration
 /// The pieces of the interface the website shows in its feature cards,
 /// each cropped from the window with some of the app's background around
 /// it, in light and dark: `file-tree`, `task-rows`, `ai-approval`,
-/// `plugins`, `mcp`, `calendar-day` and `palette`.
+/// `ai-dialog`, `plugins`, `plugins-compact`, `mcp`, `calendar-day` and
+/// `palette`.
 /// `scripts/website-screens.sh` turns them into the site's images.
 #[test]
 #[ignore = "draws the website's screenshots, which needs a GPU"]
 fn website_parts() {
+    // The tool prompt's shadow, measured in light, where it shows.
+    let mut shadow = None;
     for theme in [Theme::Light, Theme::Dark] {
         let studio = SharedStudio::new();
         let (mut harness, _folders) = website_window(
@@ -1722,6 +1868,15 @@ fn website_parts() {
         );
         let conversation = around_all_in(&harness, thread).expand(24.0 + PART_MARGIN);
         save_component(&mut harness, "ai-approval", theme, conversation);
+        // The prompt alone, in a taller window that leaves blank space
+        // around it.
+        harness.set_size(egui::vec2(SIZE[0], 1400.0));
+        settle(&mut harness);
+        leave(&mut harness);
+        let dialog = cut_out_dialog(&mut harness, theme, &mut shadow);
+        write_png(&dialog, &format!("ai-dialog-{}", theme_name(theme)));
+        harness.set_size(egui::vec2(SIZE[0], SIZE[1]));
+        settle(&mut harness);
         harness.get_by_role_and_label(Role::Button, "Deny").click();
         settle(&mut harness);
 
@@ -1760,6 +1915,29 @@ fn website_parts() {
             ),
         );
         save_component(&mut harness, "mcp", theme, mcp.expand(PART_MARGIN));
+        // Plugins again, in a window narrow enough that each switch sits
+        // close to its plugin's name, as on a phone.
+        harness
+            .get_by_role_and_label(Role::Navigation, "Settings sections")
+            .get_by_role_and_label(Role::Button, "Plugins")
+            .click();
+        settle(&mut harness);
+        harness.set_size(egui::vec2(660.0, 780.0));
+        settle(&mut harness);
+        let compact = around(
+            &harness,
+            Role::Button,
+            &["AI settings", "Transcription settings"],
+        )
+        .union(around(&harness, Role::Switch, &["Enable Transcription"]));
+        save_component(
+            &mut harness,
+            "plugins-compact",
+            theme,
+            compact.expand(PART_MARGIN),
+        );
+        harness.set_size(egui::vec2(SIZE[0], SIZE[1]));
+        settle(&mut harness);
         press(&mut harness, Modifiers::NONE, Key::Escape);
 
         open_rail_page(&mut harness, "Calendar", Role::Grid, "Calendar");
