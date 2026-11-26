@@ -314,3 +314,42 @@ fn a_chat_and_its_messages_show_the_chat_s_title() {
         )]
     );
 }
+
+#[test]
+fn a_hit_s_matching_text_is_the_line_around_the_match() {
+    let note = "# Website relaunch\n\n\
+The new site goes live with the spring catalogue. This note keeps the plan, \
+the open questions and what we decided in Thursday's review, so anyone joining \
+can catch up in five minutes.\n\n\
+## Goals\n\n\
+- Cut the home page to one clear story and a single call to action\n\
+- Load in under a second on a phone over 4G\n\
+- Move the journal off the old CMS without breaking a single link\n\
+- Give every catalogue photo real alt text\n\n\
+## Timeline\n";
+    let fixture = Fixture::new(&[("Design/Website relaunch.md", note.as_bytes())]);
+    let workspace = open(&fixture);
+
+    let snippet = |text: &str| search(&workspace, text)[0].snippet.clone();
+    // The match's own line, without the lines around it.
+    assert_eq!(
+        snippet("journal"),
+        "Move the journal off the old CMS without breaking a single link"
+    );
+    assert_eq!(snippet("phot"), "Give every catalogue photo real alt text");
+    // A long line keeps the words around the match, with the match in
+    // the middle.
+    let long = snippet("questions");
+    assert!(!long.contains('\n'), "{long:?}");
+    let (before, after) = long.split_once("questions").expect("the match shows");
+    let words = |text: &str| {
+        text.split_whitespace()
+            .filter(|word| *word != "\u{2026}")
+            .count()
+    };
+    assert!(words(before).abs_diff(words(after)) <= 1, "{long:?}");
+    assert!(
+        long.starts_with('\u{2026}') && long.ends_with('\u{2026}'),
+        "{long:?}"
+    );
+}
