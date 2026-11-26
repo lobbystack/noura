@@ -17,9 +17,14 @@ type Ui = Harness<'static, app_ui::NouraUi>;
 /// A workspace holding the note `Plan.md` with `text`, opened from the
 /// tree, with the caret in the note.
 fn opened_note(app_data: &Path, folder: &Path, text: &str) -> Ui {
+    opened_note_on(app_data, folder, text, Platform::Windows)
+}
+
+/// [`opened_note`] with `platform`'s keys.
+fn opened_note_on(app_data: &Path, folder: &Path, text: &str, platform: Platform) -> Ui {
     create_workspace(app_data, folder);
     std::fs::write(folder.join("Plan.md"), text).unwrap();
-    let mut harness = harness_for(app_data, Platform::Windows, |_| {});
+    let mut harness = harness_for(app_data, platform, |_| {});
     settle(&mut harness);
     harness
         .get_by_role_and_label(Role::TreeItem, "Plan")
@@ -88,6 +93,41 @@ fn the_toolbar_and_find_work_on_the_open_note() {
     harness.get_by_label("Find in note").type_text("one");
     harness.run_steps(3);
     harness.get_by_label("1/2");
+}
+
+/// The toolbar names each button's shortcut as the app's platform writes
+/// it, and the note takes those keys.
+#[test]
+fn the_toolbar_shows_the_platform_s_shortcuts() {
+    for (platform, bold, numbered) in [
+        (
+            Platform::MacOs,
+            "Bold (\u{2318}B)",
+            "Numbered list (\u{21e7}\u{2318}7)",
+        ),
+        (
+            Platform::Windows,
+            "Bold (Ctrl+B)",
+            "Numbered list (Ctrl+Shift+7)",
+        ),
+    ] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Garden");
+        let mut harness = opened_note_on(app_data.path(), &folder, "one", platform);
+        let toolbar = harness.get_by_role_and_label(Role::Toolbar, "Formatting");
+        toolbar.get_by_role_and_label(Role::Button, bold);
+        toolbar.get_by_role_and_label(Role::Button, numbered);
+
+        // Mod-B is ⌘B on macOS and Ctrl+B elsewhere.
+        let mod_key = match platform {
+            Platform::MacOs => Modifiers::MAC_CMD | Modifiers::COMMAND,
+            Platform::Windows | Platform::Linux => Modifiers::CTRL | Modifiers::COMMAND,
+        };
+        press(&mut harness, mod_key, egui::Key::A);
+        press(&mut harness, mod_key, egui::Key::B);
+        assert_eq!(note_text(&harness), "**one**", "{platform:?}");
+    }
 }
 
 /// The shortcuts page lists the keys the editor runs: app-core's list of

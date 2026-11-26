@@ -196,12 +196,17 @@ fn a_note_that_gains_an_id_and_a_type_while_open_opens_as_a_note() {
     );
     // The editor started again from the note's text, so undo has nothing
     // to take back that held the file's whole text.
-    assert!(
-        harness
-            .get_by_label("Undo (Ctrl+Z)")
-            .accesskit_node()
-            .is_disabled()
-    );
+    // The button names this platform's shortcut, such as Undo (Ctrl+Z).
+    let undo = harness
+        .query_all_by_role(Role::Button)
+        .find(|button| {
+            button
+                .accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with("Undo ("))
+        })
+        .expect("the toolbar has Undo");
+    assert!(undo.accesskit_node().is_disabled());
     harness.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
     harness.run_steps(3);
     assert_eq!(note_text(&harness), "# Plan\n");

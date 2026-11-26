@@ -12,7 +12,7 @@ use std::{
 };
 
 use app_core::sync::workspace::presence::SelectionRange;
-use app_core::{App, ConflictChoice, OpenAs, PluginView, TabId};
+use app_core::{App, ConflictChoice, OpenAs, Platform, PluginView, TabId};
 use editor_egui::{Editor, MdConfig, RemoteCursor, SpellChecker};
 use egui::{
     Color32, Event, Frame, Id, Key, Margin, Modifiers, Panel, RichText, ScrollArea, Stroke,
@@ -212,10 +212,11 @@ pub(crate) fn show(
     };
     let shows_source = session.shows_source();
     let whole_file = session.shows_whole_file();
+    let mac_keys = app.platform() == Platform::MacOs;
     let note = view.notes.entry(tab).or_insert_with(|| {
         let clicked = ui.input(|input| input.pointer.any_released());
         OpenNote {
-            editor: editor_for(ui.ctx(), session),
+            editor: editor_for(ui.ctx(), session, mac_keys),
             whole_file,
             name: None,
             focus_name: false,
@@ -238,7 +239,7 @@ pub(crate) fn show(
         && let Some(session) = app.note(tab)
     {
         let focused = note.editor.focused(ui.ctx());
-        note.editor = editor_for(ui.ctx(), session);
+        note.editor = editor_for(ui.ctx(), session, mac_keys);
         note.checks_spelling = false;
         note.links_source = None;
         note.whole_file = whole_file;
@@ -370,17 +371,20 @@ pub(crate) fn show(
 
 /// An editor for the note `session` shows: its text as source for a
 /// plain-text or code file and a note whose properties don't parse, or in
-/// the live preview with the formatting toolbar.
-fn editor_for(ctx: &egui::Context, session: &app_core::NoteSession) -> Editor {
+/// the live preview with the formatting toolbar. Its shortcuts work and
+/// read as the app's platform has them, as ⌘B on macOS.
+fn editor_for(ctx: &egui::Context, session: &app_core::NoteSession, mac_keys: bool) -> Editor {
     let config = if session.shows_source() {
         // Any extension but `md` shows the text as source.
         MdConfig {
             ext: "txt".into(),
+            mac_keys: Some(mac_keys),
             ..MdConfig::default()
         }
     } else {
         MdConfig {
             toolbar: true,
+            mac_keys: Some(mac_keys),
             ..MdConfig::default()
         }
     };

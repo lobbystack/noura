@@ -20,7 +20,6 @@ use egui::{
 };
 
 use crate::input::Event;
-use crate::input::canonical::is_apple;
 use crate::{Editor, ScrollTarget};
 
 /// The text version and selection formats were read at.
@@ -489,7 +488,7 @@ impl Editor {
 
     /// One toolbar button, labeled with its name and shortcut.
     fn tool_button(&self, ui: &mut Ui, tool: &Tool, toggles: bool, enabled: bool) -> bool {
-        let apple = is_apple(ui.ctx());
+        let apple = self.edit.renderer.mac_keys();
         let name = named_with_shortcut(tool.name, tool.command, apple);
         let pressed = toggles.then(|| self.pressed(tool.command));
         glyph_button(ui, &tool.glyph, pressed, enabled)
@@ -505,7 +504,7 @@ impl Editor {
             return;
         }
         let ctx = ui.ctx().clone();
-        let apple = is_apple(&ctx);
+        let apple = self.edit.renderer.mac_keys();
         let mut run = None;
         let builder = UiBuilder::new()
             .accessibility_role(Role::Toolbar)
@@ -809,7 +808,7 @@ impl Editor {
                 Align2::LEFT_TOP,
             )
         };
-        let apple = is_apple(ctx);
+        let apple = self.edit.renderer.mac_keys();
         let mut run = None;
         let tools = inline_tools().into_iter().chain([tool(
             Command::Format(Format::Link),
