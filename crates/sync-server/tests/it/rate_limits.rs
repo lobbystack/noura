@@ -747,3 +747,138 @@ fn the_defaults_are_the_ones_section_26_names() {
         );
     }
 }
+
+/// On a server that sells plans, `GET /v2/account` reports the plan and
+/// what the account pushed, uploaded and read today, and a creation past
+/// the plan's largest file gets `file_too_large` (§20, §26).
+#[tokio::test]
+async fn the_account_route_reports_the_day_and_the_plan() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let data = dir.path().join("data");
+    sync_server::migrate(&data).await.expect("migrated");
+    let store = sync_server::open_store(&sync_server::Config::new(
+        data,
+        "127.0.0.1:0".parse().expect("an address"),
+    ))
+    .await
+    .expect("the store opens")
+    .with_billing(true);
+    let world = world_on(Arc::new(store), RateGate::new(wide(), None), dir).await;
+    let (pushed, _) = world.push(0, 1, Digest::ZERO).await;
+    assert_eq!(pushed.status, StatusCode::OK);
+    let (ciphertext, blob_ref) = World::<sync_store_sqlite::SqliteBackend>::blob(300_000);
+    let location = world.create_blob(0, &blob_ref).await;
+    let patched = world.patch(0, &location, 0, &ciphertext).await;
+    assert_eq!(patched.status(), StatusCode::NO_CONTENT);
+    let policy = world
+        .client(0)
+        .get(&format!("/v2/workspaces/{}/policy", world.workspace()))
+        .await;
+    assert_eq!(policy.status, StatusCode::OK);
+
+    let report: sync_protocol::messages::AccountResponse =
+        world.client(0).get("/v2/account").await.decode();
+    assert_eq!(report.plan.as_str(), "free");
+    assert!(report.billing);
+    assert_eq!(report.storage_bytes, Some(100_000_000));
+    assert_eq!(report.upload_bytes_per_day, Some(1_000_000_000));
+    assert!(
+        report.uploaded_today >= ciphertext.len() as u64,
+        "{} uploaded",
+        report.uploaded_today
+    );
+    assert!(report.downloaded_today >= policy.body.len() as u64);
+    assert_eq!(report.workspaces.0.len(), 1);
+
+    // A 6 MB file is past free's 5 MB.
+    let large = sync_protocol::blob::blob_ciphertext_len(6_000_000);
+    let metadata = format!(
+        "blob {},digest {},domain {}",
+        STANDARD.encode(Id::random().expect("random").0),
+        STANDARD.encode([1u8; 32]),
+        STANDARD.encode(world.created.domain.0)
+    );
+    let refused = world
+        .tus(
+            0,
+            Method::POST,
+            &format!("/v2/workspaces/{}/blobs", world.workspace()),
+        )
+        .header("Upload-Length", large)
+        .header("Upload-Metadata", metadata)
+        .send()
+        .await
+        .expect("creation");
+    assert_eq!(refused.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let body =
+        sync_protocol::messages::ErrorBody::from_bytes(&refused.bytes().await.expect("a body"))
+            .expect("an error body");
+    assert_eq!(body.code.as_str(), "file_too_large");
+    let detail =
+        sync_protocol::messages::FileTooLargeDetail::from_bytes(&body.detail.expect("a detail").0)
+            .expect("decodes");
+    assert_eq!(detail.max_file_bytes, 5_000_000);
+
+    // The owner keeps its one workspace; another ID gets not_found.
+    let chosen = sync_protocol::messages::ActiveWorkspacesRequest {
+        workspaces: sync_protocol::codec::List(vec![Id::random().expect("random")]),
+    };
+    let reply = world
+        .client(0)
+        .post(
+            "/v2/account/active-workspaces",
+            sync_protocol::codec::Encode::to_bytes(&chosen),
+        )
+        .await;
+    assert_eq!(reply.status, StatusCode::NOT_FOUND);
+}
+
+/// A server that sells no plans reports `operator` and counts no day.
+#[tokio::test]
+async fn without_billing_the_account_route_reports_the_operator_plan() {
+    let world = limited(wide()).await;
+    let (pushed, _) = world.push(0, 1, Digest::ZERO).await;
+    assert_eq!(pushed.status, StatusCode::OK);
+    let report: sync_protocol::messages::AccountResponse =
+        world.client(0).get("/v2/account").await.decode();
+    assert_eq!(report.plan.as_str(), "operator");
+    assert!(!report.billing);
+    assert_eq!(report.owned_workspaces, 100);
+    assert_eq!((report.uploaded_today, report.downloaded_today), (0, 0));
+}
+
+/// Each limiter reads back what a key used in the current window, apart
+/// for each window length, so the account route reports the day in both
+/// modes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn both_limiters_read_back_a_window() {
+    let database = Cluster::shared(Path::new(env!("CARGO_TARGET_TMPDIR")))
+        .database()
+        .await;
+    let postgres = sync_server::Postgres {
+        url: database.url.clone(),
+        secret: Some(SecretKey::random().expect("random")),
+    };
+    sync_server::postgres::migrate(&postgres)
+        .await
+        .expect("migrated");
+    let store = sync_server::postgres::open_store(&postgres)
+        .await
+        .expect("the store opens");
+    let limiters: [Arc<dyn sync_store::Limiter>; 2] = [
+        Arc::new(sync_store::MemoryLimiter::default()),
+        store.backend().limiter(),
+    ];
+    let day = Limit {
+        allowance: 100,
+        window: Duration::from_secs(86_400),
+    };
+    for limiter in limiters {
+        assert_eq!(limiter.used(b"key", day).await.expect("read"), 0);
+        limiter.take(b"key", 30, day).await.expect("taken");
+        limiter.take(b"key", 12, day).await.expect("taken");
+        assert_eq!(limiter.used(b"key", day).await.expect("read"), 42);
+        assert_eq!(limiter.used(b"key", hour(100)).await.expect("read"), 0);
+        assert_eq!(limiter.used(b"other", day).await.expect("read"), 0);
+    }
+}

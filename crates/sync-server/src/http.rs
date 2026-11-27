@@ -16,10 +16,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use sync_protocol::codec::{Bytes, Decode, Encode, Nested, Text};
 use sync_protocol::messages::{
-    ChainAppendRequest, ChainsRequest, CreateInvitationRequest, CreateShareRequest,
-    DeviceTokenRequest, EnrollRequest, ErrorBody, ExpiresAtResponse, LiveCursor, MAX_BODY,
-    MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER, RecoveryRequest, RevealBody,
-    RewrapBody, ShareBody,
+    ActiveWorkspacesRequest, ChainAppendRequest, ChainsRequest, CreateInvitationRequest,
+    CreateShareRequest, DeviceTokenRequest, EnrollRequest, ErrorBody, ExpiresAtResponse,
+    LiveCursor, MAX_BODY, MEDIA_TYPE, OfferRequest, PullRequest, RESTORE_GENERATION_HEADER,
+    RecoveryRequest, RevealBody, RewrapBody, ShareBody,
 };
 use sync_protocol::types::{Digest, Id, from_base64url, from_decimal};
 use sync_store::devices::UNBOUND;
@@ -129,6 +129,7 @@ async fn admit<B: Backend>(
     parts: &Parts,
     state: &AppState<B>,
     subject: Id,
+    account: Id,
 ) -> Result<(), ApiError> {
     let (Some(route), Some(meter)) = (
         parts.extensions.get::<MatchedPath>(),
@@ -137,9 +138,16 @@ async fn admit<B: Backend>(
         return Ok(());
     };
     let limiter = state.store.backend().limiter();
+    let budget = state.rate.budget(&state.store, account).await?;
     state
         .rate
-        .admit(&*limiter, (&parts.method, route.as_str()), subject, meter)
+        .admit(
+            &*limiter,
+            (&parts.method, route.as_str()),
+            subject,
+            budget,
+            meter,
+        )
         .await
 }
 
@@ -164,7 +172,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for ChainReader {
         let token = bearer(parts)?;
         let row = state.store.session_row(token).await?.0;
         bound(row.session)?;
-        admit(parts, state, row.session.device).await?;
+        admit(parts, state, row.session.device, row.session.account).await?;
         Ok(ChainReader(row))
     }
 }
@@ -187,7 +195,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for Auth {
     ) -> Result<Self, Self::Rejection> {
         let token = bearer(parts)?;
         let session = bound(state.store.session(token).await?)?;
-        admit(parts, state, session.device).await?;
+        admit(parts, state, session.device, session.account).await?;
         Ok(Auth(session))
     }
 }
@@ -207,7 +215,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for Enrolling {
         } else {
             session.device
         };
-        admit(parts, state, subject).await?;
+        admit(parts, state, subject, session.account).await?;
         Ok(Enrolling(session, hash))
     }
 }
@@ -222,7 +230,7 @@ impl<B: Backend> FromRequestParts<AppState<B>> for AuthWithHash {
         let token = bearer(parts)?;
         let (session, hash) = state.store.session_and_hash(token).await?;
         let session = bound(session)?;
-        admit(parts, state, session.device).await?;
+        admit(parts, state, session.device, session.account).await?;
         Ok(AuthWithHash(session, hash))
     }
 }
@@ -327,6 +335,36 @@ async fn list_workspaces<B: Backend>(
     Ok(ok(&store.workspaces(session).await?))
 }
 
+/// `GET /v2/account`: the plan, limits and usage, with what the account
+/// moved today when the server sells plans (§20, §26).
+async fn account<B: Backend>(
+    State(state): State<AppState<B>>,
+    Auth(session): Auth,
+) -> Result<Response, ApiError> {
+    let mut report = state.store.account(session).await?;
+    if report.billing {
+        let limiter = state.store.backend().limiter();
+        let (up, down) = crate::rate::RateGate::today(&*limiter, session.account).await?;
+        report.uploaded_today = up;
+        report.downloaded_today = down;
+    }
+    Ok(ok(&report))
+}
+
+/// `POST /v2/account/active-workspaces`: the owner's choice of workspaces
+/// that stay active (§20, Over plan).
+async fn active_workspaces<B: Backend>(
+    State(store): State<Arc<Store<B>>>,
+    Auth(session): Auth,
+    request: Body,
+) -> Result<Response, ApiError> {
+    let request: ActiveWorkspacesRequest = decode(&body(request).await?)?;
+    store
+        .set_active_workspaces(session, request.workspaces.0)
+        .await?;
+    Ok(empty())
+}
+
 async fn create_workspace<B: Backend>(
     State(store): State<Arc<Store<B>>>,
     Auth(session): Auth,
@@ -410,9 +448,10 @@ async fn push<B: Backend>(
     let workspace = id(&workspace)?;
     let bytes = body(request).await?;
     let limiter = state.store.backend().limiter();
+    let budget = state.rate.budget(&state.store, session.account).await?;
     state
         .rate
-        .take_push_body(&*limiter, session.device, bytes.len() as u64)
+        .take_push_body(&*limiter, session.device, budget, bytes.len() as u64)
         .await?;
     Ok(ok(&state.store.push(session, workspace, bytes).await?))
 }
@@ -969,6 +1008,11 @@ pub fn router<B: Backend>(state: AppState<B>) -> Router {
             axum::routing::delete(close_workspace::<B>),
         )
         .route("/v2/account/reset", post(account_reset::<B>))
+        .route("/v2/account", get(account::<B>))
+        .route(
+            "/v2/account/active-workspaces",
+            post(active_workspaces::<B>),
+        )
         .route("/v2/workspaces/{w}/policy", get(policy::<B>))
         .route("/v2/workspaces/{w}/keys", get(keys::<B>))
         .route("/v2/workspaces/{w}/keys/current", get(current_keys::<B>))

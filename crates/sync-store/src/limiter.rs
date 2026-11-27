@@ -57,6 +57,9 @@ pub trait Limiter: Send + Sync {
     /// never fits.
     fn take<'a>(&'a self, key: &'a [u8], cost: u64, limit: Limit) -> BoxFut<'a, Result<Taken>>;
 
+    /// What `key` used so far in the current window of `limit`'s length.
+    fn used<'a>(&'a self, key: &'a [u8], limit: Limit) -> BoxFut<'a, Result<u64>>;
+
     /// Deletes the counts of every window that has ended, and returns how
     /// many it deleted. The server runs it every [`PRUNE_EVERY`].
     fn prune(&self) -> BoxFut<'_, Result<u64>>;
@@ -125,6 +128,17 @@ impl MemoryLimiter {
 impl Limiter for MemoryLimiter {
     fn take<'a>(&'a self, key: &'a [u8], cost: u64, limit: Limit) -> BoxFut<'a, Result<Taken>> {
         Box::pin(async move { Ok(self.take_at(key, cost, limit, now_ms())) })
+    }
+
+    fn used<'a>(&'a self, key: &'a [u8], limit: Limit) -> BoxFut<'a, Result<u64>> {
+        Box::pin(async move {
+            let ends = limit.window_ends(now_ms());
+            let counters = self.counters.lock().unwrap_or_else(PoisonError::into_inner);
+            Ok(counters
+                .get(&(key.to_vec(), limit.window_ms()))
+                .filter(|counter| counter.window_ends == ends)
+                .map_or(0, |counter| counter.used))
+        })
     }
 
     fn prune(&self) -> BoxFut<'_, Result<u64>> {

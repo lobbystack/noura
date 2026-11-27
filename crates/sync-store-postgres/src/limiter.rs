@@ -50,6 +50,21 @@ impl PgLimiter {
         Ok(done.rows_affected())
     }
 
+    async fn used_now(&self, key: &[u8], limit: Limit) -> Result<u64> {
+        let now = self.now_ms().await?;
+        let (window, ends_at) = (int(limit.window_ms()), int(limit.window_ends(now)));
+        let row = sqlx::query!(
+            "SELECT used FROM rate_counters WHERE key = $1 AND window_ms = $2 AND window_ends = $3",
+            key,
+            window,
+            ends_at
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db)?;
+        Ok(row.map_or(0, |row| u64::try_from(row.used).unwrap_or(0)))
+    }
+
     async fn take_now(&self, key: &[u8], cost: u64, limit: Limit) -> Result<Taken> {
         let now = self.now_ms().await?;
         let ends = limit.window_ends(now);
@@ -105,6 +120,10 @@ impl PgLimiter {
 impl Limiter for PgLimiter {
     fn take<'a>(&'a self, key: &'a [u8], cost: u64, limit: Limit) -> BoxFut<'a, Result<Taken>> {
         Box::pin(self.take_now(key, cost, limit))
+    }
+
+    fn used<'a>(&'a self, key: &'a [u8], limit: Limit) -> BoxFut<'a, Result<u64>> {
+        Box::pin(self.used_now(key, limit))
     }
 
     fn prune(&self) -> BoxFut<'_, Result<u64>> {
