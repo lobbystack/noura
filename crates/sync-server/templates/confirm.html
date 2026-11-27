@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block lang %}{{ lang }}{% endblock %}
+{% block title %}{{ heading }}{% endblock %}
+{% block content %}
+<h1>{{ heading }}</h1>
+{% for line in lines %}<p>{{ line }}</p>
+{% endfor %}<form method="post" action="{{ action }}">
+{% for choice in choices %}<button type="submit" name="when" value="{{ choice.0 }}"{% if !loop.first %} class="secondary"{% endif %}>{{ choice.1 }}</button>
+{% endfor %}</form>
+<p class="aside"><a href="/account">{{ back }}</a></p>
+<p class="aside"><a href="/account/language?to={{ switch_to }}&amp;back={{ action }}" lang="{{ switch_to }}">{{ switch_label }}</a></p>
+{% endblock %}

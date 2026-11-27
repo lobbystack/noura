@@ -110,7 +110,7 @@ Only addresses in `NOURA_ALLOWED_EMAILS` can create an account, and an empty lis
 Your server sells no plans by default. Every account then gets the limits you set with the variables above, which are unlimited unless you set them. To sell the plans of [§20 of the sync protocol](workspace-format/sync-v2.md#plans), connect a [Polar](https://polar.sh) organization. Polar acts as the merchant of record: it runs checkout, collects tax, sends invoices, processes refunds and hosts the customer portal.
 
 1. In Polar, create one product for each plan you sell, with a recurring price.
-2. Create an organization access token with the scopes `checkouts:write`, `customer_sessions:write`, `subscriptions:write` and `refunds:write`.
+2. Create an organization access token with the scopes `products:read`, `checkouts:write`, `customer_sessions:write`, `subscriptions:write` and `refunds:write`.
 3. Add a webhook endpoint at `https://sync.example.com/billing/polar/webhook` in the Raw format, on API version 2026-10, for the events `order.paid`, `subscription.created`, `subscription.active`, `subscription.updated`, `subscription.canceled`, `subscription.uncanceled`, `subscription.past_due`, `subscription.revoked`, `subscription.paused` and `subscription.resumed`.
 4. Set the four `NOURA_POLAR_*` variables and the four `NOURA_MERCHANT_*` variables, and restart the server.
 

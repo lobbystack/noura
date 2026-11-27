@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block lang %}{{ lang }}{% endblock %}
+{% block title %}{{ heading }}{% endblock %}
+{% block content %}
+<h1>{{ heading }}</h1>
+{% for line in prices %}<p data-price>{{ line }}</p>
+{% endfor %}<p>{{ renewal }}</p>
+{% if !error.is_empty() %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form method="post" action="/account/upgrade">
+<input type="hidden" name="plan" value="{{ plan }}">
+<label class="check"><input type="checkbox" name="renewal" value="yes" required> <span>{{ renewal_box }}</span></label>
+<label class="check"><input type="checkbox" name="immediate" value="yes" required> <span>{{ immediate_box }}</span></label>
+<button type="submit">{{ button }}</button>
+</form>
+<p class="aside"><a href="/account/language?to={{ switch_to }}&amp;back=/account/upgrade%3Fplan%3D{{ plan }}%26continue%3D1" lang="{{ switch_to }}">{{ switch_label }}</a></p>
+{% endblock %}

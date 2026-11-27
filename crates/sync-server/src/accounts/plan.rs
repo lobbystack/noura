@@ -13,7 +13,10 @@ use sync_protocol::types::Id;
 use sync_store::{Backend, BillingMail};
 
 use super::lang::{Lang, negotiate};
-use super::{Accounts, cookie_value, failure, field, html, message, pages, redirect, signed_in};
+use super::{
+    Accounts, cookie_value, cross_origin, failure, field, html, message, pages, read_body,
+    redirect, same_origin, signed_in,
+};
 use crate::billing::terms::{self, Context, MailLang};
 use crate::billing::{BillingProvider, CheckoutRequest, PaidOrder, PortalRequest, ProviderError};
 use crate::http::{AppState, InternalCause};
@@ -244,8 +247,8 @@ pub fn resume_upgrade(accounts: &Accounts, plan: &str) -> Response {
 }
 
 /// `GET /account/upgrade?plan={plan}`: signs the visitor in first, then
-/// sends them to the provider's checkout for the plan, or to the portal
-/// when the account already pays.
+/// shows the plan's prices and renewal terms and asks for consent (§26,
+/// Consent); an account that already pays goes to the portal instead.
 pub async fn upgrade<B: Backend>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
@@ -265,16 +268,12 @@ pub async fn upgrade<B: Backend>(
         Ok(None) if field(query.as_bytes(), "continue").is_none() => {
             // A link from another site carries no strict cookie, so this page
             // asks again from the server's own origin.
-            let heading = match lang {
-                Lang::En => format!("Upgrade to {}", plan_name(&plan, lang)),
-                Lang::Fr => format!("Passer au forfait {}", plan_name(&plan, lang)),
-            };
             return html(
                 StatusCode::OK,
                 &pages::Upgrade {
                     lang: lang.code(),
                     plan: &plan,
-                    heading: &heading,
+                    heading: &upgrade_heading(&plan, lang),
                     button: lang.pick("Continue", "Continuer"),
                 },
             );
@@ -290,9 +289,144 @@ pub async fn upgrade<B: Backend>(
         Err(error) => return failure(error),
     };
     match state.store.account_plan(account).await {
+        Ok(Some(row)) if row.state.grants() => redirect("/account/billing"),
+        Ok(_) => consent_page(accounts, provider, &plan, lang, "").await,
+        Err(error) => failure(error),
+    }
+}
+
+fn upgrade_heading(plan: &str, lang: Lang) -> String {
+    match lang {
+        Lang::En => format!("Upgrade to {}", plan_name(plan, lang)),
+        Lang::Fr => format!("Passer au forfait {}", plan_name(plan, lang)),
+    }
+}
+
+/// The consent page for `plan`, with `error` above the form when not
+/// empty.
+async fn consent_page(
+    accounts: &Accounts,
+    provider: &dyn BillingProvider,
+    plan: &str,
+    lang: Lang,
+    error: &str,
+) -> Response {
+    let mut prices = Vec::new();
+    for offered in crate::billing::offered(provider, plan) {
+        let Ok(Some(price)) = provider.price(&offered).await else {
+            continue;
+        };
+        let amount = terms::money(price.amount, &price.currency, lang);
+        let line = match (price.interval.as_str(), lang) {
+            ("year", Lang::En) => {
+                format!("{}: {amount} a year, plus tax", plan_name(&offered, lang))
+            }
+            ("year", Lang::Fr) => {
+                format!(
+                    "{} : {amount} par année, plus taxes",
+                    plan_name(&offered, lang)
+                )
+            }
+            (_, Lang::En) => format!("{}: {amount} a month, plus tax", plan_name(&offered, lang)),
+            (_, Lang::Fr) => {
+                format!(
+                    "{} : {amount} par mois, plus taxes",
+                    plan_name(&offered, lang)
+                )
+            }
+        };
+        prices.push(line);
+    }
+    let email = accounts
+        .merchant()
+        .map(|m| m.email.as_str())
+        .unwrap_or_default();
+    let renewal = match lang {
+        Lang::En => format!(
+            "Your plan renews automatically at the price in effect until you cancel. You can cancel at any time from your account page or by emailing {email}."
+        ),
+        Lang::Fr => format!(
+            "Votre forfait se renouvelle automatiquement au prix en vigueur jusqu\u{2019}à ce que vous le résiliiez. Vous pouvez le résilier en tout temps depuis la page de votre compte ou en écrivant à {email}."
+        ),
+    };
+    let status = if error.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+    html(
+        status,
+        &pages::Consent {
+            lang: lang.code(),
+            plan,
+            heading: &upgrade_heading(plan, lang),
+            prices: &prices,
+            renewal: &renewal,
+            error,
+            renewal_box: lang.pick(
+                "I agree that my plan renews automatically until I cancel.",
+                "J\u{2019}accepte que mon forfait se renouvelle automatiquement jusqu\u{2019}à ce que je le résilie.",
+            ),
+            immediate_box: lang.pick(
+                "I ask Noura to start my sync subscription right away, during the 14-day withdrawal period. I understand that if I withdraw within 14 days, I get a full refund.",
+                "Je demande à Noura de commencer mon abonnement de synchronisation immédiatement, pendant le délai de rétractation de 14 jours. Je comprends que si je me rétracte dans les 14 jours, je serai remboursé en entier.",
+            ),
+            button: lang.pick("Continue to checkout", "Continuer vers le paiement"),
+            switch_to: lang.other().code(),
+            switch_label: lang.switch_label(),
+        },
+    )
+}
+
+/// `POST /account/upgrade`: records the account's consent to the plan's
+/// renewal and immediate start, then sends it to the provider's checkout
+/// for the plan (§26, Consent).
+pub async fn checkout<B: Backend>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let accounts = &state.accounts;
+    let lang = negotiate(&headers);
+    let Some(provider) = accounts.billing() else {
+        return not_sold(lang);
+    };
+    if !same_origin(accounts, &headers) {
+        return cross_origin();
+    }
+    let account = match signed_in(&state.store, &headers).await {
+        Ok(Some((account, _))) => account,
+        Ok(None) => return redirect("/account/sign-in"),
+        Err(error) => return failure(error),
+    };
+    let Some(form) = read_body(body).await else {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    };
+    let Some(plan) = field(&form, "plan").filter(|plan| provider.sells(plan)) else {
+        return not_sold(lang);
+    };
+    let checked = |name| field(&form, name).as_deref() == Some("yes");
+    if !(checked("renewal") && checked("immediate")) {
+        let error = lang.pick(
+            "Check both boxes to continue.",
+            "Cochez les deux cases pour continuer.",
+        );
+        return consent_page(accounts, provider, &plan, lang, error).await;
+    }
+    match state.store.account_plan(account).await {
         Ok(Some(row)) if row.state.grants() => return redirect("/account/billing"),
         Ok(_) => {}
         Err(error) => return failure(error),
+    }
+    let consent = sync_store::ConsentRow {
+        accepted_at: state.store.clock().now(),
+        plan: plan.clone(),
+        version: terms::CONSENT_VERSION.to_owned(),
+        immediate: true,
+        renewal: true,
+    };
+    if let Err(error) = state.store.record_consent(account, consent).await {
+        return failure(error);
     }
     let email = match state.store.account_email(account).await {
         Ok(email) => email,
@@ -305,7 +439,8 @@ pub async fn upgrade<B: Backend>(
         headers
             .get(ACCEPT_LANGUAGE)
             .and_then(|value| value.to_str().ok()),
-    );
+    )
+    .or((lang == Lang::Fr).then_some("fr-CA"));
     let request = CheckoutRequest {
         account,
         plans: &plans,

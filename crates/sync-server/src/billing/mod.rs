@@ -102,6 +102,17 @@ pub struct CheckoutRequest<'a> {
     pub return_url: &'a str,
 }
 
+/// A plan's recurring price, as the provider sells it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Price {
+    /// The amount before tax, in the currency's smallest unit.
+    pub amount: u64,
+    /// The currency, as a lower-case ISO 4217 code.
+    pub currency: String,
+    /// `month` or `year`.
+    pub interval: String,
+}
+
 /// What a portal session needs.
 #[derive(Clone, Debug)]
 pub struct PortalRequest<'a> {
@@ -291,6 +302,10 @@ pub trait BillingProvider: Send + Sync {
 
     /// Whether the provider sells `plan`.
     fn sells(&self, plan: &str) -> bool;
+
+    /// The recurring price of `plan`, or `None` when the provider sells it
+    /// at no fixed price.
+    fn price<'a>(&'a self, plan: &'a str) -> ProviderFuture<'a, Option<Price>>;
 
     /// A checkout link for `request`.
     fn checkout_url<'a>(&'a self, request: CheckoutRequest<'a>) -> ProviderFuture<'a, String>;

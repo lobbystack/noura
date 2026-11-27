@@ -106,12 +106,33 @@ async fn customer_session(
     )
 }
 
+async fn product(axum::extract::Path(id): axum::extract::Path<String>) -> Answer {
+    let (amount, interval) = match id.as_str() {
+        "prod-plus-year" => (9_600, "year"),
+        "prod-plus-month" => (1_000, "month"),
+        "prod-std-year" => (4_800, "year"),
+        _ => return answer(StatusCode::NOT_FOUND, json!({})),
+    };
+    answer(
+        StatusCode::OK,
+        json!({
+            "id": id,
+            "recurring_interval": interval,
+            "prices": [
+                { "amount_type": "fixed", "is_archived": true, "price_amount": 1, "price_currency": "usd" },
+                { "amount_type": "fixed", "is_archived": false, "price_amount": amount, "price_currency": "usd" },
+            ],
+        }),
+    )
+}
+
 /// A fake Polar API on a loopback port, and its address.
 async fn fake_polar() -> (FakePolar, String) {
     let fake = FakePolar::default();
     let app = axum::Router::new()
         .route("/v1/checkouts/", post(checkout))
         .route("/v1/customer-sessions/", post(customer_session))
+        .route("/v1/products/{id}", axum::routing::get(product))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -195,6 +216,27 @@ impl Site {
         let mut request = self.http.get(format!("{}{path}", self.base));
         if let Some(cookie) = cookie {
             request = request.header("cookie", cookie);
+        }
+        request.send().await.expect("an answer")
+    }
+
+    /// Posts a form from the server's own pages.
+    async fn post_form(
+        &self,
+        path: &str,
+        cookie: &str,
+        form: &str,
+        accept_language: Option<&str>,
+    ) -> reqwest::Response {
+        let mut request = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .header("cookie", cookie)
+            .header("origin", &self.base)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(form.to_owned());
+        if let Some(lang) = accept_language {
+            request = request.header("accept-language", lang);
         }
         request.send().await.expect("an answer")
     }
@@ -287,16 +329,85 @@ async fn an_upgrade_signs_in_then_opens_a_polar_checkout() {
             .contains("Max-Age=0")
     );
 
-    // The checkout offers both intervals of Plus, for the account's ID.
-    let checkout = site
+    // Signed in, the page shows both intervals' prices, the renewal terms
+    // and the two consents.
+    let consent = site
+        .get("/account/upgrade?plan=plus_year", Some(&session))
+        .await;
+    assert_eq!(consent.status(), StatusCode::OK);
+    let text = consent.text().await.expect("a body");
+    assert!(text.contains("Plus, yearly: USD 96.00 a year, plus tax"));
+    assert!(text.contains("Plus, monthly: USD 10.00 a month, plus tax"));
+    assert!(text.contains("renews automatically at the price in effect until you cancel"));
+    assert!(text.contains("billing@example.com"));
+    assert!(text.contains("name=\"renewal\" value=\"yes\" required"));
+    assert!(text.contains("during the 14-day withdrawal period"));
+    assert!(
+        fake.received
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.path != "/v1/checkouts/")
+    );
+
+    // Without both boxes, the page asks again and records nothing.
+    let missing = site
+        .post_form(
+            "/account/upgrade",
+            &session,
+            "plan=plus_year&renewal=yes",
+            None,
+        )
+        .await;
+    assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        missing
+            .text()
+            .await
+            .expect("a body")
+            .contains("Check both boxes")
+    );
+    assert_eq!(
+        site.store.latest_consent(account).await.expect("read"),
+        None
+    );
+    let foreign = site
         .http
-        .get(format!("{}/account/upgrade?plan=plus_year", site.base))
+        .post(format!("{}/account/upgrade", site.base))
         .header("cookie", &session)
-        .header("accept-language", "fr-CA,fr;q=0.9,en;q=0.5")
+        .header("origin", "https://evil.example")
+        .body("plan=plus_year&renewal=yes&immediate=yes")
         .send()
         .await
         .expect("an answer");
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+
+    // With both, the consent is recorded and the checkout offers both
+    // intervals of Plus, for the account's ID.
+    let checkout = site
+        .post_form(
+            "/account/upgrade",
+            &session,
+            "plan=plus_year&renewal=yes&immediate=yes",
+            Some("fr-CA,fr;q=0.9,en;q=0.5"),
+        )
+        .await;
     assert_eq!(checkout.status(), StatusCode::SEE_OTHER);
+    let consent = site
+        .store
+        .latest_consent(account)
+        .await
+        .expect("read")
+        .expect("recorded");
+    assert_eq!(
+        (
+            consent.plan.as_str(),
+            consent.version.as_str(),
+            consent.immediate,
+            consent.renewal
+        ),
+        ("plus_year", "2026-11-27", true, true)
+    );
     assert_eq!(location(&checkout), "https://polar.test/checkout/chk-1");
     let sent = fake.last("/v1/checkouts/");
     assert_eq!(sent.authorization, format!("Bearer {TOKEN}"));
@@ -313,8 +424,13 @@ async fn an_upgrade_signs_in_then_opens_a_polar_checkout() {
 
     // An English visitor gets Polar's default language, and a plan the
     // server doesn't sell gets a not-found page.
-    site.get("/account/upgrade?plan=standard_year", Some(&session))
-        .await;
+    site.post_form(
+        "/account/upgrade",
+        &session,
+        "plan=standard_year&renewal=yes&immediate=yes",
+        None,
+    )
+    .await;
     let sent = fake.last("/v1/checkouts/");
     assert_eq!(sent.body["products"], json!(["prod-std-year"]));
     assert!(sent.body.get("locale").is_none());
@@ -356,6 +472,20 @@ async fn an_upgrade_signs_in_then_opens_a_polar_checkout() {
     assert!(french.contains("Gratuit"));
     assert!(french.contains("utilisés sur 100 Mo"));
     assert!(french.contains("Passer à Plus"));
+    let french_consent = site
+        .http
+        .get(format!("{}/account/upgrade?plan=plus_year", site.base))
+        .header("cookie", &session)
+        .header("accept-language", "fr-CA")
+        .send()
+        .await
+        .expect("an answer")
+        .text()
+        .await
+        .expect("a body");
+    assert!(french_consent.contains("Plus, annuel : 96,00 USD par année, plus taxes"));
+    assert!(french_consent.contains("pendant le délai de rétractation de 14 jours"));
+    assert!(french_consent.contains("Continuer vers le paiement"));
     let switch = site
         .get("/account/language?to=en&back=/account", Some(&session))
         .await;

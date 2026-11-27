@@ -73,6 +73,49 @@ pub struct Upgrade<'a> {
     pub button: &'a str,
 }
 
+/// The step before the checkout: the plan's prices, its renewal terms and
+/// the two consents (§26, Consent).
+#[derive(Template)]
+#[template(path = "consent.html")]
+pub struct Consent<'a> {
+    pub lang: &'a str,
+    pub plan: &'a str,
+    pub heading: &'a str,
+    pub prices: &'a [String],
+    pub renewal: &'a str,
+    pub error: &'a str,
+    pub renewal_box: &'a str,
+    pub immediate_box: &'a str,
+    pub button: &'a str,
+    pub switch_to: &'a str,
+    pub switch_label: &'a str,
+}
+
+/// A question before a change to the plan: its lines, then one button per
+/// choice, each posting `when` to `action`.
+#[derive(Template)]
+#[template(path = "confirm.html")]
+pub struct Confirm<'a> {
+    pub lang: &'a str,
+    pub heading: &'a str,
+    pub lines: &'a [String],
+    pub action: &'a str,
+    pub choices: &'a [(&'a str, String)],
+    pub back: &'a str,
+    pub switch_to: &'a str,
+    pub switch_label: &'a str,
+}
+
+/// What a change to the plan did, in the account's language.
+#[derive(Template)]
+#[template(path = "notice.html")]
+pub struct Notice<'a> {
+    pub lang: &'a str,
+    pub heading: &'a str,
+    pub text: &'a str,
+    pub back: &'a str,
+}
+
 #[derive(Template)]
 #[template(path = "message.html")]
 pub struct Message<'a> {

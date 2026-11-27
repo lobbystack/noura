@@ -1,6 +1,9 @@
 //! Polar (<https://polar.sh>), the merchant of record that runs checkout,
 //! tax, invoices, refunds and the customer portal, on API version 2026-10:
 //!
+//! - prices: `GET /v1/products/{id}`, whose fixed price and recurring
+//!   interval the upgrade page shows before the checkout
+//!   (<https://polar.sh/docs/api-reference/2026-10/products/get>);
 //! - checkout: `POST /v1/checkouts/` with the plan's products, the account
 //!   as `external_customer_id`, `success_url` and the customer's email
 //!   (<https://polar.sh/docs/api-reference/2026-10/checkouts/create-checkout-session>);
@@ -29,7 +32,7 @@ use sync_store::SubscriptionState;
 
 use super::webhooks::{self, Secret};
 use super::{
-    BillingProvider, ChangeKind, CheckoutRequest, PaidOrder, PortalRequest, ProviderError,
+    BillingProvider, ChangeKind, CheckoutRequest, PaidOrder, PortalRequest, Price, ProviderError,
     ProviderFuture, SubscriptionChange, Terms, WebhookError, WebhookEvent,
 };
 
@@ -339,6 +342,31 @@ impl BillingProvider for Polar {
 
     fn sells(&self, plan: &str) -> bool {
         self.config.products.contains_key(plan)
+    }
+
+    fn price<'a>(&'a self, plan: &'a str) -> ProviderFuture<'a, Option<Price>> {
+        Box::pin(async move {
+            let Some(product) = self.config.products.get(plan) else {
+                return Ok(None);
+            };
+            let path = format!("/v1/products/{product}");
+            let answer = self.call(reqwest::Method::GET, &path, None).await?;
+            let Some(interval) = answer["recurring_interval"].as_str() else {
+                return Ok(None);
+            };
+            let fixed = answer["prices"].as_array().and_then(|prices| {
+                prices
+                    .iter()
+                    .find(|price| price["amount_type"] == "fixed" && price["is_archived"] != true)
+            });
+            Ok(fixed.and_then(|price| {
+                Some(Price {
+                    amount: price["price_amount"].as_u64()?,
+                    currency: price["price_currency"].as_str()?.to_ascii_lowercase(),
+                    interval: interval.to_owned(),
+                })
+            }))
+        })
     }
 
     fn checkout_url<'a>(&'a self, request: CheckoutRequest<'a>) -> ProviderFuture<'a, String> {

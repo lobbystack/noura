@@ -356,7 +356,10 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
         .route("/account/confirm", get(confirm_page).post(confirm::<B>))
         .route("/account/sign-out", post(sign_out::<B>))
         .route("/account/language", get(lang::switch))
-        .route("/account/upgrade", get(plan::upgrade::<B>))
+        .route(
+            "/account/upgrade",
+            get(plan::upgrade::<B>).post(plan::checkout::<B>),
+        )
         .route("/account/billing", get(plan::portal::<B>))
         .route("/billing/{provider}/webhook", post(plan::webhook::<B>))
         .route("/account/passkeys/sign-up/start", post(sign_up_start::<B>))
