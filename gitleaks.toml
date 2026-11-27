@@ -25,3 +25,10 @@ description = "The cipher's name in the sync spec, which reads as a key after th
 regexes = [
 	'''^XChaCha20-Poly1305$''',
 ]
+
+[[allowlists]]
+description = "The Standard Webhooks specification's example secret, which the billing webhook tests sign with"
+regexTarget = "match"
+regexes = [
+	'''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
+]
