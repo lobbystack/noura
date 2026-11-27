@@ -210,6 +210,12 @@ fn key_field(
 /// opening a key field, then Local or custom, then what each provider
 /// may read in the open workspace.
 pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
+    // The rows below set their own spacing; what follows on the page, such
+    // as the Brave Search card, gets its spacing back.
+    ui.scope(|ui| providers(ui, app, view));
+}
+
+fn providers(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     if let Some(problem) = app.ai_settings_problem() {
         alert(ui, &problem);
         return;
