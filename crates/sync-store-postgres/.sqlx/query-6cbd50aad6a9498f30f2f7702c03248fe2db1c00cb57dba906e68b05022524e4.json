@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO refunds_owed (account, provider, subscription, order_id, amount, revoke)\n               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id AS \"id!: i64\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: i64",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6cbd50aad6a9498f30f2f7702c03248fe2db1c00cb57dba906e68b05022524e4"
+}

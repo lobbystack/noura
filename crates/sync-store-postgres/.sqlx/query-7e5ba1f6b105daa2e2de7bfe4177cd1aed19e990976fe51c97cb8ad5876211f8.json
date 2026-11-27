@@ -1,0 +1,232 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT provider, customer, subscription, plan, state, period_end, changed_at,\n                    period_start, started_at, amount, currency, billing_interval, canceling,\n                    country, region, reminded_for, reminders, reminded_day\n             FROM account_plans WHERE account = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "customer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "customer"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "subscription",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "subscription"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "plan",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "plan"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "state",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "period_end",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "period_end"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "changed_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "changed_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "period_start",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "period_start"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "started_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "amount",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "amount"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "currency",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "currency"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "billing_interval",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "billing_interval"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "canceling",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "canceling"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "country",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "country"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "region",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "region"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "reminded_for",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "reminded_for"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "reminders",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "reminders"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "reminded_day",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "reminded_day"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "7e5ba1f6b105daa2e2de7bfe4177cd1aed19e990976fe51c97cb8ad5876211f8"
+}

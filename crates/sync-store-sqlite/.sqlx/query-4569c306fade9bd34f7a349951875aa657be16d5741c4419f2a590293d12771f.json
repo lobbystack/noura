@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT change, plan, effective_day, old_en, new_en, old_fr, new_fr\n             FROM price_changes ORDER BY change",
+  "describe": {
+    "columns": [
+      {
+        "name": "change",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "price_changes",
+            "name": "change"
+          }
+        }
+      },
+      {
+        "name": "plan",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "price_changes",
+            "name": "plan"
+          }
+        }
+      },
+      {
+        "name": "effective_day",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "price_changes",
+            "name": "effective_day"
+          }
+        }
+      },
+      {
+        "name": "old_en",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "price_changes",
+            "name": "old_en"
+          }
+        }
+      },
+      {
+        "name": "new_en",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "price_changes",
+            "name": "new_en"
+          }
+        }
+      },
+      {
+        "name": "old_fr",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "price_changes",
+            "name": "old_fr"
+          }
+        }
+      },
+      {
+        "name": "new_fr",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "price_changes",
+            "name": "new_fr"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4569c306fade9bd34f7a349951875aa657be16d5741c4419f2a590293d12771f"
+}

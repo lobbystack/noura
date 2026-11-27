@@ -400,7 +400,12 @@ pub async fn webhook<B: Backend>(
         .map(|change| (change.account, change.row(provider.name())));
     match state
         .store
-        .apply_billing_event(provider.name(), event.id, change)
+        .apply_billing_event(sync_store::BillingEvent {
+            provider: provider.name().to_owned(),
+            id: event.id,
+            change,
+            ..Default::default()
+        })
         .await
     {
         Ok(applied) => {

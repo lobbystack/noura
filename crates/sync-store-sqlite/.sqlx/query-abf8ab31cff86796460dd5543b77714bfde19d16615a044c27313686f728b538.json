@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO price_notices (change, account, notices) VALUES (?1, ?2, ?3)\n             ON CONFLICT (change, account) DO UPDATE SET notices = excluded.notices",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "abf8ab31cff86796460dd5543b77714bfde19d16615a044c27313686f728b538"
+}

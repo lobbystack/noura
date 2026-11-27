@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO consents (account, accepted_at, plan, version, immediate, renewal)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6)\n             ON CONFLICT (account, accepted_at, plan) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "f86aee57b0eaf1677b99c023e4f204516dcac32dd3970951bb85e2ffd941517f"
+}

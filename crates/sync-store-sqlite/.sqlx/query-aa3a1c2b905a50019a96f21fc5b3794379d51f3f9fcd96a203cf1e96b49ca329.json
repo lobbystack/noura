@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE account_plans SET reminded_for = ?1, reminders = ?2, reminded_day = ?3\n             WHERE account = ?4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "aa3a1c2b905a50019a96f21fc5b3794379d51f3f9fcd96a203cf1e96b49ca329"
+}

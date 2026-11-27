@@ -114,13 +114,14 @@ pub fn is_paid(plan: &str) -> bool {
 }
 
 /// Where a stored subscription stands, as the store keeps it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SubscriptionState {
     /// Paid and running.
     Active,
     /// A payment failed and the provider retries it: the plan holds.
     PastDue,
     /// Canceled, unpaid, revoked or never paid: the account is on `free`.
+    #[default]
     Ended,
 }
 
@@ -151,7 +152,7 @@ impl SubscriptionState {
 }
 
 /// An account's stored subscription (§29, Plans and billing).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AccountPlanRow {
     /// The payment provider's name, such as `polar`.
     pub provider: String,
@@ -168,6 +169,72 @@ pub struct AccountPlanRow {
     /// The time of the provider's last change to it, in Unix seconds,
     /// which orders the provider's events.
     pub changed_at: u64,
+    /// The start of its current period, in Unix seconds.
+    pub period_start: Option<u64>,
+    /// When it started, in Unix seconds, which opens the withdrawal period.
+    pub started_at: Option<u64>,
+    /// Its price for one period before tax, in the currency's smallest unit.
+    pub amount: Option<u64>,
+    /// Its currency, as a lower-case ISO 4217 code.
+    pub currency: Option<String>,
+    /// `month` or `year`.
+    pub interval: Option<String>,
+    /// Whether it ends when its period ends instead of renewing.
+    pub canceling: bool,
+    /// The billing address's country, as an ISO 3166-1 alpha-2 code.
+    pub country: Option<String>,
+    /// The billing address's state or province, such as `QC`.
+    pub region: Option<String>,
+    /// The period end the renewal reminders went out for. The provider
+    /// knows nothing of the three reminder fields, so a webhook's row
+    /// keeps the stored ones while it reports the same subscription.
+    pub reminded_for: Option<u64>,
+    /// How many renewal reminders went out for that period.
+    pub reminders: u8,
+    /// The day, from the Unix epoch, a monthly plan's last yearly reminder
+    /// went out.
+    pub reminded_day: Option<u64>,
+}
+
+/// The member states of the European Union, and the United Kingdom, whose
+/// consumers the terms give the same right of withdrawal.
+const WITHDRAWAL_COUNTRIES: &[&str] = &[
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV",
+    "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE", "GB",
+];
+
+impl AccountPlanRow {
+    /// Whether the billing address is in Québec.
+    pub fn in_quebec(&self) -> bool {
+        self.country.as_deref() == Some("CA") && self.region.as_deref() == Some("QC")
+    }
+
+    /// Whether the billing address is in the European Union or the United
+    /// Kingdom.
+    pub fn in_eu_or_uk(&self) -> bool {
+        self.country
+            .as_deref()
+            .is_some_and(|country| WITHDRAWAL_COUNTRIES.contains(&country))
+    }
+
+    /// Whether it bills every year.
+    pub fn yearly(&self) -> bool {
+        self.interval.as_deref() == Some("year")
+    }
+
+    /// The same subscription as `self`, with `stored`'s reminders when
+    /// `stored` is the same subscription.
+    pub fn keeping_reminders(mut self, stored: Option<&AccountPlanRow>) -> Self {
+        if let Some(stored) = stored
+            && stored.provider == self.provider
+            && stored.subscription == self.subscription
+        {
+            self.reminded_for = stored.reminded_for;
+            self.reminders = stored.reminders;
+            self.reminded_day = stored.reminded_day;
+        }
+        self
+    }
 }
 
 /// The plan an account has, given whether the server sells plans and its
@@ -376,36 +443,52 @@ impl<B: Backend> Store<B> {
             .await
     }
 
-    /// Applies a payment provider's webhook event `event` once: it records
-    /// the event, and stores `change`, an account's subscription, when it
-    /// [`supersedes`] the stored one, then brings the account's workspaces
-    /// in line with the plan. Returns false for an event it already
-    /// applied. An account the store doesn't hold gets nothing stored.
-    pub async fn apply_billing_event(
-        &self,
-        provider: &'static str,
-        event: String,
-        change: Option<(Id, AccountPlanRow)>,
-    ) -> Result<bool> {
+    /// Applies a payment provider's webhook event once: it records the
+    /// event, stores its subscription when that [`supersedes`] the stored
+    /// one, then brings the account's workspaces in line with the plan,
+    /// stores its order when that's the account's latest, and queues its
+    /// mail. Returns false for an event it already applied. An account the
+    /// store doesn't hold gets nothing stored.
+    pub async fn apply_billing_event(&self, event: crate::billing::BillingEvent) -> Result<bool> {
         let billing = self.billing;
         let today = self.clock().now() / DAY;
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
-                    if !txn.insert_billing_event(provider, &event, today).await? {
+                    let crate::billing::BillingEvent {
+                        provider,
+                        id,
+                        change,
+                        order,
+                        mail,
+                    } = event;
+                    if !txn.insert_billing_event(&provider, &id, today).await? {
                         return Ok(false);
                     }
-                    let Some((account, row)) = change else {
-                        return Ok(true);
-                    };
-                    if txn.account_email(account).await?.is_none() {
-                        return Ok(true);
+                    if let Some((account, row)) = change
+                        && txn.account_email(account).await?.is_some()
+                    {
+                        txn.lock_account(account).await?;
+                        let stored = txn.account_plan(account).await?;
+                        if supersedes(stored.as_ref(), &row) {
+                            let row = row.keeping_reminders(stored.as_ref());
+                            txn.put_account_plan(account, &row).await?;
+                            reconcile(txn, account, billing, today).await?;
+                        }
                     }
-                    txn.lock_account(account).await?;
-                    let stored = txn.account_plan(account).await?;
-                    if supersedes(stored.as_ref(), &row) {
-                        txn.put_account_plan(account, &row).await?;
-                        reconcile(txn, account, billing, today).await?;
+                    if let Some((account, row)) = order
+                        && txn.account_email(account).await?.is_some()
+                    {
+                        let newer = txn
+                            .latest_order(account)
+                            .await?
+                            .is_none_or(|stored| stored.paid_at <= row.paid_at);
+                        if newer {
+                            txn.put_latest_order(account, &row).await?;
+                        }
+                    }
+                    for message in &mail {
+                        txn.queue_billing_mail(message).await?;
                     }
                     Ok(true)
                 })
@@ -628,8 +711,8 @@ mod tests {
             subscription: subscription.into(),
             plan: "plus_year".into(),
             state,
-            period_end: None,
             changed_at,
+            ..AccountPlanRow::default()
         }
     }
 

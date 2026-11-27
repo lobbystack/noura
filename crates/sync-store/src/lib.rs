@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 mod accounts;
+pub mod billing;
 mod blobs;
 mod chains;
 mod checkpoints;
@@ -66,6 +67,10 @@ pub use invitations::{INVITATION_TTL, InvitationCreation, MAX_INVITATIONS};
 pub use shares::{MAX_SHARE_DAYS, MAX_SHARES, ShareCreation};
 use sync_protocol::types::{Digest, Id, SecretKey};
 
+pub use billing::{
+    BillingEvent, BillingMail, ConsentRow, EarlyEnd, OrderRow, PriceChangeRow, QueuedMail,
+    RefundOwed, Reminder,
+};
 pub use hub::{EventHub, Relayed, Subscription};
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
 pub use plans::{AccountPlanRow, PlanLimits, SubscriptionState};
@@ -1342,6 +1347,37 @@ pub trait ReadTxn: Send {
         &mut self,
         account: Id,
     ) -> impl Future<Output = Result<Option<(u64, u8)>>> + Send;
+    /// Up to `limit` stored subscriptions after the account `after`, by
+    /// account.
+    fn account_plans_after(
+        &mut self,
+        after: Option<Id>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<(Id, AccountPlanRow)>>> + Send;
+    /// The latest paid order of the account's subscription.
+    fn latest_order(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Option<OrderRow>>> + Send;
+    /// The latest consent the account gave, for any plan.
+    fn latest_consent(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Option<ConsentRow>>> + Send;
+    /// Every price change, oldest first.
+    fn price_changes(&mut self) -> impl Future<Output = Result<Vec<PriceChangeRow>>> + Send;
+    /// How many notices the account got about a price change.
+    fn price_notices(
+        &mut self,
+        change: u64,
+        account: Id,
+    ) -> impl Future<Output = Result<u8>> + Send;
+    /// Up to `limit` refunds and revocations owed, oldest first.
+    fn refunds_owed(&mut self, limit: u32) -> impl Future<Output = Result<Vec<RefundOwed>>> + Send;
+    /// Up to `limit` queued messages about plans, oldest first.
+    fn billing_mail(&mut self, limit: u32) -> impl Future<Output = Result<Vec<QueuedMail>>> + Send;
+    /// The language the account reads the account pages in.
+    fn account_lang(&mut self, account: Id) -> impl Future<Output = Result<Option<String>>> + Send;
     /// Up to `limit` accounts that own an open workspace and were last
     /// active in `month` or before, the least active first.
     fn inactive_owners(
@@ -1980,6 +2016,66 @@ pub trait WriteTxn: ReadTxn {
         &mut self,
         day: u64,
     ) -> impl Future<Output = Result<u64>> + Send;
+    /// Records the renewal reminders of the account's subscription.
+    fn set_plan_reminders(
+        &mut self,
+        account: Id,
+        reminded_for: Option<u64>,
+        reminders: u8,
+        reminded_day: Option<u64>,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores the latest paid order of the account's subscription in place
+    /// of the one it had.
+    fn put_latest_order(
+        &mut self,
+        account: Id,
+        row: &OrderRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Records a consent; another for the same plan in the same second
+    /// changes nothing.
+    fn insert_consent(
+        &mut self,
+        account: Id,
+        row: &ConsentRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes the consents given before `time`, in Unix seconds, and
+    /// returns how many.
+    fn delete_consents_before(&mut self, time: u64) -> impl Future<Output = Result<u64>> + Send;
+    /// Stores a price change and returns the number it assigned.
+    fn insert_price_change(
+        &mut self,
+        row: &PriceChangeRow,
+    ) -> impl Future<Output = Result<u64>> + Send;
+    /// Records how many notices the account got about a price change.
+    fn set_price_notices(
+        &mut self,
+        change: u64,
+        account: Id,
+        notices: u8,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Stores a refund owed and returns the number it assigned.
+    fn insert_refund_owed(&mut self, row: &RefundOwed) -> impl Future<Output = Result<u64>> + Send;
+    /// Records what's left of a refund owed.
+    fn set_refund_owed(
+        &mut self,
+        id: u64,
+        amount: u64,
+        revoke: bool,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a refund owed.
+    fn delete_refund_owed(&mut self, id: u64) -> impl Future<Output = Result<()>> + Send;
+    /// Queues a message about plans.
+    fn queue_billing_mail(&mut self, mail: &BillingMail)
+    -> impl Future<Output = Result<()>> + Send;
+    /// Deletes a queued message.
+    fn delete_billing_mail(&mut self, id: u64) -> impl Future<Output = Result<()>> + Send;
+    /// Records the language the account reads the account pages in, on an
+    /// account the activity table holds.
+    fn set_account_lang(
+        &mut self,
+        account: Id,
+        lang: &str,
+    ) -> impl Future<Output = Result<()>> + Send;
 }
 
 /// A job that runs in one read transaction.

@@ -159,6 +159,7 @@ impl SubscriptionChange {
             state: self.state,
             period_end: self.period_end,
             changed_at: self.changed_at,
+            ..AccountPlanRow::default()
         }
     }
 }

@@ -1,82 +1,82 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT provider, customer, subscription, plan, state, period_end, changed_at\n             FROM account_plans WHERE account = ?1",
+  "query": "SELECT id AS \"id!: i64\", account, provider, subscription, order_id, amount, revoke\n               FROM refunds_owed ORDER BY id LIMIT ?1",
   "describe": {
     "columns": [
       {
-        "name": "provider",
+        "name": "id!: i64",
         "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "account",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "name": "provider",
+        "ordinal": 2,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "account_plans",
+            "table": "refunds_owed",
             "name": "provider"
           }
         }
       },
       {
-        "name": "customer",
-        "ordinal": 1,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "account_plans",
-            "name": "customer"
-          }
-        }
-      },
-      {
         "name": "subscription",
-        "ordinal": 2,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "account_plans",
+            "table": "refunds_owed",
             "name": "subscription"
           }
         }
       },
       {
-        "name": "plan",
-        "ordinal": 3,
+        "name": "order_id",
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "account_plans",
-            "name": "plan"
+            "table": "refunds_owed",
+            "name": "order_id"
           }
         }
       },
       {
-        "name": "state",
-        "ordinal": 4,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "account_plans",
-            "name": "state"
-          }
-        }
-      },
-      {
-        "name": "period_end",
+        "name": "amount",
         "ordinal": 5,
         "type_info": "Integer",
         "origin": {
           "Table": {
-            "table": "account_plans",
-            "name": "period_end"
+            "table": "refunds_owed",
+            "name": "amount"
           }
         }
       },
       {
-        "name": "changed_at",
+        "name": "revoke",
         "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
-            "table": "account_plans",
-            "name": "changed_at"
+            "table": "refunds_owed",
+            "name": "revoke"
           }
         }
       }
@@ -90,9 +90,9 @@
       false,
       false,
       false,
-      true,
+      false,
       false
     ]
   },
-  "hash": "3f7a6380aa339bde0eed62d2b9cc23a81ec833c462a0894f532063b8af96f26d"
+  "hash": "4cc9d7758a117dd5306b32d36615b162f7a5639a54c122d9946eb5cea2ed61c2"
 }

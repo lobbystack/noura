@@ -27,6 +27,7 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
+mod billing;
 mod blobs;
 mod checkpoints;
 mod devices;
@@ -37,6 +38,7 @@ mod plans;
 mod resets;
 mod retention;
 mod shares;
+pub use billing::*;
 pub use blobs::*;
 pub use checkpoints::*;
 pub use devices::*;
@@ -170,6 +172,10 @@ macro_rules! conformance_tests {
             invitations_stop_at_the_member_limit,
             a_downgrade_puts_the_newest_workspaces_over_plan,
             billing_events_apply_once_and_in_order,
+            subscription_details_round_trip_and_keep_their_reminders,
+            orders_mail_and_consents_keep_to_their_rules,
+            ending_a_paid_period_moves_the_account_to_free_and_owes_the_refund,
+            price_notices_and_languages_record_once,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

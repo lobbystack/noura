@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT lang FROM account_activity WHERE account = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "lang",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_activity",
+            "name": "lang"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "d791993e157d8ca35c3678499ea2f6fb91ca32aa35fc20eeef427fc10c99efa6"
+}

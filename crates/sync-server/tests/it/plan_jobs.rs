@@ -95,11 +95,16 @@ impl World {
             subscription: "sub".into(),
             plan: "plus_year".into(),
             state,
-            period_end: None,
             changed_at: at,
+            ..AccountPlanRow::default()
         };
         self.store
-            .apply_billing_event("polar", event.into(), Some((account, row)))
+            .apply_billing_event(sync_store::BillingEvent {
+                provider: "polar".into(),
+                id: event.into(),
+                change: Some((account, row)),
+                ..Default::default()
+            })
             .await
             .expect("applied");
     }

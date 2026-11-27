@@ -18,7 +18,7 @@ const GB: u64 = 1_000_000_000;
 
 /// Gives the world's account an email, as sign-up does, so webhook
 /// events can name it.
-async fn sign_up<B: Backend>(world: &World<B>) {
+pub(super) async fn sign_up<B: Backend>(world: &World<B>) {
     let account = world.account;
     world
         .store
@@ -31,7 +31,11 @@ async fn sign_up<B: Backend>(world: &World<B>) {
 }
 
 /// A subscription row for `plan` in `state`, changed at `changed_at`.
-fn subscription(plan: &str, state: SubscriptionState, changed_at: u64) -> AccountPlanRow {
+pub(super) fn subscription(
+    plan: &str,
+    state: SubscriptionState,
+    changed_at: u64,
+) -> AccountPlanRow {
     AccountPlanRow {
         provider: "polar".into(),
         customer: "customer-1".into(),
@@ -40,21 +44,31 @@ fn subscription(plan: &str, state: SubscriptionState, changed_at: u64) -> Accoun
         state,
         period_end: Some(1_800_000_000),
         changed_at,
+        ..AccountPlanRow::default()
     }
 }
 
 /// Applies a webhook event that sets the world's subscription.
-async fn subscribe<B: Backend>(world: &World<B>, event: &str, row: AccountPlanRow) -> bool {
+pub(super) async fn subscribe<B: Backend>(
+    world: &World<B>,
+    event: &str,
+    row: AccountPlanRow,
+) -> bool {
     world
         .store
-        .apply_billing_event("polar", event.into(), Some((world.account, row)))
+        .apply_billing_event(crate::BillingEvent {
+            provider: "polar".into(),
+            id: event.into(),
+            change: Some((world.account, row)),
+            ..Default::default()
+        })
         .await
         .expect("applied")
 }
 
 /// Creates another workspace of the world's account from its first device,
 /// and returns it with its workspace domain.
-async fn another_workspace<B: Backend>(world: &World<B>) -> crate::Result<(Id, Id)> {
+pub(super) async fn another_workspace<B: Backend>(world: &World<B>) -> crate::Result<(Id, Id)> {
     let cards: Vec<Card> = world
         .devices
         .iter()

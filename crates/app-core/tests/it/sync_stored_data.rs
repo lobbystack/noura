@@ -42,9 +42,19 @@ const TRANSIENT: &[&str] = &[
 const EXPIRING: &[&str] = &["shares", "invitations", "ended_invitations"];
 
 /// The account-level rows of a server that sells plans, which §29 lists:
-/// they date a subscription, a webhook event or an account's last month,
-/// never a record.
-const BILLING: &[&str] = &["account_plans", "billing_events", "account_activity"];
+/// they date a subscription, an order, a consent, a price change, a webhook
+/// event or an account's last month, never a record.
+const BILLING: &[&str] = &[
+    "account_plans",
+    "billing_events",
+    "account_activity",
+    "latest_orders",
+    "consents",
+    "price_changes",
+    "price_notices",
+    "refunds_owed",
+    "billing_mail",
+];
 
 /// A value the server stores.
 enum Value {

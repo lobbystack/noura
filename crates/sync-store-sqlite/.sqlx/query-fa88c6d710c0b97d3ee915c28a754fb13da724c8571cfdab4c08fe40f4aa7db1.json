@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!: i64\", recipient, subject, body\n               FROM billing_mail ORDER BY id LIMIT ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "billing_mail",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "recipient",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "billing_mail",
+            "name": "recipient"
+          }
+        }
+      },
+      {
+        "name": "subject",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "billing_mail",
+            "name": "subject"
+          }
+        }
+      },
+      {
+        "name": "body",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "billing_mail",
+            "name": "body"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fa88c6d710c0b97d3ee915c28a754fb13da724c8571cfdab4c08fe40f4aa7db1"
+}

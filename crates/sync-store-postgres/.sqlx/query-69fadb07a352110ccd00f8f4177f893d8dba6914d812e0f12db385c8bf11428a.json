@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO consents (account, accepted_at, plan, version, immediate, renewal)\n             VALUES ($1, $2, $3, $4, $5, $6)\n             ON CONFLICT (account, accepted_at, plan) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "69fadb07a352110ccd00f8f4177f893d8dba6914d812e0f12db385c8bf11428a"
+}

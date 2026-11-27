@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO latest_orders (account, subscription, order_id, net, currency, paid_at)\n             VALUES ($1, $2, $3, $4, $5, $6)\n             ON CONFLICT (account) DO UPDATE SET\n               subscription = excluded.subscription, order_id = excluded.order_id,\n               net = excluded.net, currency = excluded.currency, paid_at = excluded.paid_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "72307470e7fad99c7c3e3571ecfd85ebdd083b102a4581f904f0bf3f430e2f90"
+}
