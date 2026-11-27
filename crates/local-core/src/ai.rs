@@ -36,7 +36,7 @@ use providers::*;
 use validation::*;
 
 pub use genai_streamer::GenAiStreamer;
-pub use providers::AI_PROVIDER_KINDS;
+pub use providers::{AI_PROVIDER_KINDS, RETIRED_MODELS, replacement_model};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
@@ -286,6 +286,15 @@ impl AiFoundation {
             Vec::new()
         };
         validate_provider_configs(&providers, "ai_provider_load")?;
+        let mut providers = providers;
+        let today = jiff::Zoned::now().date();
+        if retire_models(&mut providers, today)
+            && let Err(error) = write_json(&config_path, &providers)
+        {
+            // The move happens again at the next start; requests use the
+            // replacement now.
+            tracing::warn!(code = %error.code, "a retired model's replacement wasn't saved");
+        }
         Ok(Self {
             config_path,
             providers: Mutex::new(providers),
@@ -758,6 +767,28 @@ mod tests {
         };
         assert_eq!(error.code, "provider_stream_incomplete");
         assert!(error.retryable);
+    }
+
+    #[test]
+    fn opening_the_settings_moves_a_retired_model_to_its_replacement_on_disk() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("providers.json");
+        let saved = vec![AiProviderConfig {
+            id: "deepseek".into(),
+            kind: "deepseek".into(),
+            display_name: "DeepSeek".into(),
+            model: "deepseek-chat".into(),
+            endpoint: None,
+            credential_ref: None,
+            enabled: true,
+            context_window: None,
+        }];
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let ai = AiFoundation::open(&path).unwrap();
+        assert_eq!(ai.list_providers().unwrap()[0].model, "deepseek-flash");
+        let on_disk: Vec<AiProviderConfig> =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk[0].model, "deepseek-flash");
     }
 
     #[test]

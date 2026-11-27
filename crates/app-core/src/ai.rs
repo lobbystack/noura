@@ -2581,19 +2581,83 @@ pub(crate) fn provider_kinds() -> &'static [(&'static str, &'static str)] {
 /// OpenAI-compatible servers, which need an address, go under Local or
 /// custom; OpenAI Responses is OpenAI's own other interface.
 pub const AI_KEY_PROVIDERS: [(&str, &str); 10] = [
-    ("openai", "gpt-4.1-mini"),
-    ("anthropic", "claude-sonnet-4-5"),
-    ("gemini", "gemini-2.5-flash"),
-    ("groq", "llama-3.3-70b-versatile"),
-    ("deepseek", "deepseek-chat"),
-    ("xai", "grok-3-mini"),
-    ("together", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
-    (
-        "fireworks",
-        "accounts/fireworks/models/llama-v3p3-70b-instruct",
-    ),
+    ("openai", "gpt-6-luna"),
+    ("anthropic", "claude-sonnet-5-5"),
+    ("gemini", "gemini-4-hydrogen"),
+    ("groq", "openai/gpt-oss-120b"),
+    ("deepseek", "deepseek-flash"),
+    ("xai", "grok-4.3"),
+    ("together", "openai/gpt-oss-120b"),
+    ("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash"),
     ("cohere", "command-a-03-2025"),
     ("open_router", "openrouter/auto"),
+];
+
+/// Each default in [`AI_KEY_PROVIDERS`], the day someone last checked that
+/// its provider still serves it, and the page that says so. Changing a
+/// default means checking it and updating its line here.
+#[cfg(test)]
+const DEFAULTS_CHECKED: [(&str, &str, &str, &str); 10] = [
+    (
+        "openai",
+        "gpt-6-luna",
+        "2026-11-27",
+        "https://developers.openai.com/api/docs/models",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-5-5",
+        "2026-11-27",
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+    ),
+    (
+        "gemini",
+        "gemini-4-hydrogen",
+        "2026-11-27",
+        "https://ai.google.dev/gemini-api/docs/models",
+    ),
+    (
+        "groq",
+        "openai/gpt-oss-120b",
+        "2026-11-27",
+        "https://console.groq.com/docs/models",
+    ),
+    (
+        "deepseek",
+        "deepseek-flash",
+        "2026-11-27",
+        "https://api-docs.deepseek.com/quick_start/pricing",
+    ),
+    (
+        "xai",
+        "grok-4.3",
+        "2026-11-27",
+        "https://docs.x.ai/developers/migration/may-15-retirement",
+    ),
+    (
+        "together",
+        "openai/gpt-oss-120b",
+        "2026-11-27",
+        "https://docs.together.ai/docs/gpt-oss",
+    ),
+    (
+        "fireworks",
+        "accounts/fireworks/models/deepseek-v4p1-flash",
+        "2026-11-27",
+        "https://docs.fireworks.ai/updates/changelog",
+    ),
+    (
+        "cohere",
+        "command-a-03-2025",
+        "2026-11-27",
+        "https://docs.cohere.com/docs/models",
+    ),
+    (
+        "open_router",
+        "openrouter/auto",
+        "2026-11-27",
+        "https://openrouter.ai/docs",
+    ),
 ];
 
 /// One provider Settings lists to connect with a key.
@@ -2639,6 +2703,32 @@ pub(crate) fn provider_choices(rows: &[AiProviderRow]) -> Vec<AiProviderChoice> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each default was checked against its provider's pages, and none is
+    /// a model Noura knows its provider retired.
+    #[test]
+    fn each_default_model_is_checked_and_not_retired() {
+        for ((kind, model), (checked_kind, checked_model, checked_on, source)) in
+            AI_KEY_PROVIDERS.iter().zip(DEFAULTS_CHECKED)
+        {
+            assert_eq!(
+                (*kind, *model),
+                (checked_kind, checked_model),
+                "check {kind}'s default"
+            );
+            assert!(
+                checked_on.parse::<jiff::civil::Date>().is_ok(),
+                "{checked_on}"
+            );
+            assert!(source.starts_with("https://"), "{source}");
+            assert!(
+                local_core::RETIRED_MODELS
+                    .iter()
+                    .all(|(retired_kind, retired, _, _)| (retired_kind, retired) != (kind, model)),
+                "{kind}'s default {model} is retired"
+            );
+        }
+    }
 
     #[test]
     fn every_provider_settings_lists_is_a_kind_noura_connects_to() {

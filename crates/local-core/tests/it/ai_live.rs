@@ -17,7 +17,7 @@ use super::ai_provider::{OPERATION, answer_text, events, text};
 const LIVE: [(&str, &str, &str); 3] = [
     ("anthropic", "NOURA_LIVE_ANTHROPIC_KEY", "claude-haiku-5-5"),
     ("openai", "NOURA_LIVE_OPENAI_KEY", "gpt-6-luna"),
-    ("gemini", "NOURA_LIVE_GEMINI_KEY", "gemini-3-flash"),
+    ("gemini", "NOURA_LIVE_GEMINI_KEY", "gemini-4-hydrogen"),
 ];
 
 #[tokio::test(flavor = "multi_thread")]

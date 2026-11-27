@@ -21,6 +21,12 @@ The run loop, the provider requests, the credentials and every durable write sta
 
 Noura loads the provider file when the session starts. If it can't read them, AI requests fail with `ai_settings_unreadable` until Noura restarts.
 
+### Retired models
+
+`RETIRED_MODELS` in `crates/local-core/src/ai/providers.rs` lists the models their providers stopped serving, each with its last day and a replacement, from each provider's deprecation page. When Noura loads the provider file after that day, a provider at its default address moves to the replacement, and Noura writes the file and logs the move. A provider at an address you set keeps its model, since that server decides what it serves. An Orb or the default Orb that names a retired model keeps it, and its next answer fails with `provider_model_not_found`, which tells you to pick another model.
+
+`AI_KEY_PROVIDERS` in `crates/app-core/src/ai.rs` holds the model a new connection starts with. A test checks each one against a dated list of the pages that show its provider still serves it, and against `RETIRED_MODELS`.
+
 ## Authorization
 
 Setting up a provider is your say-so (ADR 0006). A run writes your message and sends the request without a prompt, whatever workspace content it carries. Removing a provider cancels its running streams, and a later request to it fails with `provider_not_found`.
@@ -59,7 +65,7 @@ An Orb is a named agent in the workspace: `Orbs/<name>/<name>.md`, its `Memory.m
 
 Each provider stream has a UUID and numbers its frames from 1. The frames pass through a bounded channel of 32, and a send that waits more than 5 seconds ends the stream, so a reader that goes away cancels it. The run thread adds each text delta to the run in memory and wakes the windows. The plugin then reads the text so far and redraws.
 
-Provider errors reach a plugin as a stable code and a fixed message. They never carry provider bodies, request headers or keys.
+Provider errors reach a plugin as a stable code and a fixed message. They never carry provider bodies, request headers or keys. `crates/local-core/src/ai/failures.rs` picks the code from the HTTP status, the provider's error type and code, and a few words of its message, such as Anthropic's 400 about a low credit balance, which becomes `provider_billing`. The diagnostic log gets the code, the status, the provider's error type and code, and its request ID. The AI plugin shows one sentence for each code, naming the provider and what to do next.
 
 ## Cancellation and recovery
 

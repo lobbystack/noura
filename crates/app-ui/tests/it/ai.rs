@@ -486,7 +486,7 @@ fn a_listed_provider_connects_with_a_pasted_key() {
         .find(|row| row.kind == "openai")
         .expect("OpenAI is set up");
     assert!(row.has_key && row.enabled);
-    assert_eq!(row.model, "gpt-4.1-mini");
+    assert_eq!(row.model, "gpt-6-luna");
     assert!(
         !all_labels(harness)
             .iter()
