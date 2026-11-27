@@ -30,19 +30,35 @@ pub struct Continue<'a> {
 #[derive(Template)]
 #[template(path = "account.html")]
 pub struct Account<'a> {
-    pub email: &'a str,
+    pub lang: &'a str,
+    pub title: &'a str,
+    pub signed_in: &'a str,
     pub passkeys: usize,
+    pub passkeys_line: &'a str,
+    pub add_passkey: &'a str,
+    pub device_link: &'a str,
+    pub sign_out: &'a str,
+    pub switch_to: &'a str,
+    pub switch_label: &'a str,
     /// Whether the server sells plans, which shows the plan section.
     pub billing: bool,
+    pub plan_heading: &'a str,
     pub plan_id: &'a str,
     pub plan_name: &'a str,
     pub usage: &'a str,
-    pub past_due: bool,
+    /// A line about the subscription, such as a failed payment, or empty.
+    pub notice: &'a str,
     /// The line about workspaces over plan, or empty.
     pub over_plan: &'a str,
-    /// The plans to upgrade to: plan ID and name.
-    pub offers: &'a [(&'static str, &'static str)],
+    /// The plans to upgrade to: plan ID and the button's label.
+    pub offers: &'a [(&'static str, String)],
     pub manage: bool,
+    pub manage_label: &'a str,
+    pub cancel: bool,
+    pub cancel_label: &'a str,
+    pub withdraw: bool,
+    pub withdraw_label: &'a str,
+    pub contact: &'a str,
 }
 
 /// The step between a link from elsewhere and the checkout: a refresh from
@@ -51,8 +67,10 @@ pub struct Account<'a> {
 #[derive(Template)]
 #[template(path = "upgrade.html")]
 pub struct Upgrade<'a> {
+    pub lang: &'a str,
     pub plan: &'a str,
-    pub name: &'a str,
+    pub heading: &'a str,
+    pub button: &'a str,
 }
 
 #[derive(Template)]

@@ -18,6 +18,7 @@
 //! own origin.
 
 pub mod config;
+pub mod lang;
 pub mod mail;
 mod pages;
 pub mod plan;
@@ -122,6 +123,7 @@ pub struct Accounts {
     assets: Option<PathBuf>,
     deliveries: Deliveries,
     billing: Option<Arc<dyn crate::billing::BillingProvider>>,
+    merchant: Option<crate::billing::Merchant>,
     sign_ups: Option<signups::SignUpGuard>,
     /// The accounts noted active this month on this instance.
     active: std::sync::Mutex<std::collections::HashMap<Id, u64>>,
@@ -150,6 +152,7 @@ impl Accounts {
             assets,
             deliveries: Deliveries::default(),
             billing: None,
+            merchant: None,
             sign_ups: None,
             active: Default::default(),
         }
@@ -186,9 +189,19 @@ impl Accounts {
 
     /// These account pages, selling plans through `provider` (§26,
     /// Billing). The store must give accounts their plans' limits too.
-    pub fn with_billing(mut self, provider: Arc<dyn crate::billing::BillingProvider>) -> Self {
+    pub fn with_billing(
+        mut self,
+        provider: Arc<dyn crate::billing::BillingProvider>,
+        merchant: crate::billing::Merchant,
+    ) -> Self {
         self.billing = Some(provider);
+        self.merchant = Some(merchant);
         self
+    }
+
+    /// Who sells the plans, when the server sells them.
+    pub fn merchant(&self) -> Option<&crate::billing::Merchant> {
+        self.merchant.as_ref()
     }
 
     /// The payment provider, when the server sells plans.
@@ -310,6 +323,7 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
         .route("/account/email-link/use", post(use_email_link::<B>))
         .route("/account/confirm", get(confirm_page).post(confirm::<B>))
         .route("/account/sign-out", post(sign_out::<B>))
+        .route("/account/language", get(lang::switch))
         .route("/account/upgrade", get(plan::upgrade::<B>))
         .route("/account/billing", get(plan::portal::<B>))
         .route("/billing/{provider}/webhook", post(plan::webhook::<B>))
@@ -802,44 +816,75 @@ async fn account_page<B: Backend>(
         Ok(passkeys) => passkeys.len(),
         Err(error) => return failure(error),
     };
-    let Some(provider) = state.accounts.billing() else {
-        return html(
-            StatusCode::OK,
-            &pages::Account {
-                email: &email,
-                passkeys,
-                billing: false,
-                plan_id: "",
-                plan_name: "",
-                usage: "",
-                past_due: false,
-                over_plan: "",
-                offers: &[],
-                manage: false,
-            },
-        );
-    };
-    if let Some(plan) = plan::chosen_plan(&headers).filter(|plan| provider.sells(plan)) {
+    let lang = lang::negotiate(&headers);
+    let provider = state.accounts.billing();
+    if let Some(provider) = provider
+        && let Some(plan) = plan::chosen_plan(&headers).filter(|plan| provider.sells(plan))
+    {
         return plan::resume_upgrade(&state.accounts, &plan);
     }
-    let report = match store.account_report(account).await {
-        Ok(report) => report,
-        Err(error) => return failure(error),
+    let signed_in_line = match lang {
+        lang::Lang::En => format!("You're signed in as {email}."),
+        lang::Lang::Fr => format!("Vous êtes connecté avec {email}."),
     };
-    let section = plan::section(provider, &report);
+    let passkeys_line = match (lang, passkeys) {
+        (lang::Lang::En, 1) => "You have 1 passkey.".to_owned(),
+        (lang::Lang::En, n) => format!("You have {n} passkeys."),
+        (lang::Lang::Fr, 0 | 1) => format!("Vous avez {passkeys} clé d\u{2019}accès."),
+        (lang::Lang::Fr, n) => format!("Vous avez {n} clés d\u{2019}accès."),
+    };
+    let section = match provider {
+        Some(provider) => match store.account_report(account).await {
+            Ok(report) => Some(plan::section(provider, &report, lang, false, false)),
+            Err(error) => return failure(error),
+        },
+        None => None,
+    };
+    let contact = state
+        .accounts
+        .merchant()
+        .map(crate::billing::Merchant::contact)
+        .unwrap_or_default();
+    let empty = plan::Section {
+        plan_id: String::new(),
+        plan_name: "",
+        usage: String::new(),
+        notice: String::new(),
+        over_plan: String::new(),
+        offers: Vec::new(),
+        manage: false,
+        cancel: false,
+        withdraw: false,
+    };
+    let shown = section.as_ref().unwrap_or(&empty);
     html(
         StatusCode::OK,
         &pages::Account {
-            email: &email,
+            lang: lang.code(),
+            title: lang.pick("Your account", "Votre compte"),
+            signed_in: &signed_in_line,
             passkeys,
-            billing: true,
-            plan_id: &section.plan_id,
-            plan_name: section.plan_name,
-            usage: &section.usage,
-            past_due: section.past_due,
-            over_plan: &section.over_plan,
-            offers: &section.offers,
-            manage: section.manage,
+            passkeys_line: &passkeys_line,
+            add_passkey: lang.pick("Add a passkey", "Ajouter une clé d\u{2019}accès"),
+            device_link: lang.pick("Sign in a device", "Connecter un appareil"),
+            sign_out: lang.pick("Sign out", "Se déconnecter"),
+            switch_to: lang.other().code(),
+            switch_label: lang.switch_label(),
+            billing: section.is_some(),
+            plan_heading: lang.pick("Plan", "Forfait"),
+            plan_id: &shown.plan_id,
+            plan_name: shown.plan_name,
+            usage: &shown.usage,
+            notice: &shown.notice,
+            over_plan: &shown.over_plan,
+            offers: &shown.offers,
+            manage: shown.manage,
+            manage_label: lang.pick("Manage billing", "Gérer la facturation"),
+            cancel: shown.cancel,
+            cancel_label: lang.pick("Cancel plan", "Résilier le forfait"),
+            withdraw: shown.withdraw,
+            withdraw_label: lang.pick("Withdraw from contract here", "Se rétracter du contrat ici"),
+            contact: &contact,
         },
     )
 }

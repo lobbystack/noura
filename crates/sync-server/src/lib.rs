@@ -92,6 +92,8 @@ pub struct Config {
     /// The payment provider that sells plans (§20, §26 Billing); without
     /// one every account keeps the operator's settings.
     pub billing: Option<billing::polar::PolarConfig>,
+    /// Who sells the plans, which the server needs to sell any.
+    pub merchant: Option<billing::Merchant>,
     /// New accounts one client IP starts per UTC day while the server
     /// sells plans; `None` takes the default.
     pub sign_ups_per_day: Option<u64>,
@@ -153,6 +155,7 @@ impl Config {
             trusted_proxy_header: None,
             connections: ConnectionLimits::default(),
             billing: None,
+            merchant: None,
             sign_ups_per_day: None,
             blocked_email_domains: String::new(),
         }
@@ -213,7 +216,14 @@ pub fn accounts_for(config: &Config, origin: PublicOrigin) -> Result<Accounts, C
     );
     Ok(match &config.billing {
         Some(polar) => accounts
-            .with_billing(Arc::new(billing::polar::Polar::new(polar.clone())))
+            .with_billing(
+                Arc::new(billing::polar::Polar::new(polar.clone())),
+                config.merchant.clone().ok_or_else(|| {
+                    CommandError(
+                        "a server that sells plans needs the NOURA_MERCHANT_* settings".into(),
+                    )
+                })?,
+            )
             .with_sign_up_guard(accounts::signups::SignUpGuard::new(
                 Some(
                     config

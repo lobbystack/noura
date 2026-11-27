@@ -92,6 +92,8 @@ Each command reads `NOURA_DATA_DIR`, `NOURA_DATABASE_URL` and `NOURA_LISTEN`, an
 | `NOURA_POLAR_WEBHOOK_SECRET` | none | The secret of Polar's webhook endpoint, `whsec_` and the rest |
 | `NOURA_POLAR_API` | `https://api.polar.sh` | Polar's API, or `https://sandbox-api.polar.sh` for its sandbox |
 | `NOURA_POLAR_PRODUCTS` | none | Which Polar product sells each plan, as `plan=product_id` pairs separated by commas |
+| `NOURA_MERCHANT_NAME`, `NOURA_MERCHANT_ADDRESS`, `NOURA_MERCHANT_EMAIL`, `NOURA_MERCHANT_PHONE` | none | Who sells the plans: legal name, street address, email and phone, which the account pages and the mail about plans show; required to sell plans |
+| `NOURA_TERMS_URL`, `NOURA_TERMS_URL_FR` | `https://noura.app/terms/`, `https://noura.app/fr/terms/` | The terms in English and in French, which that mail links to |
 | `NOURA_SIGN_UPS_PER_DAY` | 5 with plans, else unlimited | New accounts a day from one client IP |
 | `NOURA_BLOCKED_EMAIL_DOMAINS` | none | A file of email domains that may not sign up, one a line, on top of the built-in list |
 
@@ -110,7 +112,7 @@ Your server sells no plans by default. Every account then gets the limits you se
 1. In Polar, create one product for each plan you sell, with a recurring price.
 2. Create an organization access token with the scopes `checkouts:write` and `customer_sessions:write`.
 3. Add a webhook endpoint at `https://sync.example.com/billing/polar/webhook` in the Raw format, on API version 2026-10, for the events `subscription.created`, `subscription.active`, `subscription.updated`, `subscription.canceled`, `subscription.uncanceled`, `subscription.past_due`, `subscription.revoked`, `subscription.paused` and `subscription.resumed`.
-4. Set the four `NOURA_POLAR_*` variables and restart the server.
+4. Set the four `NOURA_POLAR_*` variables and the four `NOURA_MERCHANT_*` variables, and restart the server.
 
 `NOURA_POLAR_PRODUCTS` maps your plan IDs to Polar's product IDs:
 
@@ -120,7 +122,7 @@ NOURA_POLAR_PRODUCTS=standard_year=your_product_id_here,standard_month=your_prod
 
 The plan IDs are `standard_year`, `standard_month`, `plus_year`, `plus_month`, `plus_100gb_year` and `plus_100gb_month`. You can leave out plans you don't sell. The server checks the mapping at start and refuses an unknown plan ID, or a token without its webhook secret.
 
-Once billing is on, an account without a paid subscription gets the `free` plan, and the account page shows its plan, usage, **Upgrade** and **Manage billing**. Link to `https://sync.example.com/account/upgrade?plan=plus_year` from your website: the page signs the visitor in first, then opens Polar's checkout. The server reads the secrets only from the environment and never logs them, nor the portal links it creates.
+Once billing is on, an account without a paid subscription gets the `free` plan, and the account page shows its plan, usage, **Upgrade** and **Manage billing**. The account pages about plans, and the mail about plans, come in English and in French: the browser's language picks one, and a link at the bottom of the page switches. Link to `https://sync.example.com/account/upgrade?plan=plus_year` from your website: the page signs the visitor in first, then opens Polar's checkout. The server reads the secrets only from the environment and never logs them, nor the portal links it creates.
 
 With billing on, sign-up also refuses addresses at known disposable email domains, and counts new accounts per client IP and UTC day under `NOURA_SIGN_UPS_PER_DAY`. To block more domains, mount a file and point `NOURA_BLOCKED_EMAIL_DOMAINS` at it.
 

@@ -12,6 +12,7 @@ use sync_protocol::messages::{AccountResponse, OwnedState, SubscriptionStatus};
 use sync_protocol::types::Id;
 use sync_store::Backend;
 
+use super::lang::{Lang, negotiate};
 use super::{Accounts, cookie_value, failure, field, html, message, pages, redirect, signed_in};
 use crate::billing::{BillingProvider, CheckoutRequest, PortalRequest, ProviderError};
 use crate::http::{AppState, InternalCause};
@@ -30,30 +31,49 @@ const TIERS: &[(&str, &str, &str)] = &[
     ("plus_100gb_year", "plus_100gb_month", "Plus 100 GB"),
 ];
 
-/// A plan's name on the account page.
-pub fn plan_name(plan: &str) -> &'static str {
-    match plan {
-        "standard_year" => "Standard, yearly",
-        "standard_month" => "Standard, monthly",
-        "plus_year" => "Plus, yearly",
-        "plus_month" => "Plus, monthly",
-        "plus_100gb_year" => "Plus 100 GB, yearly",
-        "plus_100gb_month" => "Plus 100 GB, monthly",
-        _ => "Free",
+/// A plan's name on the account pages and in mail.
+pub fn plan_name(plan: &str, lang: Lang) -> &'static str {
+    match (plan, lang) {
+        ("standard_year", Lang::En) => "Standard, yearly",
+        ("standard_year", Lang::Fr) => "Standard, annuel",
+        ("standard_month", Lang::En) => "Standard, monthly",
+        ("standard_month", Lang::Fr) => "Standard, mensuel",
+        ("plus_year", Lang::En) => "Plus, yearly",
+        ("plus_year", Lang::Fr) => "Plus, annuel",
+        ("plus_month", Lang::En) => "Plus, monthly",
+        ("plus_month", Lang::Fr) => "Plus, mensuel",
+        ("plus_100gb_year", Lang::En) => "Plus 100 GB, yearly",
+        ("plus_100gb_year", Lang::Fr) => "Plus 100 Go, annuel",
+        ("plus_100gb_month", Lang::En) => "Plus 100 GB, monthly",
+        ("plus_100gb_month", Lang::Fr) => "Plus 100 Go, mensuel",
+        (_, Lang::En) => "Free",
+        (_, Lang::Fr) => "Gratuit",
     }
 }
 
-/// `bytes` in decimal units, as the plans are sold.
-pub fn size(bytes: u64) -> String {
-    for (unit, scale) in [("GB", 1e9), ("MB", 1e6), ("KB", 1e3)] {
+/// `bytes` in decimal units, as the plans are sold, in `lang`'s units and
+/// decimal mark.
+pub fn size(bytes: u64, lang: Lang) -> String {
+    let units: [(&str, f64); 3] = match lang {
+        Lang::En => [("GB", 1e9), ("MB", 1e6), ("KB", 1e3)],
+        Lang::Fr => [("Go", 1e9), ("Mo", 1e6), ("ko", 1e3)],
+    };
+    for (unit, scale) in units {
         let value = bytes as f64 / scale;
         if value >= 1.0 {
             let text = format!("{value:.1}");
             let text = text.strip_suffix(".0").unwrap_or(&text);
+            let text = match lang {
+                Lang::En => text.to_owned(),
+                Lang::Fr => text.replace('.', ","),
+            };
             return format!("{text} {unit}");
         }
     }
-    format!("{bytes} B")
+    match lang {
+        Lang::En => format!("{bytes} B"),
+        Lang::Fr => format!("{bytes} o"),
+    }
 }
 
 /// The plan section's content for an account's report.
@@ -61,18 +81,31 @@ pub struct Section {
     pub plan_id: String,
     pub plan_name: &'static str,
     pub usage: String,
-    pub past_due: bool,
+    pub notice: String,
     pub over_plan: String,
-    pub offers: Vec<(&'static str, &'static str)>,
+    pub offers: Vec<(&'static str, String)>,
     pub manage: bool,
+    pub cancel: bool,
+    pub withdraw: bool,
 }
 
-/// What the account page shows of `report` while `provider` sells plans.
-pub fn section(provider: &dyn BillingProvider, report: &AccountResponse) -> Section {
+/// What the account page shows of `report` while `provider` sells plans,
+/// in `lang`. `cancel` and `withdraw` say whether those buttons apply.
+pub fn section(
+    provider: &dyn BillingProvider,
+    report: &AccountResponse,
+    lang: Lang,
+    cancel: bool,
+    withdraw: bool,
+) -> Section {
     let used = report.used_bytes.saturating_add(report.history_bytes);
-    let usage = match report.storage_bytes {
-        Some(limit) => format!("{} of {} used", size(used), size(limit)),
-        None => format!("{} used", size(used)),
+    let usage = match (report.storage_bytes, lang) {
+        (Some(limit), Lang::En) => format!("{} of {} used", size(used, lang), size(limit, lang)),
+        (Some(limit), Lang::Fr) => {
+            format!("{} utilisés sur {}", size(used, lang), size(limit, lang))
+        }
+        (None, Lang::En) => format!("{} used", size(used, lang)),
+        (None, Lang::Fr) => format!("{} utilisés", size(used, lang)),
     };
     let over = report
         .workspaces
@@ -80,12 +113,18 @@ pub fn section(provider: &dyn BillingProvider, report: &AccountResponse) -> Sect
         .iter()
         .filter(|w| w.state == OwnedState::OverPlan)
         .count();
-    let over_plan = match over {
-        0 => String::new(),
-        1 => "1 workspace is read-only until you upgrade or choose which stay synced in Noura."
-            .to_owned(),
-        n => format!(
+    let over_plan = match (over, lang) {
+        (0, _) => String::new(),
+        (1, Lang::En) => {
+            "1 workspace is read-only until you upgrade or choose which stay synced in Noura."
+                .to_owned()
+        }
+        (1, Lang::Fr) => "1 espace de travail est en lecture seule jusqu\u{2019}à ce que vous changiez de forfait ou choisissiez dans Noura ceux qui restent synchronisés.".to_owned(),
+        (n, Lang::En) => format!(
             "{n} workspaces are read-only until you upgrade or choose which stay synced in Noura."
+        ),
+        (n, Lang::Fr) => format!(
+            "{n} espaces de travail sont en lecture seule jusqu\u{2019}à ce que vous changiez de forfait ou choisissiez dans Noura ceux qui restent synchronisés."
         ),
     };
     let paid = matches!(
@@ -101,36 +140,66 @@ pub fn section(provider: &dyn BillingProvider, report: &AccountResponse) -> Sect
                 [*year, *month]
                     .into_iter()
                     .find(|plan| provider.sells(plan))
-                    .map(|plan| (plan, *name))
+                    .map(|plan| {
+                        let name = match lang {
+                            Lang::En => (*name).to_owned(),
+                            Lang::Fr => name.replace("GB", "Go"),
+                        };
+                        let label = match lang {
+                            Lang::En => format!("Upgrade to {name}"),
+                            Lang::Fr => format!("Passer à {name}"),
+                        };
+                        (plan, label)
+                    })
             })
             .collect()
     };
+    let notice = if report.status == SubscriptionStatus::PastDue {
+        lang.pick(
+            "Your last payment failed. Update your payment method in Manage billing.",
+            "Votre dernier paiement a échoué. Mettez à jour votre moyen de paiement dans Gérer la facturation.",
+        )
+        .to_owned()
+    } else {
+        String::new()
+    };
     Section {
         plan_id: report.plan.as_str().to_owned(),
-        plan_name: plan_name(report.plan.as_str()),
+        plan_name: plan_name(report.plan.as_str(), lang),
         usage,
-        past_due: report.status == SubscriptionStatus::PastDue,
+        notice,
         over_plan,
         offers,
         manage: report.status != SubscriptionStatus::None,
+        cancel: paid && cancel,
+        withdraw: paid && withdraw,
     }
 }
 
-fn not_sold() -> Response {
+fn not_sold(lang: Lang) -> Response {
     message(
         StatusCode::NOT_FOUND,
-        "This plan isn't for sale here",
-        "Check the link, or open your account page.",
+        lang.pick(
+            "This plan isn't for sale here",
+            "Ce forfait n\u{2019}est pas offert ici",
+        ),
+        lang.pick(
+            "Check the link, or open your account page.",
+            "Vérifiez le lien, ou ouvrez la page de votre compte.",
+        ),
     )
 }
 
 /// The page for a provider that failed, with the failure's kind for the
 /// request log.
-fn unavailable(what: &str, error: ProviderError) -> Response {
+fn unavailable(lang: Lang, what: (&str, &str), error: ProviderError) -> Response {
     let mut response = message(
         StatusCode::SERVICE_UNAVAILABLE,
-        what,
-        "Try again in a few minutes.",
+        lang.pick(what.0, what.1),
+        lang.pick(
+            "Try again in a few minutes.",
+            "Réessayez dans quelques minutes.",
+        ),
     );
     response
         .extensions_mut()
@@ -182,23 +251,30 @@ pub async fn upgrade<B: Backend>(
     RawQuery(query): RawQuery,
 ) -> Response {
     let accounts = &state.accounts;
+    let lang = negotiate(&headers);
     let Some(provider) = accounts.billing() else {
-        return not_sold();
+        return not_sold(lang);
     };
     let query = query.unwrap_or_default();
     let Some(plan) = field(query.as_bytes(), "plan").filter(|plan| provider.sells(plan)) else {
-        return not_sold();
+        return not_sold(lang);
     };
     let account = match signed_in(&state.store, &headers).await {
         Ok(Some((account, _))) => account,
         Ok(None) if field(query.as_bytes(), "continue").is_none() => {
             // A link from another site carries no strict cookie, so this page
             // asks again from the server's own origin.
+            let heading = match lang {
+                Lang::En => format!("Upgrade to {}", plan_name(&plan, lang)),
+                Lang::Fr => format!("Passer au forfait {}", plan_name(&plan, lang)),
+            };
             return html(
                 StatusCode::OK,
                 &pages::Upgrade {
+                    lang: lang.code(),
                     plan: &plan,
-                    name: plan_name(&plan),
+                    heading: &heading,
+                    button: lang.pick("Continue", "Continuer"),
                 },
             );
         }
@@ -239,7 +315,14 @@ pub async fn upgrade<B: Backend>(
     };
     match provider.checkout_url(request).await {
         Ok(url) => redirect(&url),
-        Err(error) => unavailable("Checkout isn't available right now", error),
+        Err(error) => unavailable(
+            lang,
+            (
+                "Checkout isn't available right now",
+                "Le paiement n\u{2019}est pas offert pour le moment",
+            ),
+            error,
+        ),
     }
 }
 
@@ -248,6 +331,7 @@ pub async fn upgrade<B: Backend>(
 /// invoices.
 pub async fn portal<B: Backend>(State(state): State<AppState<B>>, headers: HeaderMap) -> Response {
     let accounts = &state.accounts;
+    let lang = negotiate(&headers);
     let Some(provider) = accounts.billing() else {
         return redirect("/account");
     };
@@ -273,7 +357,14 @@ pub async fn portal<B: Backend>(State(state): State<AppState<B>>, headers: Heade
     match provider.portal_url(request).await {
         Ok(url) => redirect(&url),
         Err(ProviderError::NoCustomer) => redirect("/account"),
-        Err(error) => unavailable("Billing isn't available right now", error),
+        Err(error) => unavailable(
+            lang,
+            (
+                "Billing isn't available right now",
+                "La facturation n\u{2019}est pas offerte pour le moment",
+            ),
+            error,
+        ),
     }
 }
 
@@ -335,11 +426,12 @@ mod tests {
 
     #[test]
     fn sizes_read_in_decimal_units() {
-        assert_eq!(size(0), "0 B");
-        assert_eq!(size(999), "999 B");
-        assert_eq!(size(12_345_678), "12.3 MB");
-        assert_eq!(size(100_000_000), "100 MB");
-        assert_eq!(size(1_000_000_000), "1 GB");
-        assert_eq!(size(10_500_000_000), "10.5 GB");
+        assert_eq!(size(0, Lang::En), "0 B");
+        assert_eq!(size(999, Lang::En), "999 B");
+        assert_eq!(size(12_345_678, Lang::En), "12.3 MB");
+        assert_eq!(size(100_000_000, Lang::En), "100 MB");
+        assert_eq!(size(1_000_000_000, Lang::En), "1 GB");
+        assert_eq!(size(10_500_000_000, Lang::En), "10.5 GB");
+        assert_eq!(size(12_345_678, Lang::Fr), "12,3 Mo");
     }
 }

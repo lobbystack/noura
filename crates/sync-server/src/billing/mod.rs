@@ -20,6 +20,52 @@ use axum::http::HeaderMap;
 use sync_protocol::types::Id;
 use sync_store::{AccountPlanRow, SubscriptionState};
 
+/// Who sells the plans, as the account pages and the mail about plans
+/// name them: the legal name, the street address, an email and a phone
+/// number, and the terms in each language (§26, Billing).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Merchant {
+    /// The legal name.
+    pub name: String,
+    /// The street address of the place of business.
+    pub address: String,
+    /// The email for support, billing and withdrawals.
+    pub email: String,
+    /// The phone number.
+    pub phone: String,
+    /// The terms in English.
+    pub terms_en: String,
+    /// The terms in French.
+    pub terms_fr: String,
+}
+
+impl Merchant {
+    /// The terms' address in `lang`.
+    pub fn terms(&self, lang: crate::accounts::lang::Lang) -> &str {
+        lang.pick(&self.terms_en, &self.terms_fr)
+    }
+
+    /// One line with every way to reach the merchant.
+    pub fn contact(&self) -> String {
+        format!(
+            "{}, {} · {} · {}",
+            self.name, self.address, self.email, self.phone
+        )
+    }
+
+    /// A merchant for tests and examples.
+    pub fn example() -> Self {
+        Self {
+            name: "Example Inc.".into(),
+            address: "1 Example Street, Québec QC G1A 1A1, Canada".into(),
+            email: "billing@example.com".into(),
+            phone: "+1 418 555 0100".into(),
+            terms_en: "https://example.com/terms/".into(),
+            terms_fr: "https://example.com/fr/terms/".into(),
+        }
+    }
+}
+
 /// A boxed future a provider returns.
 pub type ProviderFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, ProviderError>> + Send + 'a>>;

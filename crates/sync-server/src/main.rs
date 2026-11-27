@@ -47,6 +47,10 @@
 //!   `NOURA_POLAR_PRODUCTS`, with an optional `NOURA_POLAR_API`: sell plans
 //!   through Polar, with its products mapped to plan IDs as `plan=product`
 //!   pairs. Without them the server sells no plans.
+//! - `NOURA_MERCHANT_NAME`, `NOURA_MERCHANT_ADDRESS`, `NOURA_MERCHANT_EMAIL`
+//!   and `NOURA_MERCHANT_PHONE`, which a server that sells plans needs, and
+//!   `NOURA_TERMS_URL` and `NOURA_TERMS_URL_FR`: who sells the plans, and
+//!   the terms in each language, for the pages and the mail about plans.
 //! - `NOURA_SIGN_UPS_PER_DAY` and `NOURA_BLOCKED_EMAIL_DOMAINS`: while the
 //!   server sells plans, the new accounts one client IP starts per UTC day,
 //!   5 by default, and a file of email domains that may not sign up, on top
@@ -201,6 +205,7 @@ fn serve(arguments: Arguments) -> Result<(), String> {
     config.rate_limits = rate_limits()?;
     config.trusted_proxy_header = env("NOURA_TRUSTED_PROXY_HEADER");
     config.billing = polar()?;
+    config.merchant = merchant(config.billing.is_some())?;
     if let Some(value) = env("NOURA_SIGN_UPS_PER_DAY") {
         config.sign_ups_per_day = Some(
             value
@@ -270,6 +275,38 @@ fn polar() -> Result<Option<sync_server::billing::polar::PolarConfig>, String> {
         webhook_secret,
         api,
         products: sync_server::billing::polar::PolarConfig::parse_products(&products)?,
+    }))
+}
+
+/// Who sells the plans, from `NOURA_MERCHANT_*` and `NOURA_TERMS_URL*`,
+/// which a server that sells plans must name in full.
+fn merchant(billing: bool) -> Result<Option<sync_server::billing::Merchant>, String> {
+    let names = [
+        "NOURA_MERCHANT_NAME",
+        "NOURA_MERCHANT_ADDRESS",
+        "NOURA_MERCHANT_EMAIL",
+        "NOURA_MERCHANT_PHONE",
+    ];
+    let values: Vec<Option<String>> = names.iter().map(|name| env(name)).collect();
+    if !billing {
+        return Ok(None);
+    }
+    if let Some(missing) = names.iter().zip(&values).find(|(_, v)| v.is_none()) {
+        return Err(format!(
+            "a server that sells plans needs {}: the merchant's name, street address, email and phone",
+            missing.0
+        ));
+    }
+    let [name, address, email, phone] = <[Option<String>; 4]>::try_from(values)
+        .map_err(|_| "four merchant settings")?
+        .map(Option::unwrap_or_default);
+    Ok(Some(sync_server::billing::Merchant {
+        name,
+        address,
+        email,
+        phone,
+        terms_en: env("NOURA_TERMS_URL").unwrap_or_else(|| "https://noura.app/terms/".into()),
+        terms_fr: env("NOURA_TERMS_URL_FR").unwrap_or_else(|| "https://noura.app/fr/terms/".into()),
     }))
 }
 

@@ -1629,7 +1629,7 @@ A server sells plans when its operator configures a payment provider; the provid
 | `GET /account/billing` | sends the signed-in account to the provider's customer portal |
 | `POST /billing/polar/webhook` | Polar's webhook deliveries, signed under the Standard Webhooks scheme |
 
-The server names the account to the provider by its ID in base64url, as the external customer ID, so a webhook ties a subscription back to an account without an email. It verifies each webhook's signature over the raw body, refuses a timestamp more than 5 minutes from its clock, and stores each event ID it applied, so a retried delivery changes nothing. Providers don't guarantee order, so the server keeps the time of the provider's last change to each subscription and ignores an event that reports an older one. An event that names an account the server doesn't hold, or a product no plan maps to, changes nothing.
+A server that sells plans also names who sells them, with a street address, an email and a phone number, on the account pages and in the mail about plans, which come in English and in French. The server names the account to the provider by its ID in base64url, as the external customer ID, so a webhook ties a subscription back to an account without an email. It verifies each webhook's signature over the raw body, refuses a timestamp more than 5 minutes from its clock, and stores each event ID it applied, so a retried delivery changes nothing. Providers don't guarantee order, so the server keeps the time of the provider's last change to each subscription and ignores an event that reports an older one. An event that names an account the server doesn't hold, or a product no plan maps to, changes nothing.
 
 ## 27. Limits
 

@@ -156,7 +156,10 @@ async fn site(billing: bool) -> Site {
     let address = sync_server::spawn_with(store.clone(), "127.0.0.1:0", move |origin| {
         let accounts = Accounts::local(origin);
         if billing {
-            accounts.with_billing(Arc::new(Polar::new(config)))
+            accounts.with_billing(
+                Arc::new(Polar::new(config)),
+                sync_server::billing::Merchant::example(),
+            )
         } else {
             accounts
         }
@@ -331,6 +334,56 @@ async fn an_upgrade_signs_in_then_opens_a_polar_checkout() {
     assert!(text.contains("/account/upgrade?plan=plus_year"));
     assert!(!text.contains("plus_100gb"));
     assert!(!text.contains("Manage billing"));
+    assert!(
+        text.contains("Example Inc., 1 Example Street"),
+        "the merchant's contact"
+    );
+
+    // French, from the browser or from the switch.
+    let french = site
+        .http
+        .get(format!("{}/account", site.base))
+        .header("cookie", &session)
+        .header("accept-language", "fr-CA,fr;q=0.9")
+        .send()
+        .await
+        .expect("an answer")
+        .text()
+        .await
+        .expect("a body");
+    assert!(french.contains("<html lang=\"fr\">"));
+    assert!(french.contains("Votre compte"));
+    assert!(french.contains("Gratuit"));
+    assert!(french.contains("utilisés sur 100 Mo"));
+    assert!(french.contains("Passer à Plus"));
+    let switch = site
+        .get("/account/language?to=en&back=/account", Some(&session))
+        .await;
+    assert_eq!(location(&switch), "/account");
+    let chosen = switch.headers()["set-cookie"]
+        .to_str()
+        .expect("text")
+        .to_owned();
+    assert!(chosen.starts_with("noura_lang=en;"));
+    let english = site
+        .http
+        .get(format!("{}/account", site.base))
+        .header("cookie", format!("{session}; noura_lang=en"))
+        .header("accept-language", "fr-CA")
+        .send()
+        .await
+        .expect("an answer")
+        .text()
+        .await
+        .expect("a body");
+    assert!(english.contains("Your account"));
+    let elsewhere = site
+        .get(
+            "/account/language?to=fr&back=https://evil.example",
+            Some(&session),
+        )
+        .await;
+    assert_eq!(location(&elsewhere), "/account");
 }
 
 #[tokio::test]
@@ -500,10 +553,14 @@ fn the_binary_refuses_a_partial_or_unknown_polar_setting() {
         ("NOURA_POLAR_ACCESS_TOKEN", "polar_oat_secret_value"),
         ("NOURA_POLAR_WEBHOOK_SECRET", "whsec_secret_value"),
         ("NOURA_POLAR_PRODUCTS", "plus_year=prod-1"),
+        ("NOURA_MERCHANT_NAME", "Example Inc."),
+        ("NOURA_MERCHANT_ADDRESS", "1 Example Street"),
+        ("NOURA_MERCHANT_EMAIL", "billing@example.com"),
+        ("NOURA_MERCHANT_PHONE", "+1 418 555 0100"),
     ];
     for (settings, says) in [
         (&full[..1], "together"),
-        (&full[1..], "together"),
+        (&full[1..3], "together"),
         (
             &[
                 full[0],
@@ -517,10 +574,15 @@ fn the_binary_refuses_a_partial_or_unknown_polar_setting() {
                 full[0],
                 full[1],
                 full[2],
+                full[3],
+                full[4],
+                full[5],
+                full[6],
                 ("NOURA_POLAR_API", "http://api.polar.sh"),
             ][..],
             "HTTPS",
         ),
+        (&full[..6], "NOURA_MERCHANT_PHONE"),
     ] {
         let output = std::process::Command::new(crate::support::BIN)
             .arg("serve")
