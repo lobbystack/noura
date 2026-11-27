@@ -565,7 +565,8 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
             Area::Tabs,
             Area::Pages,
             Area::Writing,
-            Area::Note
+            Area::Note,
+            Area::Pdf
         ]
     );
     let entry = |area: Area, label: &str| {
@@ -685,6 +686,11 @@ fn the_shortcuts_list_groups_every_shortcut_by_area() {
     ] {
         assert_eq!(entry(Area::Note, label), Some(vec![shortcut]), "{label}");
     }
+    // A PDF tab finds with the note's key.
+    assert_eq!(
+        entry(Area::Pdf, "Find in the PDF"),
+        Some(vec![Shortcut::command(Key::F)])
+    );
     // Commands without keys stay off the list.
     assert_eq!(entry(Area::Anywhere, "Keyboard Shortcuts"), None);
     drop(app);

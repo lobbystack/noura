@@ -580,7 +580,8 @@ fn a_tall_pdf_page_renders_at_the_screens_density() {
         );
     }
 
-    // Find scrolls 12,800 points down the page to line 800.
+    // Find scrolls 12,800 points down the page to line 800 and marks
+    // "needle" there.
     let field = harness.get_by_role_and_label(Role::TextInput, "Search PDF");
     field.focus();
     field.type_text("needle");
@@ -605,6 +606,98 @@ fn a_tall_pdf_page_renders_at_the_screens_density() {
         eprintln!(
             "after find: texture {name}: {width} by {height} pixels, {:.3} pixels a point across",
             width as f32 / page.width()
+        );
+    }
+}
+
+/// The rect around every match mark that shows, grown by `margin` points
+/// on each side and kept inside the window.
+fn around_marks(harness: &Ui, margin: egui::Vec2) -> egui::Rect {
+    let marks = harness
+        .query_all_by_role_and_label(Role::Mark, "Match")
+        .map(|mark| mark.rect())
+        .reduce(|all, mark| all.union(mark))
+        .expect("a match shows");
+    marks.expand2(margin).intersect(harness.ctx.viewport_rect())
+}
+
+/// A search for "apple" in text.pdf, in light and dark, with the third
+/// page's two matches in view, the second line's first current: the
+/// window and that line at the page's own size, then at twice it, at two
+/// pixels a point. The marks should sit on the words in each.
+#[test]
+#[ignore = "draws the screens to PNG files, which needs a GPU"]
+fn a_pdf_search_marks_its_matches_in_light_and_dark() {
+    for theme in [Theme::Light, Theme::Dark] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("Reading");
+        create_workspace(app_data.path(), &folder);
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app-core/tests/fixtures/pdf");
+        std::fs::copy(fixture.join("text.pdf"), folder.join("text.pdf")).unwrap();
+        let app = App::launch_with(app_data.path(), FakeSystem::new(Platform::Linux));
+        let mut harness = window(app, theme, Some(linux_controls()));
+        harness
+            .get_by_role_and_label(Role::TreeItem, "text.pdf")
+            .click();
+        wait_until(&mut harness, |harness| {
+            harness
+                .query_by_role_and_label(Role::Image, "Page 1 of 3")
+                .is_some()
+        });
+        let tab = harness.state().app().active_tab().unwrap().id();
+        let drawn = |harness: &mut Ui| {
+            wait_until(harness, |harness| {
+                let pdf = harness.state().app().pdf(tab).unwrap();
+                pdf.settles_in().is_none()
+                    && pdf.tiles(3).any(|tile| tile.key.density() == pdf.density())
+            });
+            for _ in 0..10 {
+                std::thread::sleep(Duration::from_millis(30));
+                harness.step();
+            }
+            settle(harness);
+        };
+        harness.state_mut().app_mut().pdf_actual_size(tab);
+        let field = harness.get_by_role_and_label(Role::TextInput, "Search PDF");
+        field.focus();
+        field.type_text("apple");
+        wait_until(&mut harness, |harness| {
+            harness.query_by_label("1 of 3").is_some()
+        });
+        harness.key_press(Key::Enter);
+        wait_until(&mut harness, |harness| {
+            harness.query_by_label("2 of 3").is_some()
+        });
+        drawn(&mut harness);
+        save(&mut harness, "10-pdf-marks-100", theme);
+        let line = around_marks(&harness, egui::vec2(40.0, 24.0));
+        save_part(
+            &mut harness,
+            &format!("10-pdf-marks-100-line-{}", theme_name(theme)),
+            line,
+        );
+
+        // Five steps up from 100% make 200%. The view keeps its middle,
+        // so the match moves away; going back to it brings it into view.
+        for _ in 0..5 {
+            harness.state_mut().app_mut().pdf_zoom_in(tab);
+            harness.run_steps(2);
+        }
+        assert_eq!(
+            harness.state().app().pdf(tab).unwrap().zoom(),
+            app_core::PdfZoom::Scale(2.0)
+        );
+        let app = harness.state_mut().app_mut();
+        app.pdf_previous_match(tab);
+        app.pdf_next_match(tab);
+        drawn(&mut harness);
+        save(&mut harness, "10-pdf-marks-200", theme);
+        let line = around_marks(&harness, egui::vec2(40.0, 24.0));
+        save_part(
+            &mut harness,
+            &format!("10-pdf-marks-200-line-{}", theme_name(theme)),
+            line,
         );
     }
 }

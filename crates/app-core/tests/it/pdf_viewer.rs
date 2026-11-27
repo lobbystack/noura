@@ -496,6 +496,126 @@ fn a_search_lists_matches_in_page_order_and_moves_between_them() {
     assert!(search.matches.is_empty());
 }
 
+/// Search the PDF in `tab` for `query` and wait for the matches.
+fn search(app: &mut App, tab: TabId, query: &str) {
+    app.search_pdf(tab, query);
+    wait_until(app, "the search ends", |app| {
+        !app.pdf(tab).unwrap().search().searching
+    });
+}
+
+fn close(actual: f32, expected: f32, within: f32) -> bool {
+    (actual - expected).abs() <= within
+}
+
+#[test]
+fn a_match_covers_its_text_and_the_tab_marks_it_at_any_zoom() {
+    let fixture = Fixture::new(&[("text.pdf", &pdf("text.pdf"))]);
+    let mut app = fixture.app();
+    let tab = open_ready(&mut app, "text.pdf");
+    app.size_pdf(tab, VIEW_WIDTH - 2.0 * PAGE_GAP, 1.0, 1.0);
+    app.pdf_actual_size(tab);
+    show(&mut app, tab, 0.0, 600.0);
+
+    // 24-point Helvetica lines start 72 points in, on baselines 92 and
+    // 122 points down. A mark reaches 0.8 of the size above the baseline
+    // and 0.2 below it.
+    search(&mut app, tab, "apple");
+    let matches = view(&app, tab).search().matches.clone();
+    assert_eq!(matches.len(), 3);
+    for found in &matches {
+        assert_eq!(found.rects.len(), 1, "{found:?}");
+        let [_, top, _, height] = found.rects[0];
+        assert!(close(top, 122.0 - 19.2, 0.5), "{found:?}");
+        assert!(close(height, 24.0, 0.5), "{found:?}");
+    }
+    // "An " runs 36 points, and "apple" about 59.
+    let [left, _, width, _] = matches[0].rects[0];
+    assert!(close(left, 108.0, 2.0), "{:?}", matches[0]);
+    assert!(close(width, 58.7, 2.0), "{:?}", matches[0]);
+    // "Apple" starts the third page's line, and the second match comes
+    // after "Apple and ".
+    let [first_left, _, first_width, _] = matches[1].rects[0];
+    let [second_left, ..] = matches[2].rects[0];
+    assert!(close(first_left, 72.0, 1.0), "{:?}", matches[1]);
+    assert!(close(second_left, 186.7, 2.0), "{:?}", matches[2]);
+    assert!(second_left > first_left + first_width);
+
+    // The tab marks each match where it lays out, the current one apart.
+    let pdf = view(&app, tab);
+    let marks = pdf.highlights(1);
+    assert_eq!(marks.len(), 1);
+    assert_eq!((marks[0].index, marks[0].current), (0, true));
+    assert_eq!(marks[0].rect, matches[0].rects[0]);
+    assert!(pdf.highlights(2).is_empty());
+    app.pdf_next_match(tab);
+    let pdf = view(&app, tab);
+    let marks: Vec<(usize, bool)> = pdf
+        .highlights(3)
+        .iter()
+        .map(|mark| (mark.index, mark.current))
+        .collect();
+    assert_eq!(marks, [(1, true), (2, false)]);
+    assert!(!pdf.highlights(1)[0].current);
+
+    // At twice the size, the marks grow with the page.
+    app.pdf_zoom_by(tab, 2.0, [0.0, 0.0]);
+    let pdf = view(&app, tab);
+    assert_eq!(pdf.zoom(), PdfZoom::Scale(2.0));
+    for (mark, found) in pdf.highlights(3).iter().zip(&matches[1..]) {
+        assert_eq!(mark.rect, found.rects[0].map(|side| side * 2.0));
+    }
+
+    // A match that runs from one line onto the next has a mark on each.
+    search(&mut app, tab, "page. an");
+    let matches = &view(&app, tab).search().matches;
+    assert_eq!(matches.len(), 1);
+    let rects = &matches[0].rects;
+    assert_eq!(rects.len(), 2, "{rects:?}");
+    assert!(close(rects[0][1], 92.0 - 19.2, 0.5), "{rects:?}");
+    assert!(close(rects[1][1], 122.0 - 19.2, 0.5), "{rects:?}");
+    assert!(close(rects[1][0], 72.0, 1.0), "{rects:?}");
+}
+
+#[test]
+fn a_match_left_or_right_of_the_view_scrolls_it_across_to_the_middle() {
+    let fixture = Fixture::new(&[("text.pdf", &pdf("text.pdf"))]);
+    let mut app = fixture.app();
+    let tab = open_ready(&mut app, "text.pdf");
+    app.size_pdf(tab, VIEW_WIDTH - 2.0 * PAGE_GAP, 1.0, 1.0);
+    app.pdf_actual_size(tab);
+    show(&mut app, tab, 0.0, 600.0);
+
+    // At its own size the page fits the view, so a match leaves the scroll
+    // across alone.
+    search(&mut app, tab, "again");
+    assert_eq!(view(&app, tab).jump().unwrap().left, None);
+    show(&mut app, tab, 0.0, 600.0);
+
+    // Four times as large, the page runs 2,448 points wide, and the view
+    // shows its left 864.
+    app.pdf_zoom_by(tab, 4.0, [0.0, 0.0]);
+    assert_eq!(view(&app, tab).zoom(), PdfZoom::Scale(4.0));
+    show(&mut app, tab, 0.0, 600.0);
+    app.pdf_next_match(tab);
+    let pdf = view(&app, tab);
+    let [left, _, width, _] = pdf.search().matches[0].rects[0];
+    let page_left = pdf.page_rect(3).unwrap()[0];
+    let jump = pdf.jump().unwrap();
+    let scrolled = jump.left.expect("the view scrolls across");
+    let middle = page_left + (left + width / 2.0) * 4.0;
+    assert!(
+        close(scrolled + VIEW_WIDTH / 2.0, middle, 0.5),
+        "{jump:?}, match at {middle}"
+    );
+
+    // Back at the match's place, the next search for it leaves the scroll
+    // across where it is.
+    show_at(&mut app, tab, scrolled, 0.0, 600.0);
+    app.pdf_next_match(tab);
+    assert_eq!(view(&app, tab).jump().unwrap().left, None);
+}
+
 #[test]
 fn the_thumbnails_list_one_page_each_and_open_the_page_you_pick() {
     let fixture = Fixture::new(&[("text.pdf", &pdf("text.pdf"))]);

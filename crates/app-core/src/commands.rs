@@ -74,17 +74,20 @@ pub enum Area {
     /// A note's text in the editor, which formats with its own keys and
     /// types and edits like a text field.
     Note,
+    /// A PDF tab.
+    Pdf,
 }
 
 impl Area {
     /// Every area, in the order the shortcuts page lists them.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Anywhere,
         Self::FileTree,
         Self::Tabs,
         Self::Pages,
         Self::Writing,
         Self::Note,
+        Self::Pdf,
     ];
 
     /// The area's heading on the shortcuts page.
@@ -96,6 +99,7 @@ impl Area {
             Self::Pages => "Pages",
             Self::Writing => "Writing",
             Self::Note => "Notes",
+            Self::Pdf => "PDFs",
         }
     }
 }
@@ -704,6 +708,8 @@ pub(crate) fn area_keys(platform: Platform) -> Vec<(Area, &'static str, Vec<Shor
         ),
     ];
     keys.extend(note_keys(platform));
+    // `app-ui`'s PDF tab takes Mod-F, which no command does.
+    keys.push((Area::Pdf, "Find in the PDF", vec![Shortcut::command(F)]));
     // A text field answers to the Edit menu's keys, and to Ctrl-Y for
     // Redo outside macOS.
     for item in SystemItem::EDIT {
