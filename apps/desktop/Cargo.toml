@@ -88,6 +88,10 @@ tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 name = "desktop_trial"
 test = true
 
+[build-dependencies]
+# Embed the application icon in the Windows executable for Explorer and shortcuts.
+winresource = { version = "0.1.30", default-features = false }
+
 [dev-dependencies]
 base64.workspace = true
 # The eframe feature runs `App::logic` before `App::ui` in each step, as
