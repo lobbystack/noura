@@ -39,6 +39,7 @@ notify.workspace = true
 parking_lot.workspace = true
 pbkdf2.workspace = true
 pulldown-cmark.workspace = true
+ring.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true
 serde.workspace = true

@@ -232,6 +232,9 @@ proptest = { version = "1.12", default-features = false, features = ["std"] }
 pulldown-cmark = "0.13"
 rand = "0.8"
 regex = "1.13.1"
+# Checks the RS256 signature on the ID token Sign in with ChatGPT returns.
+# rustls already brings it in.
+ring = "0.17.14"
 rfd = "0.16"
 ropey = "1.6.1"
 similar = { version = "2.7", features = ["unicode"] }

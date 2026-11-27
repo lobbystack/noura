@@ -150,7 +150,9 @@ pub(super) fn validate_provider(provider: &AiProviderConfig, operation: &str) ->
             operation,
         ));
     }
-    if AdapterKind::from_lower_str(&provider.kind).is_none() {
+    if provider.kind != chatgpt::CHATGPT_KIND
+        && AdapterKind::from_lower_str(&provider.kind).is_none()
+    {
         return Err(CoreError::validation(
             "provider_kind_invalid",
             "The AI provider kind is not supported",

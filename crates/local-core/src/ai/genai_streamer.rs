@@ -11,6 +11,9 @@ impl AiStreamer for GenAiStreamer {
         request: ResolvedAiStreamRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AiProviderEventStream>> + Send + '_>> {
         Box::pin(async move {
+            if request.provider.kind == chatgpt::CHATGPT_KIND {
+                return chatgpt_stream::stream(request).await;
+            }
             let kind = request.provider.kind.clone();
             if request.credential.is_none() && needs_key(&request.provider) {
                 return Err(failures::ProviderFailure {

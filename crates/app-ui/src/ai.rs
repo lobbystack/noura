@@ -4,7 +4,7 @@
 //! runs. Plugins draw neither, so no plugin can allow its own tool calls
 //! or read a key.
 
-use app_core::{AiProviderInput, AiProviderRow, App};
+use app_core::{AiProviderInput, AiProviderRow, App, ChatGptStatus};
 use egui::{Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accesskit::Role};
 use zeroize::Zeroizing;
 
@@ -216,6 +216,10 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     }
     let rows = app.ai_providers();
     let choices = app.ai_provider_choices();
+    let chatgpt = app.chatgpt_status();
+    if chatgpt.first_sign_in {
+        plan_notice(ui, app);
+    }
     let mut change = None;
     ui.spacing_mut().item_spacing.y = 8.0;
     section_title(ui, "Providers", None);
@@ -235,10 +239,19 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
             .accessibility_label(choice.name);
         ui.push_id(("ai-provider", choice.kind), |ui| {
             ui.scope_builder(builder, |ui| {
-                // Only a connected provider says so.
-                let status = choice.connected.then_some("Connected");
+                // Only a connected provider says so. OpenAI says when your
+                // ChatGPT plan answers in place of a key.
+                let plan = choice.kind == "openai" && chatgpt.signed_in;
+                let status = if choice.connected {
+                    Some("Connected")
+                } else {
+                    plan.then_some("ChatGPT plan")
+                };
                 if provider_row(ui, choice.name, status, open) {
                     toggled = Some(choice.kind.to_owned());
+                }
+                if open && choice.kind == "openai" {
+                    chatgpt_plan(ui, app, &chatgpt);
                 }
                 if open {
                     let mut remove = false;
@@ -260,8 +273,10 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
     }
     // Local or custom, last: providers that need an address.
     row_line(ui);
+    // Your ChatGPT plan shows under OpenAI.
     let custom_rows: Vec<&AiProviderRow> = rows
         .iter()
+        .filter(|row| row.kind != "chatgpt")
         .filter(|row| {
             !choices
                 .iter()
@@ -321,6 +336,113 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut AiSettingsView) {
 
     if let Some(change) = change {
         view.problem = change.apply(app).err().map(|error| error.message);
+    }
+}
+
+/// Continue with ChatGPT, in the OpenAI row beside the key field: the
+/// button, then the browser to finish in, then the plan in use with
+/// Manage usage and Sign out, following OpenAI's guidelines for apps that
+/// use your ChatGPT plan.
+fn chatgpt_plan(ui: &mut Ui, app: &mut App, status: &ChatGptStatus) {
+    let builder = UiBuilder::new()
+        .accessibility_role(Role::Group)
+        .accessibility_label("ChatGPT plan");
+    ui.scope_builder(builder, |ui| {
+        Frame::new()
+            .inner_margin(Margin {
+                left: 8,
+                right: 8,
+                top: 0,
+                bottom: 16,
+            })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 8.0;
+                if let Some(problem) = &status.problem {
+                    alert(ui, problem);
+                }
+                if status.signed_in {
+                    ui.horizontal(|ui| {
+                        crate::common::field_label(ui, "Using ChatGPT plan");
+                        if let Some(email) = &status.email {
+                            crate::common::muted(ui, email);
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if Btn::new("Manage usage")
+                            .variant(Variant::Outline)
+                            .size(Size::Sm)
+                            .show(ui)
+                            .clicked()
+                        {
+                            app.open_chatgpt_usage();
+                        }
+                        if Btn::new("Sign out")
+                            .variant(Variant::Ghost)
+                            .size(Size::Sm)
+                            .show(ui)
+                            .clicked()
+                        {
+                            app.sign_out_chatgpt();
+                        }
+                    });
+                } else if status.waiting {
+                    ui.horizontal(|ui| {
+                        crate::common::muted(ui, "Finish in your browser.");
+                        if Btn::new("Cancel")
+                            .variant(Variant::Ghost)
+                            .size(Size::Sm)
+                            .show(ui)
+                            .clicked()
+                        {
+                            app.cancel_chatgpt_sign_in();
+                        }
+                    });
+                    // The browser answers on its own time.
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(250));
+                } else if Btn::new("Continue with ChatGPT")
+                    .variant(Variant::Default)
+                    .show(ui)
+                    .clicked()
+                {
+                    app.sign_in_with_chatgpt();
+                }
+            });
+    });
+}
+
+/// The notice after your first ChatGPT sign-in, once: Noura now uses
+/// your plan, and where to manage it.
+fn plan_notice(ui: &mut Ui, app: &mut App) {
+    let title = "You're using your ChatGPT plan";
+    let mut manage = false;
+    let mut done = false;
+    let modal =
+        crate::common::dialog(ui.ctx(), Id::unique("chatgpt-plan-notice")).show(ui.ctx(), |ui| {
+            let builder = UiBuilder::new()
+                .accessibility_role(Role::Dialog)
+                .accessibility_label(title);
+            ui.scope_builder(builder, |ui| {
+                ui.set_width(400.0);
+                crate::common::dialog_title(ui, title);
+                ui.add_space(4.0);
+                ui.label("Requests to ChatGPT in Noura count toward your plan.");
+                let pressed = crate::common::dialog_footer(
+                    ui,
+                    vec![
+                        Btn::new("Manage usage"),
+                        Btn::new("Got it").variant(Variant::Default),
+                    ],
+                );
+                manage = pressed[0].clicked();
+                done = pressed[1].clicked();
+            });
+        });
+    if manage {
+        app.open_chatgpt_usage();
+    }
+    if done || manage || modal.should_close() {
+        app.dismiss_chatgpt_notice();
     }
 }
 

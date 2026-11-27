@@ -36,6 +36,7 @@
     reason = "the run steps pass local-core's structured CoreError along, as local-core does"
 )]
 
+pub(crate) mod chatgpt;
 mod complete;
 mod history;
 pub(crate) mod models;
@@ -361,6 +362,8 @@ pub(crate) struct Ai {
     orb_checking: Mutex<()>,
     /// What the default Orb asks with, as this device keeps it.
     default_orb: Mutex<orbs::settings::Settings>,
+    /// Continue with ChatGPT's sign-in under way, and what it left to say.
+    chatgpt: Mutex<chatgpt::Flow>,
 }
 
 impl Drop for Ai {
@@ -434,6 +437,7 @@ impl Ai {
             orb_threads: Mutex::new(HashMap::new()),
             orb_checking: Mutex::new(()),
             default_orb: Mutex::new(orbs::settings::Settings::load(app_data)),
+            chatgpt: Mutex::new(chatgpt::Flow::default()),
         })
     }
 
@@ -2447,6 +2451,7 @@ fn failure_of(error: &CoreError) -> AiFailure {
         "provider_unreachable" => "Noura couldn't reach the provider. Check your connection.",
         "provider_connection_lost" => "The connection to the provider dropped. Try again.",
         "provider_plan_limit" => "The ChatGPT plan has no usage left for Noura.",
+        "provider_signed_out" => "Noura is signed out of ChatGPT. Sign in again in AI settings.",
         PLUGIN_DISABLED => "You turned off a plugin this answer relied on.",
         _ => match error.category {
             local_core::ErrorCategory::Provider | local_core::ErrorCategory::Transient => {

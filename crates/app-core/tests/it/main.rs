@@ -14,6 +14,7 @@ mod ai_chat_context;
 mod ai_chat_lifecycle;
 mod ai_chat_recovery;
 mod ai_chat_storage;
+mod ai_chatgpt;
 mod ai_no_consent;
 mod ai_providers;
 mod ai_tools;

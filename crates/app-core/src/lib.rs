@@ -76,6 +76,7 @@ pub use agent::AgentWorkspace;
 pub use ai::{
     AI_KEY_PROVIDERS, AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt,
     DEFAULT_CONTEXT_WINDOW, NEW_CHAT_TITLE, WEB_SEARCH_PROVIDER_NAME, WebSearchRow,
+    chatgpt::{CHATGPT_USAGE_URL, ChatGptStatus},
 };
 pub use app::{
     App, Change, DragOut, EMPTY_COMMANDS, GROUP_LIMIT, IgnoredFiles, NameDraft, Notice, NoticeKind,
@@ -111,6 +112,11 @@ pub use links::{
 };
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
+pub use local_core::chatgpt::ChatGptEndpoints;
+/// A stand-in for OpenAI's sign-in and Responses API, for
+/// [`App::set_chatgpt_endpoints`].
+#[cfg(feature = "test-hooks")]
+pub use local_core::chatgpt_fake;
 pub use local_core::{
     AI_PROVIDER_KINDS, AiStreamer, CredentialStore, MemoryCredentials, RemoteImage,
 };

@@ -814,3 +814,104 @@ fn without_a_provider_the_page_offers_open_ai_settings_which_opens_settings_on_a
         app_core::settings_section::AI
     );
 }
+
+/// Continue with ChatGPT in the OpenAI row: the browser opens on the
+/// sign-in, the notice says once that Noura uses your plan, the row says
+/// the plan answers, and Sign out brings the button back.
+#[test]
+fn continue_with_chatgpt_uses_your_plan_and_sign_out_ends_it() {
+    let fake = app_core::chatgpt_fake::FakeOpenAi::start();
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
+    let system = FakeSystem::new(Platform::current());
+    let mut harness = harness_with(app_data.path(), FakePicker::default(), system.clone());
+    harness
+        .state_mut()
+        .app_mut()
+        .set_chatgpt_endpoints(fake.endpoints.clone());
+    harness
+        .state_mut()
+        .app_mut()
+        .open_settings_at("ai-providers");
+    run(&mut harness);
+    let openai = (Role::Group, "OpenAI");
+    click_in(&mut harness, openai, Role::Button, "OpenAI");
+    click_in(&mut harness, openai, Role::Button, "Continue with ChatGPT");
+
+    let browse = format!("browse {}", fake.endpoints.issuer);
+    let opened = |system: &FakeSystem| {
+        system
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|call| {
+                call.strip_prefix("browse ")
+                    .filter(|_| call.starts_with(&browse))
+            })
+            .map(str::to_owned)
+    };
+    wait_until(&mut harness, |_| opened(&system).is_some());
+    wait_until(&mut harness, |harness| {
+        all_labels(harness)
+            .iter()
+            .any(|label| label == "Finish in your browser.")
+    });
+    assert_eq!(fake.come_back(&opened(&system).unwrap()), 200);
+
+    let notice = "You're using your ChatGPT plan";
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Dialog, notice)
+            .is_some()
+    });
+    harness
+        .get_by_role_and_label(Role::Dialog, notice)
+        .get_by_role_and_label(Role::Button, "Got it")
+        .click();
+    run(&mut harness);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Dialog, notice)
+            .is_none()
+    );
+    assert!(harness.state().app().chatgpt_status().signed_in);
+
+    let plan = harness.get_by_role_and_label(Role::Group, "ChatGPT plan");
+    let shown = texts(plan.query_all(By::new().role(Role::Label)));
+    assert!(
+        shown.contains(&"Using ChatGPT plan".to_owned()),
+        "{shown:?}"
+    );
+    assert!(
+        shown.contains(&app_core::chatgpt_fake::EMAIL.to_owned()),
+        "{shown:?}"
+    );
+    let row = texts(
+        harness
+            .get_by_role_and_label(Role::Group, "OpenAI")
+            .query_all(By::new().role(Role::Label)),
+    );
+    assert!(row.contains(&"ChatGPT plan".to_owned()), "{row:?}");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
+
+    click_in(
+        &mut harness,
+        (Role::Group, "ChatGPT plan"),
+        Role::Button,
+        "Sign out",
+    );
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Button, "Continue with ChatGPT")
+            .is_some()
+    });
+    assert_eq!(fake.state().revoked.len(), 1);
+    // The tokens never reach a label.
+    assert!(
+        all_labels(&harness)
+            .iter()
+            .all(|label| !label.contains("access_1") && !label.contains("refresh_1"))
+    );
+}

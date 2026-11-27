@@ -27,6 +27,16 @@ Noura loads the provider file when the session starts. If it can't read them, AI
 
 `AI_KEY_PROVIDERS` in `crates/app-core/src/ai.rs` holds the model a new connection starts with. A test checks each one against a dated list of the pages that show its provider still serves it, and against `RETIRED_MODELS`.
 
+### Continue with ChatGPT
+
+OpenAI lets open-source apps on your computer use your ChatGPT plan through [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source). Continue with ChatGPT, in the OpenAI row of the AI settings, opens OpenAI's sign-in in your browser. The first sign-in registers Noura with `dynamic_agent_client` and the host ID Noura keeps in `ai/chatgpt.json`, and later sign-ins reuse the client ID OpenAI issued. The browser comes back to a listener on `127.0.0.1`, preferably port 1455, at `/auth/callback`. A callback with another `state` gets an error page and changes nothing.
+
+`crates/local-core/src/ai/chatgpt.rs` exchanges the code with PKCE and no secret, checks the ID token's RS256 signature against the keys the issuer publishes and its issuer, audience, expiry and nonce, and refuses a grant without `chatgpt.tokens.use.direct`. The tokens, the ID token and the account go to the credential store as one record under the ChatGPT provider's reference. `ai/chatgpt.json` keeps only the host ID, the issued client ID, the account's email and whether you saw the one-time notice.
+
+Each request takes the access token from that record. An access token that expires within five minutes is refreshed first, under a lock per record, and the rotated refresh token replaces the old one. A request the API refuses with 401 refreshes once and tries again. A refresh OpenAI refuses fails the answer with `provider_signed_out`. Sign out revokes the refresh token through the issuer's `revocation_endpoint`, then removes the provider and its record; the registration stays.
+
+Requests go to `https://api.openai.com/v1/responses` with `store: false` and `stream: true`. Noura's instructions go in `instructions`, the conversation in `input`, and the tools in a `noura` namespace, as [OpenAI's limits for this route](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) ask. The AI page shows Using ChatGPT plan with a Manage usage link while an Orb asks the ChatGPT provider.
+
 ## Authorization
 
 Setting up a provider is your say-so (ADR 0006). A run writes your message and sends the request without a prompt, whatever workspace content it carries. Removing a provider cancels its running streams, and a later request to it fails with `provider_not_found`.

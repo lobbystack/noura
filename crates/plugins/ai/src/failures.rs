@@ -4,6 +4,9 @@
 
 use plugin_sdk::ai;
 
+/// Where you review and limit what Noura uses of your ChatGPT plan.
+pub(crate) const MANAGE_USAGE: &str = "https://chatgpt.com/settings/usage";
+
 /// The sentence for an answer that failed with `code`, from the provider
 /// named `provider`, or `None` when the provider isn't known.
 pub(crate) fn line(code: Option<&str>, provider: Option<&str>) -> String {
@@ -38,8 +41,10 @@ pub(crate) fn line(code: Option<&str>, provider: Option<&str>) -> String {
             format!("{start} turned down this request, so try again or pick another model.")
         }
         "provider_plan_limit" => {
-            "Your ChatGPT plan has no usage left for Noura, so check Manage usage in ChatGPT."
-                .to_owned()
+            "Noura used its share of your ChatGPT plan, so check Manage usage below.".to_owned()
+        }
+        "provider_signed_out" => {
+            format!("Noura is signed out of {within}, so sign in again in AI settings.")
         }
         "provider_stream_incomplete" => {
             format!("{start} stopped before the answer finished, so try again.")

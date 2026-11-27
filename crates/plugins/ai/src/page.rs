@@ -200,6 +200,18 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
         if !busy && orb.id == look::DEFAULT_ORB && stopped_before_answering(&messages) {
             view.button(talk, RESUME, "Resume");
         }
+        // OpenAI asks apps to say when a request uses your ChatGPT plan,
+        // with a way to manage it.
+        if look::provider_of(&orb, &providers).is_some_and(|provider| provider.kind == "chatgpt") {
+            view.markdown(
+                talk,
+                "chatgpt-plan",
+                &format!(
+                    "Using ChatGPT plan · [Manage usage]({})",
+                    failures::MANAGE_USAGE
+                ),
+            );
+        }
         let composer = view.composer(
             talk,
             COMPOSER,
@@ -394,6 +406,13 @@ fn draw_message(
                         shown,
                         &failures::line(message.error_code.as_deref(), provider),
                     );
+                    if message.error_code.as_deref() == Some("provider_plan_limit") {
+                        view.markdown(
+                            talk,
+                            &format!("{}-usage", message.id),
+                            &format!("[Manage usage]({})", failures::MANAGE_USAGE),
+                        );
+                    }
                 }
             }
         }

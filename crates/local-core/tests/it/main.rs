@@ -1,6 +1,7 @@
 //! One test binary for the crate's integration tests. Each module was
 //! a test binary of its own, so `--test it <module>::` selects its tests.
 
+mod ai_chatgpt;
 mod ai_live;
 mod ai_provider;
 mod ai_provider_failures;

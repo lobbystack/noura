@@ -29,6 +29,8 @@ pub const PROVIDER_UNREACHABLE: &str = "provider_unreachable";
 pub const PROVIDER_CONNECTION_LOST: &str = "provider_connection_lost";
 /// The provider turned the request down for another reason.
 pub const PROVIDER_REJECTED: &str = "provider_rejected";
+/// The ChatGPT sign-in ended, so it needs signing in again.
+pub const PROVIDER_SIGNED_OUT: &str = "provider_signed_out";
 /// The ChatGPT plan's usage for this app ran out.
 pub const PROVIDER_PLAN_LIMIT: &str = "provider_plan_limit";
 /// Anything else.
@@ -208,6 +210,7 @@ pub(super) fn failure_error(code: &str, operation: &str) -> CoreError {
         ),
         PROVIDER_REJECTED => (ErrorCategory::Provider, "The provider rejected the request"),
         PROVIDER_PLAN_LIMIT => (ErrorCategory::Provider, "The plan's usage ran out"),
+        PROVIDER_SIGNED_OUT => (ErrorCategory::Credential, "The sign-in ended"),
         _ => (ErrorCategory::Provider, "The AI provider request failed"),
     };
     let mut error = CoreError::new(code, category, message, operation);

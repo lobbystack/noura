@@ -6,10 +6,11 @@
 useDefault = true
 
 [[allowlists]]
-description = "Deterministic workspace-format conformance fixtures and test vectors"
+description = "Deterministic workspace-format conformance fixtures, test vectors and the synthetic ChatGPT test signing key"
 paths = [
 	'''(^|/)docs/workspace-format/fixtures/.*''',
 	'''(^|/)crates/sync-key-envelope/tests/vectors/.*''',
+	'''(^|/)crates/local-core/tests/fixtures/chatgpt-test-signing-key\.pk8''',
 ]
 
 [[allowlists]]
