@@ -41,6 +41,11 @@ const TRANSIENT: &[&str] = &[
 /// leaves, lasts until the expiry seven days out (§11, §24, §29).
 const EXPIRING: &[&str] = &["shares", "invitations", "ended_invitations"];
 
+/// The account-level rows of a server that sells plans, which §29 lists:
+/// they date a subscription, a webhook event or an account's last month,
+/// never a record.
+const BILLING: &[&str] = &["account_plans", "billing_events", "account_activity"];
+
 /// A value the server stores.
 enum Value {
     Bytes(Vec<u8>),
@@ -140,6 +145,7 @@ fn check(columns: &[Column]) {
         .iter()
         .any(|word| column.name.contains(word));
         let allowed = TRANSIENT.contains(&column.table.as_str())
+            || BILLING.contains(&column.table.as_str())
             || (EXPIRING.contains(&column.table.as_str()) && column.name == "expires_at");
         if (named_for_time || column.timestamp_type) && !allowed {
             panic!("{}.{} dates records", column.table, column.name);

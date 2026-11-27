@@ -2,11 +2,11 @@
 -- the order the server created it in, whether its owner chose to keep it
 -- active, and while it's over plan the day it went over and the notices
 -- sent. Days count from the Unix epoch.
-ALTER TABLE workspaces ADD COLUMN created_order INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE workspaces ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE workspaces ADD COLUMN kept INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE workspaces ADD COLUMN over_plan_since INTEGER;
 ALTER TABLE workspaces ADD COLUMN over_plan_notices INTEGER NOT NULL DEFAULT 0;
-UPDATE workspaces SET created_order = (
+UPDATE workspaces SET ordinal = (
     SELECT COUNT(*) FROM workspaces AS earlier WHERE earlier.workspace <= workspaces.workspace
 );
 CREATE INDEX workspaces_over_plan ON workspaces (over_plan_since) WHERE over_plan_since IS NOT NULL;

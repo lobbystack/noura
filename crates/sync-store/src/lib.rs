@@ -404,7 +404,7 @@ pub struct OwnedWorkspaceRow {
     /// The workspace.
     pub workspace: Id,
     /// The order the server created it in.
-    pub created_order: u64,
+    pub ordinal: u64,
     /// Whether the owner chose to keep it active.
     pub kept: bool,
     /// The day, from the Unix epoch, it went over plan.

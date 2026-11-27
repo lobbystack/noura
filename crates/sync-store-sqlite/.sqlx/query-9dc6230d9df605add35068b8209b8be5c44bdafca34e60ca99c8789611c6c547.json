@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT workspace, created_order, kept, over_plan_since, over_plan_notices\n             FROM workspaces WHERE owner = ?1 AND closed = 0\n             ORDER BY created_order, workspace",
+  "query": "SELECT workspace, ordinal, kept, over_plan_since, over_plan_notices\n             FROM workspaces WHERE owner = ?1 AND closed = 0\n             ORDER BY ordinal, workspace",
   "describe": {
     "columns": [
       {
@@ -15,13 +15,13 @@
         }
       },
       {
-        "name": "created_order",
+        "name": "ordinal",
         "ordinal": 1,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "created_order"
+            "name": "ordinal"
           }
         }
       },
@@ -70,5 +70,5 @@
       false
     ]
   },
-  "hash": "3f8d7458647cd51b77b10860b952057ecdefd8cf3a459089872b41ec0dacb82d"
+  "hash": "9dc6230d9df605add35068b8209b8be5c44bdafca34e60ca99c8789611c6c547"
 }

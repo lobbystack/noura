@@ -3,7 +3,7 @@
 -- active, and while it's over plan the day it went over and the notices
 -- sent. Days count from the Unix epoch.
 CREATE SEQUENCE workspace_order;
-ALTER TABLE workspaces ADD COLUMN created_order BIGINT NOT NULL DEFAULT nextval('workspace_order');
+ALTER TABLE workspaces ADD COLUMN ordinal BIGINT NOT NULL DEFAULT nextval('workspace_order');
 ALTER TABLE workspaces ADD COLUMN kept BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE workspaces ADD COLUMN over_plan_since BIGINT;
 ALTER TABLE workspaces ADD COLUMN over_plan_notices BIGINT NOT NULL DEFAULT 0;

@@ -2498,9 +2498,9 @@ impl ReadTxn for PgTxn {
     async fn owned_workspace_rows(&mut self, account: Id) -> Result<Vec<OwnedWorkspaceRow>> {
         let account = &account.0[..];
         let rows = sqlx::query!(
-            "SELECT workspace, created_order, kept, over_plan_since, over_plan_notices
+            "SELECT workspace, ordinal, kept, over_plan_since, over_plan_notices
              FROM workspaces WHERE owner = $1 AND closed = 0
-             ORDER BY created_order, workspace",
+             ORDER BY ordinal, workspace",
             account
         )
         .fetch_all(self.c())
@@ -2510,7 +2510,7 @@ impl ReadTxn for PgTxn {
             .map(|r| {
                 Ok(OwnedWorkspaceRow {
                     workspace: id(r.workspace)?,
-                    created_order: uint(r.created_order)?,
+                    ordinal: uint(r.ordinal)?,
                     kept: r.kept,
                     over_plan_since: r.over_plan_since.map(uint).transpose()?,
                     notices: small(r.over_plan_notices)?,

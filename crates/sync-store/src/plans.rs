@@ -206,7 +206,7 @@ pub fn supersedes(stored: Option<&AccountPlanRow>, incoming: &AccountPlanRow) ->
 /// oldest.
 fn active_set(rows: &[OwnedWorkspaceRow], limit: u64) -> Vec<Id> {
     let mut order: Vec<&OwnedWorkspaceRow> = rows.iter().collect();
-    order.sort_by_key(|row| (!row.kept, row.created_order));
+    order.sort_by_key(|row| (!row.kept, row.ordinal));
     order
         .into_iter()
         .take(usize::try_from(limit).unwrap_or(usize::MAX))
