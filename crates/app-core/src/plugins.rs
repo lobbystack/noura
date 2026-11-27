@@ -979,12 +979,17 @@ impl Plugins {
             .collect()
     }
 
-    /// The plugin IDs the open workspace's manifest lists as enabled.
+    /// The plugin IDs the open workspace's manifest lists as enabled. The
+    /// entries that name parts of the kernel, such as `sync`, stay in the
+    /// manifest and out of this list.
     fn enabled(&self) -> Vec<String> {
-        self.workspace
+        let mut enabled = self
+            .workspace
             .as_ref()
             .map(|workspace| workspace.engine().manifest().enabled_plugins)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        enabled.retain(|id| !workspace_format::is_kernel_module_id(id));
+        enabled
     }
 
     /// Run the plugins `workspace` enables that this device installed and
@@ -1308,6 +1313,10 @@ impl Plugins {
     /// Turn the plugin `id` on or off in the open workspace: rewrite the
     /// manifest's enabled plugins list, then start or stop the plugin.
     pub(crate) fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), AppError> {
+        // Sync turns on and off from its own section, never as a plugin.
+        if workspace_format::is_kernel_module_id(id) {
+            return Err(AppError::new("plugin_not_found", "That isn't a plugin."));
+        }
         let Some(workspace) = self.workspace.clone() else {
             return Err(AppError::new(
                 "no_workspace",

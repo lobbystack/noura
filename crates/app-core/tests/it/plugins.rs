@@ -377,6 +377,39 @@ fn a_fresh_device_shows_the_plugin_enabled_but_not_installed_and_runs_none_of_it
     );
 }
 
+/// A workspace the legacy app made lists `folders` and `notes`, and a
+/// replica that syncs lists `sync`. They name parts of Noura, so Plugins
+/// shows none of them and no switch turns one off, and turning a plugin
+/// on or off leaves them in the manifest.
+#[test]
+fn the_kernel_s_entries_in_the_enabled_list_stay_in_the_manifest_and_out_of_plugins() {
+    let fixture = Fixture::new(&[]);
+    let mut manifest: serde_yaml_ng::Value =
+        serde_yaml_ng::from_slice(&fixture.read(MANIFEST)).unwrap();
+    manifest["enabled_plugins"] = serde_yaml_ng::from_str("[folders, hello, notes, sync]").unwrap();
+    let manifest = serde_yaml_ng::to_string(&manifest).unwrap();
+    support::write(&fixture.root, MANIFEST, manifest.as_bytes());
+    let mut app = fixture.app();
+
+    let ids: Vec<String> = app.plugins().into_iter().map(|row| row.id).collect();
+    assert_eq!(ids, ["hello"]);
+    assert!(!app.set_plugin_enabled("sync", false));
+    assert!(!app.set_plugin_enabled("notes", true));
+    assert_eq!(
+        enabled_in_manifest(&fixture),
+        ["folders", "hello", "notes", "sync"]
+    );
+
+    assert!(app.set_plugin_enabled("hello", false));
+    assert_eq!(enabled_in_manifest(&fixture), ["folders", "notes", "sync"]);
+    assert!(app.plugins().is_empty());
+    assert!(app.set_plugin_enabled("hello", true));
+    assert_eq!(
+        enabled_in_manifest(&fixture),
+        ["folders", "hello", "notes", "sync"]
+    );
+}
+
 #[test]
 fn uninstalling_removes_code_cache_and_approvals_and_leaves_the_workspace_byte_identical() {
     let Some(folder) = PluginFolder::hello() else {

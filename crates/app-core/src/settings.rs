@@ -137,7 +137,7 @@ pub(crate) fn section_keywords(id: &str) -> &'static str {
         }
         settings_section::SYNC_ACCOUNT => "sign in log out disconnect server",
         settings_section::WORKSPACE => "rename folder path",
-        settings_section::PLUGINS => "notes tasks calendar projects folders sync",
+        settings_section::PLUGINS => "install tasks calendar projects dictation transcription",
         settings_section::AI => "providers models api keys permissions consent web search brave",
         settings_section::AI_TOOLS => "mcp claude cursor assistant model context protocol",
         settings_section::SYNC => "encryption recovery conflicts join devices",
