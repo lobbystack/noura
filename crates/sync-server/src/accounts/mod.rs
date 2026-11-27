@@ -261,6 +261,38 @@ impl Accounts {
     }
 }
 
+impl Accounts {
+    /// Sends the queued mail about plans, oldest first, and deletes each
+    /// message once it went out. Stops at the first failure, which the
+    /// next pass retries. Returns how many went out.
+    pub async fn send_billing_mail<B: Backend>(
+        &self,
+        store: &Store<B>,
+    ) -> Result<u64, sync_store::Error> {
+        let mut sent = 0;
+        for queued in store.billing_mail().await? {
+            let mail = queued.mail;
+            if let Err(error) = self.send(&mail.recipient, &mail.subject, mail.body).await {
+                tracing::error!(cause = %error, "mail about a plan failed to send");
+                break;
+            }
+            store.sent_billing_mail(queued.id).await?;
+            sent += 1;
+        }
+        Ok(sent)
+    }
+
+    /// Sends the queued mail about plans after the answer went out.
+    pub(crate) fn send_billing_mail_soon<B: Backend>(self: &Arc<Self>, store: &Arc<Store<B>>) {
+        let (accounts, store) = (self.clone(), store.clone());
+        self.deliveries.spawn(async move {
+            if let Err(error) = accounts.send_billing_mail(&store).await {
+                tracing::error!(cause = %error, "the queue of mail about plans can't be read");
+            }
+        });
+    }
+}
+
 /// How many reset codes, and how many reset attempts, an account gets each
 /// 10 minutes.
 pub const RESET_ATTEMPTS: sync_store::Limit = sync_store::Limit {
@@ -822,6 +854,15 @@ async fn account_page<B: Backend>(
         && let Some(plan) = plan::chosen_plan(&headers).filter(|plan| provider.sells(plan))
     {
         return plan::resume_upgrade(&state.accounts, &plan);
+    }
+    // A visit after a sign-in keeps an idle account's workspaces (§20,
+    // Inactive accounts), and the mail about plans follows the page's
+    // language.
+    state.accounts.note_activity(store, account).await;
+    if store.billing()
+        && let Err(error) = store.set_account_lang(account, lang.code()).await
+    {
+        return failure(error);
     }
     let signed_in_line = match lang {
         lang::Lang::En => format!("You're signed in as {email}."),

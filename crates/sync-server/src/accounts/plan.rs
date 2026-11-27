@@ -10,11 +10,12 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use sync_protocol::messages::{AccountResponse, OwnedState, SubscriptionStatus};
 use sync_protocol::types::Id;
-use sync_store::Backend;
+use sync_store::{Backend, BillingMail};
 
 use super::lang::{Lang, negotiate};
 use super::{Accounts, cookie_value, failure, field, html, message, pages, redirect, signed_in};
-use crate::billing::{BillingProvider, CheckoutRequest, PortalRequest, ProviderError};
+use crate::billing::terms::{self, Context, MailLang};
+use crate::billing::{BillingProvider, CheckoutRequest, PaidOrder, PortalRequest, ProviderError};
 use crate::http::{AppState, InternalCause};
 
 /// The cookie that remembers which plan a signed-out visitor chose, until
@@ -395,16 +396,25 @@ pub async fn webhook<B: Backend>(
         }
     };
     let account: Option<Id> = event.change.as_ref().map(|change| change.account);
+    let mail = match event.order.as_ref().filter(|order| order.first) {
+        Some(order) => match contract_mail(&state, order).await {
+            Ok(mail) => mail.into_iter().collect(),
+            Err(error) => return failure(error),
+        },
+        None => Vec::new(),
+    };
     let change = event
         .change
         .map(|change| (change.account, change.row(provider.name())));
+    let order = event.order.map(|order| (order.account, order.row()));
     match state
         .store
         .apply_billing_event(sync_store::BillingEvent {
             provider: provider.name().to_owned(),
             id: event.id,
             change,
-            ..Default::default()
+            order,
+            mail,
         })
         .await
     {
@@ -413,6 +423,7 @@ pub async fn webhook<B: Backend>(
             if let Some(account) = account {
                 state.rate.forget_plan(account);
             }
+            state.accounts.send_billing_mail_soon(&state.store);
             StatusCode::ACCEPTED.into_response()
         }
         Err(error) => {
@@ -423,6 +434,50 @@ pub async fn webhook<B: Backend>(
             response
         }
     }
+}
+
+/// What the mail about plans needs from the server: who sells them, and
+/// where the account pages are.
+pub(crate) fn mail_context(accounts: &Accounts) -> Option<Context<'_>> {
+    Some(Context {
+        merchant: accounts.merchant()?,
+        origin: accounts.origin().as_str(),
+    })
+}
+
+/// The languages of the mail about `account`'s plan.
+pub(crate) async fn mail_langs<B: Backend>(
+    store: &sync_store::Store<B>,
+    account: Id,
+    quebec: bool,
+) -> sync_store::Result<MailLang> {
+    let stored = store.account_lang(account).await?;
+    Ok(MailLang::for_account(stored.as_deref(), quebec))
+}
+
+/// The contract for a subscription's first order, for an account the
+/// store holds (§26, Contract email).
+async fn contract_mail<B: Backend>(
+    state: &AppState<B>,
+    order: &PaidOrder,
+) -> sync_store::Result<Option<BillingMail>> {
+    let Some(context) = mail_context(&state.accounts) else {
+        return Ok(None);
+    };
+    let Some(email) = state.store.account_email(order.account).await? else {
+        return Ok(None);
+    };
+    let quebec =
+        order.terms.country.as_deref() == Some("CA") && order.terms.region.as_deref() == Some("QC");
+    let langs = mail_langs(&state.store, order.account, quebec).await?;
+    let consent = state.store.latest_consent(order.account).await?;
+    Ok(Some(terms::contract(
+        &context,
+        langs,
+        &email,
+        order,
+        consent.as_ref(),
+    )))
 }
 
 #[cfg(test)]

@@ -6,8 +6,9 @@
 //! On a server that sells plans, the pass also runs the plan jobs: it
 //! warns about workspaces over plan on their first day, on day 60 and on
 //! day 85, closes them on day 90, warns `free` owners whom nobody used for
-//! 11 and 12 months, closes their workspaces at 13, and forgets webhook
-//! events after 100 days. Two instances may send the same notice once
+//! 11 and 12 months, closes their workspaces at 13, forgets webhook
+//! events after 100 days and consents after 3 years, and sends the queued
+//! mail about plans. Two instances may send the same notice once
 //! each; each records what it sent after the mail went out.
 
 use std::sync::Arc;
@@ -71,6 +72,8 @@ pub struct PlanJobs {
     pub warnings: u64,
     /// Workspaces the server closed after 13 months without use.
     pub closed_inactive: u64,
+    /// Queued messages about plans that went out.
+    pub mail: u64,
 }
 
 /// Sends `text` to each address, and returns whether every send went out.
@@ -204,6 +207,8 @@ pub async fn plan_jobs<B: Backend>(
     over_plan_job(store, accounts, now / DAY, &mut report).await?;
     inactivity_job(store, accounts, month_of(now), &mut report).await?;
     store.forget_billing_events().await?;
+    store.forget_consents().await?;
+    report.mail = accounts.send_billing_mail(store).await?;
     Ok(report)
 }
 

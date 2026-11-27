@@ -11,6 +11,7 @@
 //! and portal links it creates.
 
 pub mod polar;
+pub mod terms;
 pub mod webhooks;
 
 use std::future::Future;
@@ -146,6 +147,31 @@ pub struct SubscriptionChange {
     pub period_end: Option<u64>,
     /// When the provider last changed it, in Unix seconds.
     pub changed_at: u64,
+    /// What the provider reports of its terms.
+    pub terms: Terms,
+}
+
+/// A subscription's terms as a provider reports them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Terms {
+    /// The start of its current period, in Unix seconds.
+    pub period_start: Option<u64>,
+    /// When it started, in Unix seconds.
+    pub started_at: Option<u64>,
+    /// Its price for one period before tax, in the currency's smallest
+    /// unit.
+    pub amount: Option<u64>,
+    /// Its currency, as a lower-case ISO 4217 code.
+    pub currency: Option<String>,
+    /// `month` or `year`.
+    pub interval: Option<String>,
+    /// Whether it ends when its period ends.
+    pub canceling: bool,
+    /// The billing address's country, as an ISO 3166-1 alpha-2 code.
+    pub country: Option<String>,
+    /// The billing address's state or province, as its code alone, such
+    /// as `QC`.
+    pub region: Option<String>,
 }
 
 impl SubscriptionChange {
@@ -159,9 +185,77 @@ impl SubscriptionChange {
             state: self.state,
             period_end: self.period_end,
             changed_at: self.changed_at,
+            period_start: self.terms.period_start,
+            started_at: self.terms.started_at,
+            amount: self.terms.amount,
+            currency: self.terms.currency.clone(),
+            interval: self.terms.interval.clone(),
+            canceling: self.terms.canceling,
+            country: self.terms.country.clone(),
+            region: self.terms.region.clone(),
             ..AccountPlanRow::default()
         }
     }
+}
+
+/// A paid order of a subscription, as a provider's event reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaidOrder {
+    /// The account the provider's customer names.
+    pub account: Id,
+    /// The plan ID its product maps to.
+    pub plan: String,
+    /// The provider's subscription ID.
+    pub subscription: String,
+    /// The provider's order ID.
+    pub order_id: String,
+    /// Whether it's the subscription's first order.
+    pub first: bool,
+    /// When it was paid, in Unix seconds.
+    pub paid_at: u64,
+    /// Its amount before tax, its tax and its total, in the currency's
+    /// smallest unit.
+    pub net: u64,
+    pub tax: u64,
+    pub total: u64,
+    /// Its currency, as a lower-case ISO 4217 code.
+    pub currency: String,
+    /// The customer's name for the invoice, when given.
+    pub name: Option<String>,
+    /// The billing address, one line each, when given.
+    pub address: Vec<String>,
+    /// The end of the period it pays for, in Unix seconds.
+    pub period_end: Option<u64>,
+    /// The subscription's terms.
+    pub terms: Terms,
+}
+
+impl PaidOrder {
+    /// The row the store keeps for this order.
+    pub fn row(&self) -> sync_store::OrderRow {
+        sync_store::OrderRow {
+            subscription: self.subscription.clone(),
+            order_id: self.order_id.clone(),
+            net: self.net,
+            currency: self.currency.clone(),
+            paid_at: self.paid_at,
+        }
+    }
+}
+
+/// A state or province's code alone, from an ISO 3166-2 code such as
+/// `CA-QC` or the code itself, in upper case; Québec's name reads as `QC`.
+pub fn region_code(state: &str) -> String {
+    let state = state.trim();
+    let folded = state.to_lowercase();
+    if folded == "quebec" || folded == "québec" {
+        return "QC".to_owned();
+    }
+    state
+        .rsplit('-')
+        .next()
+        .unwrap_or(state)
+        .to_ascii_uppercase()
 }
 
 /// A webhook delivery that passed its signature check.
@@ -174,6 +268,8 @@ pub struct WebhookEvent {
     /// The subscription it reports, or `None` for an event that changes no
     /// plan: another type, an unknown account or an unmapped product.
     pub change: Option<SubscriptionChange>,
+    /// The paid order it reports, or `None`.
+    pub order: Option<PaidOrder>,
 }
 
 /// Why a webhook delivery is refused.
@@ -201,6 +297,18 @@ pub trait BillingProvider: Send + Sync {
 
     /// A link that signs the account into the customer portal.
     fn portal_url<'a>(&'a self, request: PortalRequest<'a>) -> ProviderFuture<'a, String>;
+
+    /// Schedules the subscription to end when its period ends. A
+    /// subscription already set to end counts as done.
+    fn cancel<'a>(&'a self, subscription: &'a str) -> ProviderFuture<'a, ()>;
+
+    /// Ends the subscription now, so it never renews. A subscription that
+    /// already ended counts as done.
+    fn revoke<'a>(&'a self, subscription: &'a str) -> ProviderFuture<'a, ()>;
+
+    /// Refunds `amount` of the order, before tax, in the currency's
+    /// smallest unit; the provider refunds the tax in proportion.
+    fn refund<'a>(&'a self, order: &'a str, amount: u64) -> ProviderFuture<'a, ()>;
 
     /// Checks a webhook delivery's signature at `now`, in Unix seconds, and
     /// reads its event.
@@ -261,5 +369,13 @@ mod tests {
         assert_eq!(checkout_locale(Some("fr")), Some("fr-CA"));
         assert_eq!(checkout_locale(Some("en-CA,fr;q=0.8")), None);
         assert_eq!(checkout_locale(None), None);
+    }
+
+    #[test]
+    fn regions_read_as_their_code() {
+        for state in ["CA-QC", "QC", "qc", "Québec", "Quebec"] {
+            assert_eq!(region_code(state), "QC", "{state}");
+        }
+        assert_eq!(region_code("US-CA"), "CA");
     }
 }

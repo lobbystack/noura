@@ -521,6 +521,152 @@ async fn webhooks_set_the_plan_once_and_refuse_forgeries() {
     );
 }
 
+/// An `order.paid` event for `account`'s subscription `sub-1`, billed to
+/// an address in `country` and `state`.
+fn paid(account: Id, order: &str, reason: &str, country: &str, state: &str) -> Value {
+    json!({
+        "type": "order.paid",
+        "timestamp": "2026-11-27T10:00:00Z",
+        "api_version": "2026-10",
+        "data": {
+            "id": order,
+            "created_at": "2026-11-27T09:59:00Z",
+            "modified_at": "2026-11-27T09:59:00Z",
+            "status": "paid",
+            "billing_reason": reason,
+            "net_amount": 9_600,
+            "tax_amount": 1_438,
+            "total_amount": 11_038,
+            "currency": "usd",
+            "billing_name": "Ana Tremblay",
+            "billing_address": {
+                "line1": "1 rue Principale", "city": "Québec", "state": state,
+                "postal_code": "G1A 1A1", "country": country,
+            },
+            "product_id": "prod-plus-year",
+            "subscription_id": "sub-1",
+            "metadata": {},
+            "customer": { "id": "cus-1", "external_id": account.to_base64url() },
+            "subscription": {
+                "id": "sub-1", "amount": 9_600, "currency": "usd",
+                "recurring_interval": "year",
+                "current_period_start": "2026-11-27T09:59:00Z",
+                "current_period_end": "2027-11-27T09:59:00Z",
+                "started_at": "2026-11-27T09:59:00Z",
+                "cancel_at_period_end": false,
+                "metadata": {},
+            },
+        },
+    })
+}
+
+#[tokio::test]
+async fn the_first_payment_mails_the_contract() {
+    let site = site(true).await;
+    let (account, _) = site.signed_in("ana@example.com").await;
+    let now = site.now();
+    site.store
+        .record_consent(
+            account,
+            sync_store::ConsentRow {
+                accepted_at: 1_795_773_000,
+                plan: "plus_year".into(),
+                version: "2026-11-27".into(),
+                immediate: true,
+                renewal: true,
+            },
+        )
+        .await
+        .expect("recorded");
+
+    // A first payment from Québec: the contract, French first.
+    let first = paid(account, "ord-1", "subscription_create", "CA", "CA-QC");
+    assert_eq!(
+        site.deliver("evt-o1", now, &first, SECRET).await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        site.deliver("evt-o1", now, &first, SECRET).await,
+        StatusCode::ACCEPTED
+    );
+    let queue = site.store.billing_mail().await.expect("queue");
+    assert_eq!(queue.len(), 1, "one contract, whatever the retries");
+    let mail = &queue[0].mail;
+    assert_eq!(mail.recipient, "ana@example.com");
+    assert_eq!(
+        mail.subject,
+        "Votre contrat Noura Sync / Your Noura Sync contract"
+    );
+    let (french, english) = mail.body.split_once("* * *").expect("both languages");
+    for line in [
+        "Client : Ana Tremblay",
+        "Adresse de facturation : 1 rue Principale, Québec QC G1A 1A1, CA",
+        "Date : 27 novembre 2026",
+        "Forfait : Plus, annuel",
+        "Prix : 96,00 USD par année, avant taxes",
+        "Taxes : 14,38 USD",
+        "Total facturé : 110,38 USD",
+        "Prochain renouvellement : 27 novembre 2027.",
+        "Tarif mensuel : 8,00 USD",
+        "Fin de la période en cours : 27 novembre 2027",
+        "durée indéterminée",
+        "sans indemnité",
+        "Votre consentement : le 27 novembre 2026",
+        "Conditions : https://example.com/fr/terms/",
+        "Vendeur : Example Inc., 1 Example Street",
+    ] {
+        assert!(french.contains(line), "{line}\n{french}");
+    }
+    for line in [
+        "Customer: Ana Tremblay",
+        "Price: USD 96.00 a year, before tax",
+        "Monthly rate: USD 8.00",
+        "To cancel, sign in at http://localhost:",
+        "Terms: https://example.com/terms/",
+    ] {
+        assert!(english.contains(line), "{line}\n{english}");
+    }
+    assert_eq!(
+        site.store.latest_order(account).await.expect("read"),
+        Some(sync_store::OrderRow {
+            subscription: "sub-1".into(),
+            order_id: "ord-1".into(),
+            net: 9_600,
+            currency: "usd".into(),
+            paid_at: 1_795_773_540,
+        })
+    );
+
+    // A renewal stores its order and mails no contract; elsewhere than in
+    // Québec, the contract has one language and no Québec lines.
+    let id = queue[0].id;
+    site.store.sent_billing_mail(id).await.expect("sent");
+    let renewal = paid(account, "ord-2", "subscription_cycle", "US", "US-CA");
+    site.deliver("evt-o2", now, &renewal, SECRET).await;
+    assert!(site.store.billing_mail().await.expect("queue").is_empty());
+    assert_eq!(
+        site.store
+            .latest_order(account)
+            .await
+            .expect("read")
+            .map(|row| row.order_id),
+        Some("ord-2".into())
+    );
+    let (other, _) = site.signed_in("lee@example.com").await;
+    let contract = paid(other, "ord-3", "subscription_create", "US", "US-CA");
+    site.deliver("evt-o3", now, &contract, SECRET).await;
+    let queue = site.store.billing_mail().await.expect("queue");
+    assert_eq!(queue[0].mail.subject, "Your Noura Sync contract");
+    assert!(!queue[0].mail.body.contains("Monthly rate"));
+    assert!(!queue[0].mail.body.contains("Your consent"));
+    assert!(
+        queue[0]
+            .mail
+            .body
+            .contains("stays active until the end of the period")
+    );
+}
+
 #[tokio::test]
 async fn without_billing_no_plan_route_answers() {
     let site = site(false).await;
