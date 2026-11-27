@@ -564,8 +564,8 @@ impl<B: Backend> Store<B> {
             .await
     }
 
-    /// The emails of a workspace's members, its owner first.
-    pub async fn member_emails(&self, workspace: Id, owner: Id) -> Result<Vec<String>> {
+    /// The accounts and emails of a workspace's members, its owner first.
+    pub async fn member_emails(&self, workspace: Id, owner: Id) -> Result<Vec<(Id, String)>> {
         self.backend
             .read(Box::new(move |txn: &mut B::Read| {
                 Box::pin(async move {
@@ -579,7 +579,7 @@ impl<B: Backend> Store<B> {
                     let mut emails = Vec::new();
                     for account in accounts {
                         if let Some(email) = txn.account_email(account).await? {
-                            emails.push(email);
+                            emails.push((account, email));
                         }
                     }
                     Ok(emails)

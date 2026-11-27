@@ -337,25 +337,52 @@ async fn a_free_owner_nobody_used_for_a_year_gets_two_warnings_then_closes() {
         .await
         .expect("noted");
 
-    // Ten months on, nothing yet.
-    world.advance_to_month(start, 10);
+    // Nine months on, nothing yet.
+    world.advance_to_month(start, 9);
     assert_eq!(world.run().await.warnings, 0);
 
-    // The 11th and 12th months each send one warning, once.
-    world.advance_to_month(start, 11);
+    // The 10th month's warning goes out on its last day, as late as it
+    // can, and only once.
+    world.advance_to_month(start, 10);
+    while month_of(world.store.clock().now() + DAY) == start + 10 {
+        world.advance_days(1);
+    }
     assert_eq!(world.run().await.warnings, 1);
     assert_eq!(world.run().await.warnings, 0);
+    let warned = world.store.clock().now();
     let mail = world.outbox.take();
     assert_eq!(mail.len(), 1);
     assert_eq!(mail[0].to, "idle@example.com");
-    assert!(mail[0].text.contains("11 months"));
-    world.advance_to_month(start, 12);
-    assert_eq!(world.run().await.warnings, 1);
-    assert!(world.outbox.take()[0].text.contains("12 months"));
+    assert!(mail[0].text.contains("10 months"));
+    assert!(
+        mail[0]
+            .text
+            .contains("sign in at https://sync.example.com/account")
+    );
 
-    // The 13th closes the owner's workspaces.
+    // The 11th sends the second, in the language the owner reads.
+    world
+        .store
+        .set_account_lang(owner.account, "fr")
+        .await
+        .expect("set");
+    world.advance_to_month(start, 11);
+    assert_eq!(world.run().await.warnings, 1);
+    let mail = world.outbox.take();
+    assert!(
+        mail[0]
+            .subject
+            .starts_with("Vos espaces de travail synchronisés ferment le 1er")
+    );
+    assert!(mail[0].text.contains("depuis 11 mois"));
+
+    // The 12th closes nothing; the 13th closes the owner's workspaces, at
+    // least 60 days after the first warning.
+    world.advance_to_month(start, 12);
+    assert_eq!(world.run().await.closed_inactive, 0);
     world.advance_to_month(start, 13);
     assert_eq!(world.run().await.closed_inactive, 1);
+    assert!(world.store.clock().now() - warned >= 60 * DAY);
     let report = world
         .store
         .account_report(owner.account)
@@ -382,7 +409,7 @@ async fn activity_or_a_paid_plan_keeps_an_idle_owners_workspaces() {
             .await
             .expect("noted");
     }
-    world.advance_to_month(start, 11);
+    world.advance_to_month(start, 10);
     assert_eq!(world.run().await.warnings, 1, "only the free owner");
     // The owner comes back: the warnings clear and the clock starts over.
     world

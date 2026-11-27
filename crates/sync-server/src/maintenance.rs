@@ -6,7 +6,7 @@
 //! On a server that sells plans, the pass also runs the plan jobs: it
 //! warns about workspaces over plan on their first day, on day 60 and on
 //! day 85, closes them on day 90, warns `free` owners whom nobody used for
-//! 11 and 12 months, closes their workspaces at 13, forgets webhook
+//! 10 and 11 months, closes their workspaces at 13, forgets webhook
 //! events after 100 days and consents after 3 years, queues renewal
 //! reminders and price-change notices, retries the refunds
 //! and revocations the server owes the provider, and sends the queued mail
@@ -21,6 +21,7 @@ use sync_store::plans::{DAY, OVER_PLAN_DAYS};
 use sync_store::{AccountPlanRow, Backend, Maintenance, PriceChangeRow, Reminder, Store};
 
 use crate::accounts::Accounts;
+use crate::accounts::lang::Lang;
 use crate::billing::terms;
 use crate::blobs::{SegmentStore, segment_key};
 
@@ -29,8 +30,10 @@ use crate::blobs::{SegmentStore, segment_key};
 const NOTICE_DAYS: [u64; 3] = [0, 60, 85];
 
 /// The months without use after which a `free` owner gets each warning,
-/// and after which the server closes its workspaces.
-const WARNING_MONTHS: [u64; 2] = [11, 12];
+/// and after which the server closes its workspaces. A warning goes out
+/// only in its own month, so the first comes at least 60 days before the
+/// first day of the closing month: two whole months lie between.
+const WARNING_MONTHS: [u64; 2] = [10, 11];
 const CLOSING_MONTHS: u64 = 13;
 
 /// The month `now`, in Unix seconds, falls in, counted from January of
@@ -44,24 +47,15 @@ pub fn month_of(now: u64) -> u64 {
     year * 12 + month - 1
 }
 
-/// The first day of `month`, as mail writes it.
-fn month_start(month: u64) -> String {
+/// The first day of `month`, in Unix seconds.
+fn month_start(month: u64) -> u64 {
     let year = i16::try_from(month / 12).unwrap_or(i16::MAX);
     let number = i8::try_from(month % 12 + 1).unwrap_or(1);
     jiff::civil::Date::new(year, number, 1)
-        .map(|date| date.strftime("%B %-d, %Y").to_string())
-        .unwrap_or_default()
-}
-
-/// `day`, counted from the Unix epoch, as mail writes it.
-fn day_text(day: u64) -> String {
-    jiff::Timestamp::from_second(i64::try_from(day.saturating_mul(DAY)).unwrap_or(i64::MAX))
-        .map(|time| {
-            time.to_zoned(jiff::tz::TimeZone::UTC)
-                .strftime("%B %-d, %Y")
-                .to_string()
-        })
-        .unwrap_or_default()
+        .ok()
+        .and_then(|date| date.to_zoned(jiff::tz::TimeZone::UTC).ok())
+        .and_then(|zoned| u64::try_from(zoned.timestamp().as_second()).ok())
+        .unwrap_or(0)
 }
 
 /// What the plan jobs did in one pass.
@@ -85,11 +79,12 @@ pub struct PlanJobs {
     pub mail: u64,
 }
 
-/// Sends `text` to each address, and returns whether every send went out.
-async fn mail_all(accounts: &Accounts, to: &[String], subject: &str, text: &str) -> bool {
+/// Sends each recipient its message, and returns whether every send went
+/// out.
+async fn mail_all(accounts: &Accounts, messages: &[(String, String, String)]) -> bool {
     let mut sent = true;
-    for address in to {
-        if let Err(error) = accounts.send(address, subject, text.to_owned()).await {
+    for (address, subject, text) in messages {
+        if let Err(error) = accounts.send(address, subject, text.clone()).await {
             tracing::error!(cause = %error, "a plan notice failed to send");
             sent = false;
         }
@@ -97,21 +92,71 @@ async fn mail_all(accounts: &Accounts, to: &[String], subject: &str, text: &str)
     sent
 }
 
-/// The notice about a workspace over plan, for its owner and for its
-/// other members.
-fn over_plan_notice(origin: &str, closes: &str, first: bool) -> (String, String, String) {
-    let subject = if first {
-        "A workspace you sync is read-only".to_owned()
-    } else {
-        format!("A workspace you sync closes on {closes}")
+/// The language `account` reads its pages in.
+async fn lang_of<B: Backend>(store: &Store<B>, account: Id) -> Result<Lang, sync_store::Error> {
+    Ok(store
+        .account_lang(account)
+        .await?
+        .as_deref()
+        .and_then(Lang::from_code)
+        .unwrap_or_default())
+}
+
+/// The notice about a workspace over plan that closes on `closes`, in
+/// Unix seconds, for its owner or for another member, in `lang`.
+fn over_plan_notice(
+    origin: &str,
+    closes: u64,
+    first: bool,
+    owner: bool,
+    lang: Lang,
+) -> (String, String) {
+    let closes = terms::date(closes, lang);
+    let subject = match (first, lang) {
+        (true, Lang::En) => "A workspace you sync is read-only".to_owned(),
+        (true, Lang::Fr) => {
+            "Un espace de travail que vous synchronisez est en lecture seule".to_owned()
+        }
+        (false, Lang::En) => format!("A workspace you sync closes on {closes}"),
+        (false, Lang::Fr) => {
+            format!("Un espace de travail que vous synchronisez ferme le {closes}")
+        }
     };
-    let owner = format!(
-        "Your Noura plan keeps fewer synced workspaces than you own, so the server keeps one of them read-only. Its files stay on every device.\n\nTo sync it again, choose which workspaces stay synced in Noura under Settings > Account, or upgrade at {origin}/account. If nothing changes, the server deletes its synced copy on {closes}.\n"
-    );
-    let member = format!(
-        "A Noura workspace you're a member of is over its owner's plan, so the server keeps it read-only. Your files stay on your device.\n\nIf its owner doesn't change their plan, the server deletes its synced copy on {closes}, and your folder goes on working without sync.\n"
-    );
-    (subject, owner, member)
+    let text = match (owner, lang) {
+        (true, Lang::En) => format!(
+            "Your Noura plan keeps fewer synced workspaces than you own, so the server keeps one of them read-only. Its files stay on every device.\n\nTo sync it again, choose which workspaces stay synced in Noura under Settings > Account, or upgrade at {origin}/account before {closes}. If nothing changes, the server deletes its synced copy on {closes}.\n"
+        ),
+        (true, Lang::Fr) => format!(
+            "Votre forfait Noura garde moins d\u{2019}espaces de travail synchronisés que vous n\u{2019}en possédez, alors le serveur en garde un en lecture seule. Ses fichiers restent sur chaque appareil.\n\nPour le synchroniser de nouveau, choisissez dans Noura, sous Settings > Account, les espaces de travail qui restent synchronisés, ou passez à un forfait supérieur sur {origin}/account avant le {closes}. Sinon, le serveur supprime sa copie synchronisée le {closes}.\n"
+        ),
+        (false, Lang::En) => format!(
+            "A Noura workspace you're a member of is over its owner's plan, so the server keeps it read-only. Your files stay on your device.\n\nIf its owner doesn't change their plan, the server deletes its synced copy on {closes}, and your folder goes on working without sync.\n"
+        ),
+        (false, Lang::Fr) => format!(
+            "Un espace de travail Noura dont vous êtes membre dépasse le forfait de son propriétaire, alors le serveur le garde en lecture seule. Vos fichiers restent sur votre appareil.\n\nSi son propriétaire ne change pas de forfait, le serveur supprime sa copie synchronisée le {closes}, et votre dossier continue de fonctionner sans synchronisation.\n"
+        ),
+    };
+    (subject, text)
+}
+
+/// The warning to a `free` owner nobody used for `idle` months, whose
+/// workspaces close on `closes`, in Unix seconds, in `lang`.
+fn inactivity_warning(origin: &str, idle: u64, closes: u64, lang: Lang) -> (String, String) {
+    let closes = terms::date(closes, lang);
+    match lang {
+        Lang::En => (
+            format!("Your synced workspaces close on {closes}"),
+            format!(
+                "Nobody has synced the Noura workspaces you own for {idle} months. On {closes}, the server deletes their synced copy, as it does for Free accounts after a year without use. Your files on your devices stay.\n\nTo keep the copy, open Noura on any of your devices, or sign in at {origin}/account, before then. Upgrading keeps it too.\n"
+            ),
+        ),
+        Lang::Fr => (
+            format!("Vos espaces de travail synchronisés ferment le {closes}"),
+            format!(
+                "Personne n\u{2019}a synchronisé les espaces de travail Noura dont vous êtes propriétaire depuis {idle} mois. Le {closes}, le serveur supprime leur copie synchronisée, comme pour les comptes Gratuits après un an sans utilisation. Vos fichiers sur vos appareils restent.\n\nPour garder la copie, ouvrez Noura sur l\u{2019}un de vos appareils, ou connectez-vous à {origin}/account, d\u{2019}ici là. Passer à un forfait payant la garde aussi.\n"
+            ),
+        ),
+    }
 }
 
 /// Warns, then closes, workspaces over plan (§20, Over plan).
@@ -135,13 +180,20 @@ async fn over_plan_job<B: Backend>(
         if usize::from(row.notices) >= due {
             continue;
         }
-        let closes = day_text(row.since + OVER_PLAN_DAYS);
-        let (subject, owner_text, member_text) =
-            over_plan_notice(accounts.origin().as_str(), &closes, row.notices == 0);
-        let emails = store.member_emails(row.workspace, row.owner).await?;
-        let (owner, members) = emails.split_at(emails.len().min(1));
-        let sent = mail_all(accounts, owner, &subject, &owner_text).await
-            & mail_all(accounts, members, &subject, &member_text).await;
+        let closes = (row.since + OVER_PLAN_DAYS).saturating_mul(DAY);
+        let mut messages = Vec::new();
+        for (account, email) in store.member_emails(row.workspace, row.owner).await? {
+            let lang = lang_of(store, account).await?;
+            let (subject, text) = over_plan_notice(
+                accounts.origin().as_str(),
+                closes,
+                row.notices == 0,
+                account == row.owner,
+                lang,
+            );
+            messages.push((email, subject, text));
+        }
+        let sent = mail_all(accounts, &messages).await;
         if sent {
             let notices = u8::try_from(due).unwrap_or(u8::MAX);
             store
@@ -154,7 +206,7 @@ async fn over_plan_job<B: Backend>(
 }
 
 /// Warns, then closes the workspaces of, `free` owners whom nobody used
-/// for 11, 12 and 13 months (§20, Inactive accounts). A warning goes out
+/// for 10, 11 and 13 months (§20, Inactive accounts). A warning goes out
 /// only in its month, so an owner the job missed for a month keeps its
 /// workspaces rather than losing them with too little notice.
 async fn inactivity_job<B: Backend>(
@@ -189,12 +241,9 @@ async fn inactivity_job<B: Backend>(
             continue;
         };
         let closes = month_start(owner.last_month + CLOSING_MONTHS);
-        let text = format!(
-            "Nobody has synced the Noura workspaces you own for {idle} months. On {closes}, the server deletes their synced copy, as it does for Free accounts after a year without use. Your files on your devices stay.\n\nTo keep the copy, open Noura on any of your devices before then, or upgrade at {}/account.\n",
-            accounts.origin().as_str()
-        );
-        let subject = format!("Your synced workspaces close on {closes}");
-        if mail_all(accounts, &[email], &subject, &text).await {
+        let lang = lang_of(store, account).await?;
+        let (subject, text) = inactivity_warning(accounts.origin().as_str(), idle, closes, lang);
+        if mail_all(accounts, &[(email, subject, text)]).await {
             let warnings = u8::try_from(step + 1).unwrap_or(u8::MAX);
             store.set_inactivity_warnings(account, warnings).await?;
             report.warnings += 1;

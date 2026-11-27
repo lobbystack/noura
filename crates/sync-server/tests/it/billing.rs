@@ -1525,3 +1525,40 @@ fn the_binary_announces_a_price_change() {
     );
     assert!(String::from_utf8_lossy(&done.stderr).contains("announced price change 1"));
 }
+
+/// A visit to the account page, where every sign-in lands, counts as
+/// activity: it clears an idle owner's warnings, and records the page's
+/// language for the mail about plans.
+#[tokio::test]
+async fn a_sign_in_on_the_account_pages_keeps_an_idle_account() {
+    let site = site(true).await;
+    let (account, session) = site.signed_in("idle@example.com").await;
+    let month = sync_server::maintenance::month_of(site.now());
+    site.store
+        .note_activity(account, month - 10)
+        .await
+        .expect("noted");
+    site.store
+        .set_inactivity_warnings(account, 1)
+        .await
+        .expect("warned");
+    let page = site
+        .http
+        .get(format!("{}/account", site.base))
+        .header("cookie", &session)
+        .header("accept-language", "fr-CA")
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(page.status(), StatusCode::OK);
+    let owner = site.store.inactivity(account).await.expect("read");
+    assert_eq!((owner.last_month, owner.warnings), (month, 0));
+    assert_eq!(
+        site.store
+            .account_lang(account)
+            .await
+            .expect("read")
+            .as_deref(),
+        Some("fr")
+    );
+}
