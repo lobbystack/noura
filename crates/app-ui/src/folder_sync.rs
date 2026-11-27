@@ -189,6 +189,9 @@ pub(crate) fn section(ui: &mut Ui, app: &mut App) {
                 if screen.over_quota {
                     ui.label("Workspace full. New changes wait until you delete files.");
                 }
+                if let Some(line) = &screen.over_plan {
+                    ui.label(line);
+                }
                 match &screen.last_success {
                     Some(when) => ui.label(format!("Last synced {when}")),
                     None => description(ui, "Not synced yet"),

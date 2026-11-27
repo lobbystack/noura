@@ -12,6 +12,7 @@
 mod folder;
 pub mod live;
 mod members;
+pub mod plan;
 mod share;
 
 use std::collections::BTreeSet;
@@ -59,6 +60,9 @@ fn refused_text(code: &str) -> &'static str {
         "not_found" => "The sync server no longer has that.",
         "rate_limited" => "The sync server asked Noura to slow down. Try again in a minute.",
         "quota_exceeded" => "This workspace is over its storage quota.",
+        "over_plan" => "This workspace is over its owner's plan, so it takes no changes.",
+        "file_too_large" => "This file is larger than the workspace's plan allows.",
+        "member_limit" => "This workspace has as many members as its owner's plan allows.",
         "workspace_limit" => "Your account has reached its limit of workspaces.",
         "recipient_limit" => "This workspace has reached its limit of 512 devices.",
         _ => "The sync server refused that. Try again in a moment.",
@@ -217,9 +221,37 @@ pub struct AccountWorkspace {
     pub folder: Option<PathBuf>,
 }
 
+/// A workspace you own that's over your plan (§20, Over plan).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OverPlanEntry {
+    /// The workspace.
+    pub workspace: Id,
+    /// Its name.
+    pub name: String,
+    /// When the server deletes its synced copy, as a date.
+    pub closes: String,
+}
+
+/// Your plan, on a server that sells plans (§20, Plans).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlanView {
+    /// The plan's name, such as "Free" or "Plus, yearly".
+    pub name: String,
+    /// Storage used against the plan's, one line.
+    pub usage: String,
+    /// Whether the last payment failed while the provider retries it.
+    pub past_due: bool,
+    /// Whether the account pays, so Manage billing has something to show.
+    pub paid: bool,
+    /// The workspaces you own that are over your plan, read-only.
+    pub over_plan: Vec<OverPlanEntry>,
+}
+
 /// The signed-in account.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SignedInView {
+    /// Your plan, when the server sells plans.
+    pub plan: Option<PlanView>,
     /// The account's fingerprint.
     pub account_fingerprint: String,
     /// The account's devices, this one first, then removed ones.
@@ -497,6 +529,13 @@ pub enum AccountAction {
     ConfirmSignOut,
     /// Stay signed in.
     CancelSignOut,
+    /// Open the account page in the browser, where you pick a plan.
+    Upgrade,
+    /// Open the payment provider's portal in the browser.
+    ManageBilling,
+    /// Keep this workspace synced in place of the newest active one, when
+    /// your plan keeps fewer than you own (§20, Over plan).
+    KeepSynced(Id),
 }
 
 impl std::fmt::Debug for AccountAction {
@@ -555,6 +594,9 @@ impl std::fmt::Debug for AccountAction {
             AccountAction::SignOut => f.write_str("SignOut"),
             AccountAction::ConfirmSignOut => f.write_str("ConfirmSignOut"),
             AccountAction::CancelSignOut => f.write_str("CancelSignOut"),
+            AccountAction::Upgrade => f.write_str("Upgrade"),
+            AccountAction::ManageBilling => f.write_str("ManageBilling"),
+            AccountAction::KeepSynced(id) => f.debug_tuple("KeepSynced").field(id).finish(),
         }
     }
 }

@@ -156,6 +156,15 @@ pub struct State {
     /// `quota_exceeded`, which wait on this device for space (§20).
     #[serde(default)]
     pub waiting_for_space: BTreeSet<Id>,
+    /// Whether the server last answered `over_plan`: the workspace is over
+    /// its owner's plan and takes no change, so this device's changes wait
+    /// on it (§20).
+    #[serde(default)]
+    pub over_plan: bool,
+    /// The largest file the owner's plan allows, once the server named it
+    /// in `file_too_large` or the account report did (§20).
+    #[serde(default)]
+    pub max_file: Option<u64>,
 }
 
 /// One key domain's part of the journal.

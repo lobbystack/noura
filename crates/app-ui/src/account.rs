@@ -603,6 +603,41 @@ fn reset_groups(ui: &mut Ui, view: &SignedInView, actions: &mut Vec<AccountActio
     }
 }
 
+/// Your plan, on a server that sells plans (§20): its name, storage, a
+/// failed payment, the workspaces over it, and the browser pages that
+/// change it.
+fn plan_group(ui: &mut Ui, plan: &app_core::account::PlanView, actions: &mut Vec<AccountAction>) {
+    group(ui, "Plan", |ui| {
+        ui.label(RichText::new(&plan.name).strong());
+        ui.label(&plan.usage);
+        if plan.past_due {
+            alert(
+                ui,
+                "Your last payment failed. Update your payment method in Manage billing.",
+            );
+        }
+        for over in &plan.over_plan {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!(
+                    "{} is read-only. Its synced copy closes {}.",
+                    over.name, over.closes
+                ));
+                if ui.button("Keep synced").clicked() {
+                    actions.push(AccountAction::KeepSynced(over.workspace));
+                }
+            });
+        }
+        ui.horizontal(|ui| {
+            if !plan.paid && primary_button(ui, "Upgrade", true).clicked() {
+                actions.push(AccountAction::Upgrade);
+            }
+            if plan.paid && ui.button("Manage billing").clicked() {
+                actions.push(AccountAction::ManageBilling);
+            }
+        });
+    });
+}
+
 fn signed_in_section(
     ui: &mut Ui,
     screen: &AccountScreen,
@@ -617,6 +652,9 @@ fn signed_in_section(
         ui.label("Your account's fingerprint:");
         fingerprint_line(ui, &view.account_fingerprint);
     });
+    if let Some(plan) = &view.plan {
+        plan_group(ui, plan, actions);
+    }
     reset_groups(ui, view, actions);
     for warning in &view.alerts {
         alert(ui, &warning.text);

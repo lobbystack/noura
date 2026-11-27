@@ -33,6 +33,9 @@ pub enum SkipWhy {
     IdentityConflict,
     /// The file is above the 2 GiB limit of a blob (§21).
     TooLarge,
+    /// The file is above the largest file the workspace owner's plan
+    /// allows (§20).
+    AbovePlan,
     /// The file sits beneath a local `.noura-domain` file found without a
     /// journal, and waits until you confirm where it goes (§9).
     HeldRoot,
