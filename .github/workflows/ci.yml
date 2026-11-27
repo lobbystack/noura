@@ -184,7 +184,7 @@ jobs:
         with:
           shared-key: extras
           add-rust-environment-hash-key: false
-          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/faster-pipeline' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
