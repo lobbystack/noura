@@ -8,6 +8,19 @@
 <button type="button" data-passkey-start hidden>Add a passkey</button>
 <p class="status" data-status role="status"></p>
 </form>
+{% if billing %}
+<section class="plan">
+<h2>Plan</h2>
+<p data-plan="{{ plan_id }}">{{ plan_name }}</p>
+<p>{{ usage }}</p>
+{% if past_due %}<p>Your last payment failed. Update your payment method in Manage billing.</p>{% endif %}
+{% if !over_plan.is_empty() %}<p>{{ over_plan }}</p>{% endif %}
+<div class="actions">
+{% for offer in offers %}<a class="button" href="/account/upgrade?plan={{ offer.0 }}">Upgrade to {{ offer.1 }}</a>
+{% endfor %}{% if manage %}<a class="button secondary" href="/account/billing">Manage billing</a>{% endif %}
+</div>
+</section>
+{% endif %}
 <p><a href="/device">Sign in a device</a></p>
 <form method="post" action="/account/sign-out">
 <button type="submit" class="secondary">Sign out</button>

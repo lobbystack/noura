@@ -524,6 +524,14 @@ impl RateGate {
         Ok(Some(DailyBudget::of(account, &limits)))
     }
 
+    /// Forgets `account`'s plan, so the next request reads the new one.
+    pub(crate) fn forget_plan(&self, account: Id) {
+        self.plans
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&account);
+    }
+
     /// What `account` pushed and uploaded, and read, so far today.
     pub(crate) async fn today(limiter: &dyn Limiter, account: Id) -> Result<(u64, u64), Error> {
         // The window's length, not the allowance, names the counter.

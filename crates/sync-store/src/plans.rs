@@ -301,10 +301,15 @@ impl<B: Backend> Store<B> {
     /// and the state of each workspace it owns (§20, §26). Today's
     /// transfer comes from the server's counters, so it reads 0 here.
     pub async fn account(&self, session: Session) -> Result<AccountResponse> {
+        self.account_report(session.account).await
+    }
+
+    /// [`Store::account`] by account, for the account page.
+    pub async fn account_report(&self, account: Id) -> Result<AccountResponse> {
         let billing = self.billing;
         self.backend
             .read(Box::new(move |txn: &mut B::Read| {
-                Box::pin(async move { report(txn, session.account, billing).await })
+                Box::pin(async move { report(txn, account, billing).await })
             }))
             .await
     }

@@ -43,6 +43,10 @@
 //! - `NOURA_MAX_CONNECTIONS`: how many connections stay open at once,
 //!   realtime channels included, 1,024 by default. Keep the process's file
 //!   descriptor limit above it.
+//! - `NOURA_POLAR_ACCESS_TOKEN`, `NOURA_POLAR_WEBHOOK_SECRET` and
+//!   `NOURA_POLAR_PRODUCTS`, with an optional `NOURA_POLAR_API`: sell plans
+//!   through Polar, with its products mapped to plan IDs as `plan=product`
+//!   pairs. Without them the server sells no plans.
 //! - `NOURA_RATE_PUSHES_PER_SECOND`, `NOURA_RATE_PUSH_BYTES_PER_MINUTE`,
 //!   `NOURA_RATE_UPLOAD_BYTES_PER_MINUTE`, `NOURA_RATE_READ_BYTES_PER_MINUTE`,
 //!   `NOURA_RATE_BOOTSTRAP_BYTES_PER_MINUTE`,
@@ -192,6 +196,7 @@ fn serve(arguments: Arguments) -> Result<(), String> {
     config.retention = retention()?;
     config.rate_limits = rate_limits()?;
     config.trusted_proxy_header = env("NOURA_TRUSTED_PROXY_HEADER");
+    config.billing = polar()?;
     if let Some(value) = env("NOURA_MAX_CONNECTIONS") {
         config.connections.connections = value
             .parse()
@@ -222,6 +227,35 @@ fn retention() -> Result<sync_store::Retention, String> {
     }
     retention.quota_bytes = bytes("NOURA_WORKSPACE_QUOTA_BYTES")?;
     Ok(retention)
+}
+
+/// Polar's settings from `NOURA_POLAR_*`: all three of the token, the
+/// webhook secret and the products, or none of them.
+fn polar() -> Result<Option<sync_server::billing::polar::PolarConfig>, String> {
+    let token = env("NOURA_POLAR_ACCESS_TOKEN");
+    let secret = env("NOURA_POLAR_WEBHOOK_SECRET");
+    let products = env("NOURA_POLAR_PRODUCTS");
+    let (Some(access_token), Some(webhook_secret), Some(products)) =
+        (token.clone(), secret.clone(), products.clone())
+    else {
+        if token.is_some() || secret.is_some() || products.is_some() {
+            return Err(
+                "set NOURA_POLAR_ACCESS_TOKEN, NOURA_POLAR_WEBHOOK_SECRET and NOURA_POLAR_PRODUCTS together"
+                    .into(),
+            );
+        }
+        return Ok(None);
+    };
+    let api = env("NOURA_POLAR_API").unwrap_or_else(|| sync_server::billing::polar::API.to_owned());
+    if !api.starts_with("https://") {
+        return Err("NOURA_POLAR_API isn't an HTTPS URL".into());
+    }
+    Ok(Some(sync_server::billing::polar::PolarConfig {
+        access_token,
+        webhook_secret,
+        api,
+        products: sync_server::billing::polar::PolarConfig::parse_products(&products)?,
+    }))
 }
 
 /// The default rate limits with each `NOURA_RATE_*` variable applied.

@@ -6,6 +6,7 @@ mod support;
 
 mod accounts;
 mod api;
+mod billing;
 mod blob_store;
 mod blobs;
 mod chains;

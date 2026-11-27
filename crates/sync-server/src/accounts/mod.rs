@@ -20,6 +20,7 @@
 pub mod config;
 pub mod mail;
 mod pages;
+pub mod plan;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -119,6 +120,7 @@ pub struct Accounts {
     webauthn: Option<Webauthn>,
     assets: Option<PathBuf>,
     deliveries: Deliveries,
+    billing: Option<Arc<dyn crate::billing::BillingProvider>>,
 }
 
 impl Accounts {
@@ -143,7 +145,20 @@ impl Accounts {
             webauthn,
             assets,
             deliveries: Deliveries::default(),
+            billing: None,
         }
+    }
+
+    /// These account pages, selling plans through `provider` (§26,
+    /// Billing). The store must give accounts their plans' limits too.
+    pub fn with_billing(mut self, provider: Arc<dyn crate::billing::BillingProvider>) -> Self {
+        self.billing = Some(provider);
+        self
+    }
+
+    /// The payment provider, when the server sells plans.
+    pub fn billing(&self) -> Option<&dyn crate::billing::BillingProvider> {
+        self.billing.as_deref()
     }
 
     /// These account pages, counting their deliveries in `deliveries`.
@@ -254,6 +269,9 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
         .route("/account/email-link/use", post(use_email_link::<B>))
         .route("/account/confirm", get(confirm_page).post(confirm::<B>))
         .route("/account/sign-out", post(sign_out::<B>))
+        .route("/account/upgrade", get(plan::upgrade::<B>))
+        .route("/account/billing", get(plan::portal::<B>))
+        .route("/billing/{provider}/webhook", post(plan::webhook::<B>))
         .route("/account/passkeys/sign-up/start", post(sign_up_start::<B>))
         .route(
             "/account/passkeys/sign-up/finish",
@@ -642,16 +660,21 @@ fn with_cookie(mut response: Response, cookie: HeaderValue) -> Response {
     response
 }
 
-/// The web session token a request's cookie carries.
-fn cookie_token(headers: &HeaderMap) -> Option<SignInToken> {
+/// The value of the cookie `name` a request carries.
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.trim().split_once('='))
-        .find(|(name, _)| *name == SESSION_COOKIE)
-        .and_then(|(_, value)| from_base64url::<32>(value).ok())
+        .find(|(cookie, _)| *cookie == name)
+        .map(|(_, value)| value.to_owned())
+}
+
+/// The web session token a request's cookie carries.
+fn cookie_token(headers: &HeaderMap) -> Option<SignInToken> {
+    cookie_value(headers, SESSION_COOKIE).and_then(|value| from_base64url::<32>(&value).ok())
 }
 
 /// The account a request's web session belongs to.
@@ -738,11 +761,44 @@ async fn account_page<B: Backend>(
         Ok(passkeys) => passkeys.len(),
         Err(error) => return failure(error),
     };
+    let Some(provider) = state.accounts.billing() else {
+        return html(
+            StatusCode::OK,
+            &pages::Account {
+                email: &email,
+                passkeys,
+                billing: false,
+                plan_id: "",
+                plan_name: "",
+                usage: "",
+                past_due: false,
+                over_plan: "",
+                offers: &[],
+                manage: false,
+            },
+        );
+    };
+    if let Some(plan) = plan::chosen_plan(&headers).filter(|plan| provider.sells(plan)) {
+        return plan::resume_upgrade(&state.accounts, &plan);
+    }
+    let report = match store.account_report(account).await {
+        Ok(report) => report,
+        Err(error) => return failure(error),
+    };
+    let section = plan::section(provider, &report);
     html(
         StatusCode::OK,
         &pages::Account {
             email: &email,
             passkeys,
+            billing: true,
+            plan_id: &section.plan_id,
+            plan_name: section.plan_name,
+            usage: &section.usage,
+            past_due: section.past_due,
+            over_plan: &section.over_plan,
+            offers: &section.offers,
+            manage: section.manage,
         },
     )
 }

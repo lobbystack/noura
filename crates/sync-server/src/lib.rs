@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod accounts;
+pub mod billing;
 pub mod blobs;
 pub mod data;
 pub mod http;
@@ -88,6 +89,9 @@ pub struct Config {
     pub trusted_proxy_header: Option<String>,
     /// What one connection can hold.
     pub connections: ConnectionLimits,
+    /// The payment provider that sells plans (§20, §26 Billing); without
+    /// one every account keeps the operator's settings.
+    pub billing: Option<billing::polar::PolarConfig>,
 }
 
 /// Where `serve` keeps blob segments (§21).
@@ -142,6 +146,7 @@ impl Config {
             rate_limits: RateLimits::default(),
             trusted_proxy_header: None,
             connections: ConnectionLimits::default(),
+            billing: None,
         }
     }
 }
@@ -191,13 +196,17 @@ pub fn accounts_for(config: &Config, origin: PublicOrigin) -> Result<Accounts, C
             endpoint.clone(),
         )),
     };
-    Ok(Accounts::new(
+    let accounts = Accounts::new(
         origin,
         Allowlist::parse(&config.allowed_emails),
         config.mail_from.clone(),
         mailer,
         config.account_web.clone(),
-    ))
+    );
+    Ok(match &config.billing {
+        Some(polar) => accounts.with_billing(Arc::new(billing::polar::Polar::new(polar.clone()))),
+        None => accounts,
+    })
 }
 
 /// Serves `state` on `listener` until `shutdown` resolves.
@@ -288,13 +297,17 @@ async fn shutdown_signal() {
 pub async fn serve(config: Config) -> Result<(), CommandError> {
     match &config.postgres {
         None => {
-            let store = open_store(&config).await?.with_retention(config.retention);
+            let store = open_store(&config)
+                .await?
+                .with_retention(config.retention)
+                .with_billing(config.billing.is_some());
             run(Arc::new(store), &config).await
         }
         Some(database) => {
             let store = postgres::open_store(database)
                 .await?
-                .with_retention(config.retention);
+                .with_retention(config.retention)
+                .with_billing(config.billing.is_some());
             run(Arc::new(store), &config).await
         }
     }

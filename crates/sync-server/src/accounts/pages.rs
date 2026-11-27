@@ -32,6 +32,27 @@ pub struct Continue<'a> {
 pub struct Account<'a> {
     pub email: &'a str,
     pub passkeys: usize,
+    /// Whether the server sells plans, which shows the plan section.
+    pub billing: bool,
+    pub plan_id: &'a str,
+    pub plan_name: &'a str,
+    pub usage: &'a str,
+    pub past_due: bool,
+    /// The line about workspaces over plan, or empty.
+    pub over_plan: &'a str,
+    /// The plans to upgrade to: plan ID and name.
+    pub offers: &'a [(&'static str, &'static str)],
+    pub manage: bool,
+}
+
+/// The step between a link from elsewhere and the checkout: a refresh from
+/// this page, a navigation within the server's own site, sends the web
+/// session's strict cookie that the link's navigation didn't.
+#[derive(Template)]
+#[template(path = "upgrade.html")]
+pub struct Upgrade<'a> {
+    pub plan: &'a str,
+    pub name: &'a str,
 }
 
 #[derive(Template)]
