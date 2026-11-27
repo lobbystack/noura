@@ -7,7 +7,8 @@
 //! warns about workspaces over plan on their first day, on day 60 and on
 //! day 85, closes them on day 90, warns `free` owners whom nobody used for
 //! 11 and 12 months, closes their workspaces at 13, forgets webhook
-//! events after 100 days and consents after 3 years, retries the refunds
+//! events after 100 days and consents after 3 years, queues renewal
+//! reminders and price-change notices, retries the refunds
 //! and revocations the server owes the provider, and sends the queued mail
 //! about plans. Two instances may send the same notice once
 //! each; each records what it sent after the mail went out.
@@ -17,9 +18,10 @@ use std::time::Duration;
 
 use sync_protocol::types::Id;
 use sync_store::plans::{DAY, OVER_PLAN_DAYS};
-use sync_store::{Backend, Maintenance, Store};
+use sync_store::{AccountPlanRow, Backend, Maintenance, PriceChangeRow, Reminder, Store};
 
 use crate::accounts::Accounts;
+use crate::billing::terms;
 use crate::blobs::{SegmentStore, segment_key};
 
 /// The days a workspace over plan gets its notices on: the first day,
@@ -73,6 +75,10 @@ pub struct PlanJobs {
     pub warnings: u64,
     /// Workspaces the server closed after 13 months without use.
     pub closed_inactive: u64,
+    /// Renewal reminders queued.
+    pub reminders: u64,
+    /// Price-change notices queued.
+    pub price_notices: u64,
     /// Refunds and revocations owed that the provider accepted in full.
     pub settled: u64,
     /// Queued messages about plans that went out.
@@ -197,6 +203,133 @@ async fn inactivity_job<B: Backend>(
     Ok(())
 }
 
+/// The days before a yearly renewal that each reminder's window spans:
+/// 90 to 60 days, then 45 to 15 days (§26, Reminders and price changes).
+const REMINDER_WINDOWS: [std::ops::RangeInclusive<u64>; 2] = [60..=90, 15..=45];
+
+/// The days before a price change's date that its second notice's window
+/// spans.
+const SECOND_NOTICE: std::ops::RangeInclusive<u64> = 7..=30;
+
+/// The reminder a subscription is due at `now`, or `None`: for a yearly
+/// plan, the reminder of the window its renewal falls in, unless it went
+/// out; for a monthly plan, one a year from its start.
+pub fn reminder_due(row: &AccountPlanRow, now: u64) -> Option<Reminder> {
+    if !row.state.grants() || row.canceling {
+        return None;
+    }
+    let end = row.period_end.filter(|end| *end > now)?;
+    let today = now / DAY;
+    if row.yearly() {
+        let left = (end - now) / DAY;
+        let step = REMINDER_WINDOWS
+            .iter()
+            .position(|window| window.contains(&left))?;
+        let step = u8::try_from(step + 1).unwrap_or(u8::MAX);
+        let sent = if row.reminded_for == Some(end) {
+            row.reminders
+        } else {
+            0
+        };
+        return (sent < step).then_some(Reminder {
+            reminded_for: Some(end),
+            reminders: step,
+            reminded_day: row.reminded_day,
+        });
+    }
+    let since = row
+        .reminded_day
+        .or(row.started_at.map(|started| started / DAY))?;
+    (today >= since + 365).then_some(Reminder {
+        reminded_for: row.reminded_for,
+        reminders: row.reminders,
+        reminded_day: Some(today),
+    })
+}
+
+/// The notice about `change` a subscriber who got `notices` is due
+/// `today`, as the count it brings them to, or `None`. A first notice that
+/// goes out in the last 30 days counts as both.
+pub fn price_notice_due(change: &PriceChangeRow, notices: u8, today: u64) -> Option<u8> {
+    let left = change
+        .effective_day
+        .checked_sub(today)
+        .filter(|left| *left > 0)?;
+    match notices {
+        0 if left <= *SECOND_NOTICE.end() => Some(2),
+        0 => Some(1),
+        1 if SECOND_NOTICE.contains(&left) => Some(2),
+        _ => None,
+    }
+}
+
+/// Queues the renewal reminders and the price-change notices that are due
+/// (§26, Reminders and price changes).
+async fn reminder_job<B: Backend>(
+    store: &Store<B>,
+    accounts: &Accounts,
+    now: u64,
+    report: &mut PlanJobs,
+) -> Result<(), sync_store::Error> {
+    let Some(context) = crate::accounts::plan::mail_context(accounts) else {
+        return Ok(());
+    };
+    let today = now / DAY;
+    let changes: Vec<PriceChangeRow> = store
+        .price_changes()
+        .await?
+        .into_iter()
+        .filter(|change| change.effective_day > today)
+        .collect();
+    let mut after = None;
+    loop {
+        let page = store.subscriptions(after, 512).await?;
+        let Some((last, _)) = page.last() else {
+            break;
+        };
+        after = Some(*last);
+        for (account, row) in page {
+            let reminder = reminder_due(&row, now);
+            let notices: Vec<&PriceChangeRow> = changes
+                .iter()
+                .filter(|change| change.plan == row.plan && row.state.grants() && !row.canceling)
+                .collect();
+            if reminder.is_none() && notices.is_empty() {
+                continue;
+            }
+            let Some(email) = store.account_email(account).await? else {
+                continue;
+            };
+            let langs = crate::accounts::plan::mail_langs(store, account, row.in_quebec()).await?;
+            if let Some(reminder) = reminder
+                && let Some(renews) = row.period_end
+            {
+                let mail = terms::renewal_reminder(&context, langs, &email, &row, renews);
+                if store
+                    .record_reminder(account, row.subscription.clone(), reminder, mail)
+                    .await?
+                {
+                    report.reminders += 1;
+                }
+            }
+            for change in notices {
+                let sent = store.price_notices(change.change, account).await?;
+                let Some(due) = price_notice_due(change, sent, today) else {
+                    continue;
+                };
+                let mail = terms::price_notice(&context, langs, &email, change, sent > 0);
+                if store
+                    .record_price_notice(change.change, account, due, mail)
+                    .await?
+                {
+                    report.price_notices += 1;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One pass of the plan jobs, on a server that sells plans.
 pub async fn plan_jobs<B: Backend>(
     store: &Store<B>,
@@ -209,6 +342,7 @@ pub async fn plan_jobs<B: Backend>(
     let now = store.clock().now();
     over_plan_job(store, accounts, now / DAY, &mut report).await?;
     inactivity_job(store, accounts, month_of(now), &mut report).await?;
+    reminder_job(store, accounts, now, &mut report).await?;
     store.forget_billing_events().await?;
     store.forget_consents().await?;
     if let Some(provider) = accounts.billing() {
@@ -319,4 +453,112 @@ pub fn spawn<B: Backend>(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use sync_store::SubscriptionState;
+
+    use super::*;
+
+    fn yearly(end: u64) -> AccountPlanRow {
+        AccountPlanRow {
+            subscription: "sub".into(),
+            plan: "plus_year".into(),
+            state: SubscriptionState::Active,
+            period_end: Some(end),
+            interval: Some("year".into()),
+            started_at: Some(0),
+            ..AccountPlanRow::default()
+        }
+    }
+
+    #[test]
+    fn a_yearly_plan_gets_one_reminder_in_each_window() {
+        let end = 400 * DAY;
+        let at = |days_left: u64| end - days_left * DAY;
+        assert_eq!(reminder_due(&yearly(end), at(91)), None);
+        let first = reminder_due(&yearly(end), at(90)).expect("the first");
+        assert_eq!((first.reminded_for, first.reminders), (Some(end), 1));
+        let sent = AccountPlanRow {
+            reminded_for: Some(end),
+            reminders: 1,
+            ..yearly(end)
+        };
+        assert_eq!(reminder_due(&sent, at(60)), None);
+        assert_eq!(reminder_due(&sent, at(50)), None);
+        assert_eq!(reminder_due(&sent, at(45)).map(|r| r.reminders), Some(2));
+        let both = AccountPlanRow {
+            reminders: 2,
+            ..sent.clone()
+        };
+        assert_eq!(reminder_due(&both, at(15)), None);
+        assert_eq!(reminder_due(&yearly(end), at(14)), None);
+        // A missed first window still gets the second.
+        assert_eq!(
+            reminder_due(&yearly(end), at(30)).map(|r| r.reminders),
+            Some(2)
+        );
+        // The next period starts over.
+        let renewed = AccountPlanRow {
+            period_end: Some(end + 365 * DAY),
+            ..both
+        };
+        assert_eq!(
+            reminder_due(&renewed, end + 275 * DAY).map(|r| r.reminders),
+            Some(1)
+        );
+        // A plan set to end, or ended, renews nothing.
+        let canceling = AccountPlanRow {
+            canceling: true,
+            ..yearly(end)
+        };
+        assert_eq!(reminder_due(&canceling, at(80)), None);
+        let ended = AccountPlanRow {
+            state: SubscriptionState::Ended,
+            ..yearly(end)
+        };
+        assert_eq!(reminder_due(&ended, at(80)), None);
+    }
+
+    #[test]
+    fn a_monthly_plan_gets_a_reminder_a_year() {
+        let monthly = AccountPlanRow {
+            interval: Some("month".into()),
+            started_at: Some(10 * DAY),
+            ..yearly(500 * DAY)
+        };
+        assert_eq!(reminder_due(&monthly, 374 * DAY), None);
+        let due = reminder_due(&monthly, 375 * DAY).expect("a year on");
+        assert_eq!(due.reminded_day, Some(375));
+        let sent = AccountPlanRow {
+            reminded_day: Some(375),
+            period_end: Some(800 * DAY),
+            ..monthly
+        };
+        assert_eq!(reminder_due(&sent, 739 * DAY), None);
+        assert!(reminder_due(&sent, 740 * DAY).is_some());
+    }
+
+    #[test]
+    fn a_price_change_sends_its_notice_then_a_reminder() {
+        let change = PriceChangeRow {
+            change: 1,
+            plan: "plus_year".into(),
+            effective_day: 100,
+            old_en: String::new(),
+            new_en: String::new(),
+            old_fr: String::new(),
+            new_fr: String::new(),
+        };
+        assert_eq!(price_notice_due(&change, 0, 40), Some(1));
+        assert_eq!(price_notice_due(&change, 1, 69), None);
+        assert_eq!(price_notice_due(&change, 1, 70), Some(2));
+        assert_eq!(price_notice_due(&change, 1, 93), Some(2));
+        assert_eq!(price_notice_due(&change, 1, 94), None);
+        assert_eq!(price_notice_due(&change, 2, 80), None);
+        // A subscriber who joined late gets one notice that counts as both.
+        assert_eq!(price_notice_due(&change, 0, 90), Some(2));
+        assert_eq!(price_notice_due(&change, 0, 100), None);
+    }
 }

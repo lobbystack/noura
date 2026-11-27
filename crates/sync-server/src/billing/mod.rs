@@ -456,6 +456,75 @@ pub async fn settle<B: sync_store::Backend>(
     Ok(amount == 0 && !revoke)
 }
 
+/// How many days ahead the operator announces a price change, at least.
+pub const NOTICE_DAYS: u64 = 30;
+
+/// A price change as the operator announces it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Announcement {
+    /// The plan it changes.
+    pub plan: String,
+    /// The day it takes effect, as `YYYY-MM-DD`.
+    pub effective: String,
+    /// The clause before and after, in English and in French.
+    pub old_en: String,
+    pub new_en: String,
+    pub old_fr: String,
+    pub new_fr: String,
+}
+
+/// Stores a price change after checking it: a paid plan, at least
+/// [`NOTICE_DAYS`] days ahead, with all four clauses (§26, Reminders and
+/// price changes). Returns the change's number.
+pub async fn announce_price<B: sync_store::Backend>(
+    store: &sync_store::Store<B>,
+    announcement: Announcement,
+) -> Result<u64, String> {
+    if !sync_store::plans::is_paid(&announcement.plan) {
+        return Err(format!("{:?} isn't a paid plan ID", announcement.plan));
+    }
+    let date: jiff::civil::Date = announcement.effective.parse().map_err(|_| {
+        format!(
+            "{:?} isn't a date such as 2027-03-01",
+            announcement.effective
+        )
+    })?;
+    let effective_day = date
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .ok()
+        .and_then(|zoned| u64::try_from(zoned.timestamp().as_second()).ok())
+        .ok_or("the date is out of range")?
+        / sync_store::plans::DAY;
+    let today = store.clock().now() / sync_store::plans::DAY;
+    if effective_day < today + NOTICE_DAYS {
+        return Err(format!(
+            "a price change takes effect at least {NOTICE_DAYS} days after you announce it"
+        ));
+    }
+    let clauses = [
+        &announcement.old_en,
+        &announcement.new_en,
+        &announcement.old_fr,
+        &announcement.new_fr,
+    ];
+    if clauses.iter().any(|clause| clause.trim().is_empty()) {
+        return Err("a price change needs --old-en, --new-en, --old-fr and --new-fr".into());
+    }
+    let row = sync_store::PriceChangeRow {
+        change: 0,
+        plan: announcement.plan,
+        effective_day,
+        old_en: announcement.old_en.trim().to_owned(),
+        new_en: announcement.new_en.trim().to_owned(),
+        old_fr: announcement.old_fr.trim().to_owned(),
+        new_fr: announcement.new_fr.trim().to_owned(),
+    };
+    store
+        .announce_price_change(row)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// The tiers a plan ID belongs to, so a checkout offers both intervals of
 /// the chosen one.
 pub fn sibling(plan: &str) -> Option<String> {

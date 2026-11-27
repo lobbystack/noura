@@ -9,6 +9,9 @@
 //! sync-server backup --to FILE [--data DIR] [--database-url URL]
 //! sync-server restore --from FILE [--secret FILE] [--data DIR]
 //! sync-server mark-restored [--data DIR] [--database-url URL]
+//! sync-server billing announce-price --plan PLAN --effective YYYY-MM-DD
+//!                         --old-en TEXT --new-en TEXT --old-fr TEXT --new-fr TEXT
+//!                         [--data DIR] [--database-url URL]
 //! sync-server version
 //! ```
 //!
@@ -62,6 +65,10 @@
 //!   `NOURA_RATE_SIGN_IN_PER_MINUTE`: the rate limits of each device, and of
 //!   each client IP for sign-in.
 //!
+//! `billing announce-price` records a price change at least 30 days ahead,
+//! with the clause before and after in English and in French; a running
+//! server that sells plans mails each subscriber to the plan its notices.
+//!
 //! `blobs migrate-to-s3` moves a disk store's segments into the bucket those
 //! variables name, checks each one's hash, and deletes the local copy only
 //! then. Stop `serve` first, and rerun it after an interruption.
@@ -73,8 +80,19 @@ use std::process::ExitCode;
 use sync_server::postgres::{SECRET_FILE_VARIABLE, SECRET_VARIABLE, secret_from};
 
 const USAGE: &str = "usage: sync-server <migrate|serve|healthcheck|blobs migrate-to-s3|backup|restore|\
-                     mark-restored|version> [--data DIR] [--database-url URL] [--listen ADDRESS] \
-                     [--origin ORIGIN] [--to FILE] [--from FILE] [--secret FILE]";
+                     mark-restored|billing announce-price|version> [--data DIR] \
+                     [--database-url URL] [--listen ADDRESS] [--origin ORIGIN] [--to FILE] \
+                     [--from FILE] [--secret FILE]";
+
+/// The options of `billing announce-price`.
+const PRICE_OPTIONS: [&str; 6] = [
+    "--plan",
+    "--effective",
+    "--old-en",
+    "--new-en",
+    "--old-fr",
+    "--new-fr",
+];
 
 /// A set, non-empty environment variable.
 fn env(name: &str) -> Option<String> {
@@ -90,14 +108,16 @@ struct Arguments {
     to: Option<PathBuf>,
     from: Option<PathBuf>,
     secret: Option<PathBuf>,
+    /// The options of `billing announce-price`, by flag.
+    price: std::collections::BTreeMap<&'static str, String>,
 }
 
 fn arguments() -> Result<Arguments, String> {
     let mut args = std::env::args().skip(1);
     let mut command = args.next().ok_or_else(|| USAGE.to_owned())?;
-    if command == "blobs" {
+    if command == "blobs" || command == "billing" {
         let sub = args.next().ok_or_else(|| USAGE.to_owned())?;
-        command = format!("blobs {sub}");
+        command = format!("{command} {sub}");
     }
     let mut data_dir =
         std::env::var_os("NOURA_DATA_DIR").map_or_else(|| PathBuf::from("data"), PathBuf::from);
@@ -107,6 +127,7 @@ fn arguments() -> Result<Arguments, String> {
     let mut listen = std::env::var("NOURA_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".to_owned());
     let mut origin = env("NOURA_PUBLIC_ORIGIN");
     let (mut to, mut from, mut secret) = (None, None, None);
+    let mut price = std::collections::BTreeMap::new();
     while let Some(flag) = args.next() {
         let value = args
             .next()
@@ -119,7 +140,12 @@ fn arguments() -> Result<Arguments, String> {
             "--to" => to = Some(PathBuf::from(value)),
             "--from" => from = Some(PathBuf::from(value)),
             "--secret" => secret = Some(PathBuf::from(value)),
-            _ => return Err(format!("unknown option {flag}\n{USAGE}")),
+            other => match PRICE_OPTIONS.iter().find(|option| **option == other) {
+                Some(option) => {
+                    price.insert(*option, value);
+                }
+                None => return Err(format!("unknown option {flag}\n{USAGE}")),
+            },
         }
     }
     Ok(Arguments {
@@ -131,6 +157,7 @@ fn arguments() -> Result<Arguments, String> {
         to,
         from,
         secret,
+        price,
     })
 }
 
@@ -452,6 +479,43 @@ fn mark_restored(arguments: Arguments) -> Result<(), String> {
     Ok(())
 }
 
+fn announce_price(mut arguments: Arguments) -> Result<(), String> {
+    let mut option = |name: &str| {
+        arguments
+            .price
+            .remove(name)
+            .ok_or_else(|| format!("billing announce-price needs {name}\n{USAGE}"))
+    };
+    let announcement = sync_server::billing::Announcement {
+        plan: option("--plan")?,
+        effective: option("--effective")?,
+        old_en: option("--old-en")?,
+        new_en: option("--new-en")?,
+        old_fr: option("--old-fr")?,
+        new_fr: option("--new-fr")?,
+    };
+    let database = postgres(arguments.database_url)?;
+    let config = sync_server::Config::new(arguments.data_dir, listen_address(&arguments.listen)?);
+    let change = runtime().block_on(async {
+        match &database {
+            None => {
+                let store = sync_server::open_store(&config)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                sync_server::billing::announce_price(&store, announcement).await
+            }
+            Some(database) => {
+                let store = sync_server::postgres::open_store(database)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                sync_server::billing::announce_price(&store, announcement).await
+            }
+        }
+    })?;
+    eprintln!("sync-server: announced price change {change}; the server mails its notices");
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let arguments = match arguments() {
         Ok(arguments) => arguments,
@@ -467,6 +531,7 @@ fn main() -> ExitCode {
         "backup" => backup(arguments),
         "restore" => restore(arguments),
         "mark-restored" => mark_restored(arguments),
+        "billing announce-price" => announce_price(arguments),
         "healthcheck" => listen_address(&arguments.listen).and_then(|listen| {
             if sync_server::healthcheck(listen) {
                 Ok(())

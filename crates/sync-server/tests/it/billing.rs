@@ -1384,3 +1384,144 @@ async fn a_refund_ends_the_plan_at_once_and_the_jobs_retry_what_failed() {
     assert_eq!(location(&again), "/account");
     assert_eq!(fake.count("/v1/refunds/"), 1);
 }
+
+#[tokio::test]
+async fn yearly_plans_get_two_reminders_and_price_changes_two_notices() {
+    let site = site(true).await;
+    let (_, _) = site.paying("year@example.com", "US", "US-NY", 280).await;
+    let advance = |days: u64| {
+        site.store
+            .clock()
+            .advance(std::time::Duration::from_secs(days * DAY))
+    };
+
+    // 85 days before the renewal: the first reminder, once.
+    assert_eq!(site.plan_jobs().await.reminders, 1);
+    assert_eq!(site.plan_jobs().await.reminders, 0);
+    let queue = site.store.billing_mail().await.expect("queue");
+    assert_eq!(queue.len(), 1);
+    let mail = &queue[0].mail;
+    assert_eq!(mail.recipient, "year@example.com");
+    assert!(mail.subject.starts_with("Your Noura plan renews on"));
+    assert!(mail.body.contains("Your Plus, yearly plan renews on"));
+    assert!(mail.body.contains("for USD 96.00 plus tax"));
+    assert!(
+        mail.body
+            .contains("choose Cancel plan, or email billing@example.com")
+    );
+
+    // 54 days before, nothing; 44 days before, the second; nothing more
+    // after it.
+    advance(30);
+    assert_eq!(site.plan_jobs().await.reminders, 0);
+    advance(10);
+    assert_eq!(site.plan_jobs().await.reminders, 1);
+    advance(20);
+    assert_eq!(site.plan_jobs().await.reminders, 0);
+    assert_eq!(site.queued().await.len(), 2);
+
+    // A price change of Plus, yearly, 40 days out: a notice now, and a
+    // reminder in the last 30 days.
+    let effective =
+        jiff::Timestamp::from_second(i64::try_from(site.now() + 40 * DAY).expect("a time"))
+            .expect("a time")
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .date()
+            .to_string();
+    let announce = |effective: &str| sync_server::billing::Announcement {
+        plan: "plus_year".into(),
+        effective: effective.into(),
+        old_en: "USD 96 a year".into(),
+        new_en: "USD 108 a year".into(),
+        old_fr: "96 $ US par année".into(),
+        new_fr: "108 $ US par année".into(),
+    };
+    let soon = jiff::Timestamp::from_second(i64::try_from(site.now() + 10 * DAY).expect("a time"))
+        .expect("a time")
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
+        .to_string();
+    let refused = sync_server::billing::announce_price(&site.store, announce(&soon))
+        .await
+        .expect_err("too soon");
+    assert!(refused.contains("at least 30 days"), "{refused}");
+    sync_server::billing::announce_price(&site.store, announce(&effective))
+        .await
+        .expect("announced");
+    assert_eq!(site.plan_jobs().await.price_notices, 1);
+    assert_eq!(site.plan_jobs().await.price_notices, 0);
+    let queue = site.store.billing_mail().await.expect("queue");
+    let notice = &queue.last().expect("a notice").mail;
+    assert!(
+        notice
+            .subject
+            .starts_with("The price of your Noura plan changes on")
+    );
+    assert!(notice.body.contains("Now: USD 96 a year"));
+    assert!(notice.body.contains("USD 108 a year"));
+    assert!(
+        notice
+            .body
+            .contains("refuse the change by cancelling your plan, at no cost")
+    );
+
+    // A subscriber refusing the change may end the plan today.
+    advance(15);
+    assert_eq!(site.plan_jobs().await.price_notices, 1);
+    let queue = site.store.billing_mail().await.expect("queue");
+    assert!(
+        queue
+            .last()
+            .expect("a reminder")
+            .mail
+            .subject
+            .starts_with("Reminder: the price of your Noura plan changes on")
+    );
+    let (_, refusing) = site.paying("refuse@example.com", "US", "US-NY", 100).await;
+    let ask = site.page("/account/cancel", &refusing).await;
+    assert!(ask.contains("value=\"today\""), "{ask}");
+}
+
+/// `billing announce-price` stores a change 30 days ahead or more, and
+/// refuses one too soon or for a plan the server doesn't sell.
+#[test]
+fn the_binary_announces_a_price_change() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let data = dir.path().join("data");
+    assert!(crate::support::run(&["migrate"], &data).status.success());
+    let date = |days: i64| {
+        jiff::Timestamp::now()
+            .checked_add(jiff::SignedDuration::from_hours(24 * days))
+            .expect("a time")
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .date()
+            .to_string()
+    };
+    let announce = |plan: &str, effective: &str| {
+        std::process::Command::new(crate::support::BIN)
+            .args(["billing", "announce-price", "--data"])
+            .arg(&data)
+            .args(["--plan", plan, "--effective", effective])
+            .args(["--old-en", "USD 96 a year", "--new-en", "USD 108 a year"])
+            .args([
+                "--old-fr",
+                "96 $ US par année",
+                "--new-fr",
+                "108 $ US par année",
+            ])
+            .output()
+            .expect("the binary runs")
+    };
+    let soon = announce("plus_year", &date(5));
+    assert!(!soon.status.success());
+    assert!(String::from_utf8_lossy(&soon.stderr).contains("at least 30 days"));
+    let unknown = announce("gold", &date(60));
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("isn't a paid plan ID"));
+    let done = announce("plus_year", &date(60));
+    assert!(
+        done.status.success(),
+        "{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
+    assert!(String::from_utf8_lossy(&done.stderr).contains("announced price change 1"));
+}
