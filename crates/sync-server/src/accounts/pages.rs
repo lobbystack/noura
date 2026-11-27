@@ -58,6 +58,8 @@ pub struct Account<'a> {
     pub cancel_label: &'a str,
     pub withdraw: bool,
     pub withdraw_label: &'a str,
+    pub refund: bool,
+    pub refund_label: &'a str,
     pub contact: &'a str,
 }
 

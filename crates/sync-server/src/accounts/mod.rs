@@ -361,6 +361,18 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
             get(plan::upgrade::<B>).post(plan::checkout::<B>),
         )
         .route("/account/billing", get(plan::portal::<B>))
+        .route(
+            "/account/cancel",
+            get(plan::cancel_page::<B>).post(plan::cancel::<B>),
+        )
+        .route(
+            "/account/refund",
+            get(plan::refund_page::<B>).post(plan::refund::<B>),
+        )
+        .route(
+            "/account/withdraw",
+            get(plan::withdraw_page::<B>).post(plan::withdraw::<B>),
+        )
         .route("/billing/{provider}/webhook", post(plan::webhook::<B>))
         .route("/account/passkeys/sign-up/start", post(sign_up_start::<B>))
         .route(
@@ -878,10 +890,18 @@ async fn account_page<B: Backend>(
         (lang::Lang::Fr, n) => format!("Vous avez {n} clés d\u{2019}accès."),
     };
     let section = match provider {
-        Some(provider) => match store.account_report(account).await {
-            Ok(report) => Some(plan::section(provider, &report, lang, false, false)),
-            Err(error) => return failure(error),
-        },
+        Some(provider) => {
+            let report = match store.account_report(account).await {
+                Ok(report) => report,
+                Err(error) => return failure(error),
+            };
+            let (ends, choices) = match plan::account_choices(store, account).await {
+                Ok(Some((row, choices))) => (row.period_end.filter(|_| row.canceling), choices),
+                Ok(None) => (None, crate::billing::Choices::default()),
+                Err(error) => return failure(error),
+            };
+            Some(plan::section(provider, &report, lang, &choices, ends))
+        }
         None => None,
     };
     let contact = state
@@ -899,6 +919,7 @@ async fn account_page<B: Backend>(
         manage: false,
         cancel: false,
         withdraw: false,
+        refund: false,
     };
     let shown = section.as_ref().unwrap_or(&empty);
     html(
@@ -928,6 +949,8 @@ async fn account_page<B: Backend>(
             cancel_label: lang.pick("Cancel plan", "Résilier le forfait"),
             withdraw: shown.withdraw,
             withdraw_label: lang.pick("Withdraw from contract here", "Se rétracter du contrat ici"),
+            refund: shown.refund,
+            refund_label: lang.pick("Refund last payment", "Rembourser le dernier paiement"),
             contact: &contact,
         },
     )

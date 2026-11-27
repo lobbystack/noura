@@ -20,6 +20,7 @@
 {% for offer in offers %}<a class="button" href="/account/upgrade?plan={{ offer.0 }}">{{ offer.1 }}</a>
 {% endfor %}{% if manage %}<a class="button secondary" href="/account/billing">{{ manage_label }}</a>{% endif %}
 {% if cancel %}<a class="button secondary" href="/account/cancel">{{ cancel_label }}</a>{% endif %}
+{% if refund %}<a class="button secondary" href="/account/refund">{{ refund_label }}</a>{% endif %}
 {% if withdraw %}<a class="button secondary" href="/account/withdraw">{{ withdraw_label }}</a>{% endif %}
 </div>
 <p class="aside">{{ contact }}</p>

@@ -335,6 +335,127 @@ pub trait BillingProvider: Send + Sync {
     ) -> Result<WebhookEvent, WebhookError>;
 }
 
+/// How long the 14-day refund and the withdrawal period last.
+pub const REFUND_DAYS: u64 = 14;
+
+/// How long after a price change takes effect a subscriber may still
+/// refuse it by cancelling, with the unused part refunded.
+pub const REFUSAL_DAYS: u64 = 30;
+
+/// What a paying account may do with its plan (§26, Cancellation, Refunds
+/// and withdrawal).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Choices {
+    /// It may cancel: its subscription grants a plan and isn't set to end.
+    pub cancel: bool,
+    /// Its cancellation may take effect today, with the unused part of
+    /// the period refunded: in Québec, or while refusing a price change.
+    pub end_today: bool,
+    /// The refund of the unused part of the period, before tax.
+    pub unused: u64,
+    /// It may withdraw: in the EU or the UK, within 14 days of the start.
+    pub withdraw: bool,
+    /// It may get its latest payment back: within 14 days of it, and when
+    /// it may not withdraw.
+    pub refund: bool,
+    /// The latest order, which a refund refunds.
+    pub order: Option<sync_store::OrderRow>,
+}
+
+/// The unused part of `order`'s `net` amount at `now`, in proportion to
+/// the time left of the period from `start` to `end`.
+pub fn unused_part(net: u64, start: u64, end: u64, now: u64) -> u64 {
+    if end <= start || now >= end {
+        return 0;
+    }
+    let left = u128::from(end - now.max(start));
+    let length = u128::from(end - start);
+    u64::try_from(u128::from(net) * left / length).unwrap_or(net)
+}
+
+/// What an account whose subscription is `row`, whose latest order is
+/// `order`, may do at `now`. `refusing` says whether a price change of its
+/// plan is announced or took effect at most 30 days ago.
+pub fn choices(
+    row: &AccountPlanRow,
+    order: Option<sync_store::OrderRow>,
+    now: u64,
+    refusing: bool,
+) -> Choices {
+    if !row.state.grants() {
+        return Choices::default();
+    }
+    let window = REFUND_DAYS * sync_store::plans::DAY;
+    let order = order.filter(|order| order.subscription == row.subscription);
+    let started = row.started_at.or(order.as_ref().map(|order| order.paid_at));
+    let withdraw = row.in_eu_or_uk()
+        && order.is_some()
+        && started.is_some_and(|started| now < started.saturating_add(window));
+    let refund = !withdraw
+        && order
+            .as_ref()
+            .is_some_and(|order| now < order.paid_at.saturating_add(window));
+    let cancel = !row.canceling;
+    let end_today = cancel && (row.in_quebec() || refusing);
+    let unused = match (&order, row.period_end) {
+        (Some(order), Some(end)) if end_today => unused_part(
+            order.net,
+            row.period_start.unwrap_or(order.paid_at),
+            end,
+            now,
+        ),
+        _ => 0,
+    };
+    Choices {
+        cancel,
+        end_today,
+        unused,
+        withdraw,
+        refund,
+        order,
+    }
+}
+
+/// Pays what the server owes the provider for `owed`: the refund, then the
+/// revocation, and records what's left, which the maintenance pass retries
+/// (§26, Refunds and withdrawal). A refund the provider refuses as invalid
+/// can't succeed on a retry, so the server logs it for the operator and
+/// drops it.
+pub async fn settle<B: sync_store::Backend>(
+    store: &sync_store::Store<B>,
+    provider: &dyn BillingProvider,
+    owed: &sync_store::RefundOwed,
+) -> Result<bool, sync_store::Error> {
+    if owed.provider != provider.name() {
+        return Ok(false);
+    }
+    let (mut amount, mut revoke) = (owed.amount, owed.revoke);
+    if amount > 0 {
+        match provider.refund(&owed.order_id, amount).await {
+            Ok(()) => amount = 0,
+            Err(ProviderError::Status(422)) => {
+                tracing::error!("the payment provider refused a refund; refund the order by hand");
+                amount = 0;
+            }
+            Err(error) => {
+                tracing::warn!(cause = %error, "a refund failed; the next pass retries it")
+            }
+        }
+    }
+    if revoke {
+        match provider.revoke(&owed.subscription).await {
+            Ok(()) => revoke = false,
+            Err(error) => {
+                tracing::warn!(cause = %error, "a revocation failed; the next pass retries it");
+            }
+        }
+    }
+    if (amount, revoke) != (owed.amount, owed.revoke) {
+        store.settle_refund(owed.id, amount, revoke).await?;
+    }
+    Ok(amount == 0 && !revoke)
+}
+
 /// The tiers a plan ID belongs to, so a checkout offers both intervals of
 /// the chosen one.
 pub fn sibling(plan: &str) -> Option<String> {
@@ -384,6 +505,96 @@ mod tests {
         assert_eq!(checkout_locale(Some("fr")), Some("fr-CA"));
         assert_eq!(checkout_locale(Some("en-CA,fr;q=0.8")), None);
         assert_eq!(checkout_locale(None), None);
+    }
+
+    fn paying(country: &str, region: &str) -> AccountPlanRow {
+        AccountPlanRow {
+            subscription: "sub".into(),
+            plan: "plus_year".into(),
+            state: SubscriptionState::Active,
+            period_start: Some(1_000),
+            started_at: Some(1_000),
+            period_end: Some(1_000 + 365 * DAY),
+            country: Some(country.into()),
+            region: Some(region.into()),
+            ..AccountPlanRow::default()
+        }
+    }
+
+    fn order(paid_at: u64) -> sync_store::OrderRow {
+        sync_store::OrderRow {
+            subscription: "sub".into(),
+            order_id: "ord".into(),
+            net: 9_600,
+            currency: "usd".into(),
+            paid_at,
+        }
+    }
+
+    const DAY: u64 = sync_store::plans::DAY;
+
+    #[test]
+    fn the_unused_part_follows_the_time_left() {
+        assert_eq!(unused_part(9_600, 0, 100, 0), 9_600);
+        assert_eq!(unused_part(9_600, 0, 100, 25), 7_200);
+        assert_eq!(unused_part(9_600, 0, 100, 100), 0);
+        assert_eq!(unused_part(9_600, 100, 100, 50), 0);
+        assert_eq!(unused_part(u64::MAX, 0, 3, 1), u64::MAX / 3 * 2);
+    }
+
+    #[test]
+    fn each_place_gets_its_choices() {
+        let half = 1_000 + 365 * DAY / 2;
+        // Québec, after 14 days: end today with half refunded, or at the
+        // period's end; no 14-day refund.
+        let quebec = choices(&paying("CA", "QC"), Some(order(1_000)), half, false);
+        assert!(quebec.cancel && quebec.end_today && !quebec.withdraw && !quebec.refund);
+        assert_eq!(quebec.unused, 4_800);
+        // Ontario in its first week: cancel at the period's end, or refund.
+        let ontario = choices(&paying("CA", "ON"), Some(order(1_000)), 1_000 + DAY, false);
+        assert!(ontario.cancel && !ontario.end_today && ontario.refund && !ontario.withdraw);
+        assert_eq!(ontario.unused, 0);
+        // Ontario refusing a price change may end today.
+        assert!(choices(&paying("CA", "ON"), Some(order(1_000)), half, true).end_today);
+        // France in its first week withdraws instead of the refund, and not
+        // after 14 days.
+        let france = choices(&paying("FR", ""), Some(order(1_000)), 1_000 + DAY, false);
+        assert!(france.withdraw && !france.refund);
+        let late = choices(
+            &paying("FR", ""),
+            Some(order(1_000)),
+            1_000 + 15 * DAY,
+            false,
+        );
+        assert!(!late.withdraw && !late.refund && late.cancel);
+        // A renewal opens a new 14 days for the refund, not the withdrawal.
+        let renewed = choices(
+            &paying("FR", ""),
+            Some(order(1_000 + 365 * DAY)),
+            1_000 + 366 * DAY,
+            false,
+        );
+        assert!(renewed.refund && !renewed.withdraw);
+        // Another subscription's order refunds nothing, and a canceled or
+        // ended plan offers no cancel.
+        let other = sync_store::OrderRow {
+            subscription: "old".into(),
+            ..order(1_000)
+        };
+        assert!(!choices(&paying("CA", "ON"), Some(other), 1_000, false).refund);
+        let canceling = AccountPlanRow {
+            canceling: true,
+            ..paying("CA", "QC")
+        };
+        assert!(!choices(&canceling, None, half, false).cancel);
+        let ended = AccountPlanRow {
+            state: SubscriptionState::Ended,
+            ..paying("CA", "QC")
+        };
+        assert_eq!(
+            choices(&ended, Some(order(1_000)), 1_000, false),
+            Choices::default()
+        );
     }
 
     #[test]

@@ -7,8 +7,9 @@
 //! warns about workspaces over plan on their first day, on day 60 and on
 //! day 85, closes them on day 90, warns `free` owners whom nobody used for
 //! 11 and 12 months, closes their workspaces at 13, forgets webhook
-//! events after 100 days and consents after 3 years, and sends the queued
-//! mail about plans. Two instances may send the same notice once
+//! events after 100 days and consents after 3 years, retries the refunds
+//! and revocations the server owes the provider, and sends the queued mail
+//! about plans. Two instances may send the same notice once
 //! each; each records what it sent after the mail went out.
 
 use std::sync::Arc;
@@ -72,6 +73,8 @@ pub struct PlanJobs {
     pub warnings: u64,
     /// Workspaces the server closed after 13 months without use.
     pub closed_inactive: u64,
+    /// Refunds and revocations owed that the provider accepted in full.
+    pub settled: u64,
     /// Queued messages about plans that went out.
     pub mail: u64,
 }
@@ -208,6 +211,13 @@ pub async fn plan_jobs<B: Backend>(
     inactivity_job(store, accounts, month_of(now), &mut report).await?;
     store.forget_billing_events().await?;
     store.forget_consents().await?;
+    if let Some(provider) = accounts.billing() {
+        for owed in store.refunds_owed().await? {
+            if crate::billing::settle(store, provider, &owed).await? {
+                report.settled += 1;
+            }
+        }
+    }
     report.mail = accounts.send_billing_mail(store).await?;
     Ok(report)
 }

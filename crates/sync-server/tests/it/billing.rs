@@ -34,6 +34,8 @@ struct Received {
 #[derive(Clone, Default)]
 struct FakePolar {
     received: Arc<Mutex<Vec<Received>>>,
+    /// Whether refunds fail with 500, as an outage would.
+    refunds_fail: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl FakePolar {
@@ -51,6 +53,15 @@ impl FakePolar {
             version: header("polar-version"),
             body,
         });
+    }
+
+    fn count(&self, path: &str) -> usize {
+        self.received
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r.path == path)
+            .count()
     }
 
     fn last(&self, path: &str) -> Received {
@@ -106,6 +117,56 @@ async fn customer_session(
     )
 }
 
+async fn cancel_subscription(
+    State(fake): State<FakePolar>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Answer {
+    let mut body: Value = serde_json::from_slice(&body).expect("JSON");
+    body["id"] = json!(id);
+    fake.record("PATCH /v1/subscriptions", &headers, body);
+    answer(
+        StatusCode::OK,
+        json!({ "id": id, "cancel_at_period_end": true }),
+    )
+}
+
+async fn revoke_subscription(
+    State(fake): State<FakePolar>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Answer {
+    let first = fake.count("DELETE /v1/subscriptions") == 0;
+    fake.record("DELETE /v1/subscriptions", &headers, json!({ "id": id }));
+    if first {
+        answer(StatusCode::OK, json!({ "id": id, "status": "canceled" }))
+    } else {
+        // Polar answers 403 for a subscription it already revoked.
+        answer(
+            StatusCode::FORBIDDEN,
+            json!({ "error": "AlreadyCanceledSubscription" }),
+        )
+    }
+}
+
+async fn create_refund(
+    State(fake): State<FakePolar>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Answer {
+    let body: Value = serde_json::from_slice(&body).expect("JSON");
+    if fake.refunds_fail.load(std::sync::atomic::Ordering::SeqCst) {
+        fake.record("failed refund", &headers, body);
+        return answer(StatusCode::INTERNAL_SERVER_ERROR, json!({}));
+    }
+    fake.record("/v1/refunds/", &headers, body);
+    answer(
+        StatusCode::CREATED,
+        json!({ "id": "ref-1", "status": "pending" }),
+    )
+}
+
 async fn product(axum::extract::Path(id): axum::extract::Path<String>) -> Answer {
     let (amount, interval) = match id.as_str() {
         "prod-plus-year" => (9_600, "year"),
@@ -133,6 +194,11 @@ async fn fake_polar() -> (FakePolar, String) {
         .route("/v1/checkouts/", post(checkout))
         .route("/v1/customer-sessions/", post(customer_session))
         .route("/v1/products/{id}", axum::routing::get(product))
+        .route(
+            "/v1/subscriptions/{id}",
+            axum::routing::patch(cancel_subscription).delete(revoke_subscription),
+        )
+        .route("/v1/refunds/", post(create_refund))
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -147,6 +213,7 @@ struct Site {
     store: Arc<Store<SqliteBackend>>,
     http: reqwest::Client,
     fake: Option<FakePolar>,
+    config: PolarConfig,
     _dir: tempfile::TempDir,
 }
 
@@ -174,6 +241,7 @@ async fn site(billing: bool) -> Site {
         api,
         products,
     };
+    let kept = config.clone();
     let address = sync_server::spawn_with(store.clone(), "127.0.0.1:0", move |origin| {
         let accounts = Accounts::local(origin);
         if billing {
@@ -195,6 +263,7 @@ async fn site(billing: bool) -> Site {
             .build()
             .expect("a client"),
         fake: billing.then_some(fake),
+        config: kept,
         _dir: dir,
     }
 }
@@ -261,7 +330,128 @@ impl Site {
     fn now(&self) -> u64 {
         self.store.clock().now()
     }
+
+    /// One pass of the plan jobs, with this site's Polar.
+    async fn plan_jobs(&self) -> sync_server::maintenance::PlanJobs {
+        let accounts =
+            Accounts::local(sync_server::PublicOrigin::parse(&self.base).expect("an origin"))
+                .with_billing(
+                    Arc::new(Polar::new(self.config.clone())),
+                    sync_server::billing::Merchant::example(),
+                );
+        sync_server::maintenance::plan_jobs(&self.store, &accounts)
+            .await
+            .expect("the jobs run")
+    }
+
+    /// A paying account on `plus_year` billed to `country` and `state`,
+    /// whose subscription and first order started `days_ago` days ago, as
+    /// Polar's events report them.
+    async fn paying(&self, email: &str, country: &str, state: &str, days_ago: u64) -> (Id, String) {
+        let (account, session) = self.signed_in(email).await;
+        let now = self.now();
+        let start = now - days_ago * DAY;
+        let end = start + 365 * DAY;
+        let time = |t: u64| {
+            jiff::Timestamp::from_second(i64::try_from(t).expect("a time"))
+                .expect("a time")
+                .to_string()
+        };
+        let subscription = json!({
+            "id": "sub-1",
+            "status": "active",
+            "amount": 9_600,
+            "currency": "usd",
+            "recurring_interval": "year",
+            "current_period_start": time(start),
+            "current_period_end": time(end),
+            "started_at": time(start),
+            "cancel_at_period_end": false,
+            "customer_id": "cus-1",
+            "product_id": "prod-plus-year",
+            "created_at": time(start),
+            "modified_at": time(start),
+            "metadata": {},
+            "customer": {
+                "id": "cus-1",
+                "external_id": account.to_base64url(),
+                "billing_address": { "country": country, "state": state },
+            },
+            "product": { "id": "prod-plus-year", "metadata": { "noura_plan": "plus_year" } },
+        });
+        let active = json!({
+            "type": "subscription.active",
+            "timestamp": time(start),
+            "data": subscription,
+        });
+        assert_eq!(
+            self.deliver(&format!("{email}-active"), now, &active, SECRET)
+                .await,
+            StatusCode::ACCEPTED
+        );
+        let order = json!({
+            "type": "order.paid",
+            "timestamp": time(start),
+            "data": {
+                "id": "ord-1",
+                "created_at": time(start),
+                "modified_at": time(start),
+                "billing_reason": "subscription_create",
+                "net_amount": 9_600,
+                "tax_amount": 0,
+                "total_amount": 9_600,
+                "currency": "usd",
+                "billing_address": { "country": country, "state": state },
+                "product_id": "prod-plus-year",
+                "subscription_id": "sub-1",
+                "metadata": {},
+                "customer": { "id": "cus-1", "external_id": account.to_base64url() },
+                "subscription": subscription,
+            },
+        });
+        assert_eq!(
+            self.deliver(&format!("{email}-paid"), now, &order, SECRET)
+                .await,
+            StatusCode::ACCEPTED
+        );
+        // The contract went in the queue; these tests read what follows.
+        for queued in self.store.billing_mail().await.expect("queue") {
+            self.store.sent_billing_mail(queued.id).await.expect("sent");
+        }
+        (account, session)
+    }
+
+    async fn plan(&self, account: Id) -> String {
+        self.store
+            .account_report(account)
+            .await
+            .expect("report")
+            .plan
+            .as_str()
+            .to_owned()
+    }
+
+    async fn page(&self, path: &str, session: &str) -> String {
+        self.get(path, Some(session))
+            .await
+            .text()
+            .await
+            .expect("a body")
+    }
+
+    /// The subjects of the queued mail.
+    async fn queued(&self) -> Vec<String> {
+        self.store
+            .billing_mail()
+            .await
+            .expect("queue")
+            .into_iter()
+            .map(|queued| queued.mail.subject)
+            .collect()
+    }
 }
+
+const DAY: u64 = 86_400;
 
 fn location(response: &reqwest::Response) -> String {
     response.headers()["location"]
@@ -983,4 +1173,214 @@ async fn sign_up_refuses_disposable_addresses_and_counts_per_client() {
         vec!["one@example.com", "two@example.com", "member@example.com"],
         "the third new account waits for tomorrow"
     );
+}
+
+#[tokio::test]
+async fn quebec_cancels_today_and_gets_the_unused_part_back() {
+    let site = site(true).await;
+    let fake = site.fake.clone().expect("billing");
+    let (account, session) = site.paying("qc@example.com", "CA", "CA-QC", 73).await;
+    assert_eq!(site.plan(account).await, "plus_year");
+
+    // After 14 days: cancel, and no refund button.
+    let page = site.page("/account", &session).await;
+    assert!(page.contains("href=\"/account/cancel\""));
+    assert!(!page.contains("/account/refund"));
+    assert!(!page.contains("/account/withdraw"));
+
+    // The page offers today, with 292 of 365 days back, or the period's end.
+    let ask = site.page("/account/cancel", &session).await;
+    assert!(ask.contains("get USD 76.80 back, plus tax"), "{ask}");
+    assert!(ask.contains("value=\"today\""));
+    assert!(ask.contains("value=\"end\""));
+
+    let done = site
+        .post_form("/account/cancel", &session, "when=today", None)
+        .await;
+    assert_eq!(done.status(), StatusCode::OK);
+    assert!(
+        done.text()
+            .await
+            .expect("a body")
+            .contains("Your plan is cancelled")
+    );
+    let refund = fake.last("/v1/refunds/");
+    assert_eq!(refund.body["order_id"], "ord-1");
+    assert_eq!(refund.body["amount"], 7_680);
+    assert_eq!(refund.body["reason"], "customer_request");
+    assert_eq!(fake.last("DELETE /v1/subscriptions").body["id"], "sub-1");
+    assert_eq!(fake.count("PATCH /v1/subscriptions"), 0);
+    assert_eq!(
+        site.plan(account).await,
+        "free",
+        "the refund ends the period"
+    );
+    assert!(site.store.refunds_owed().await.expect("owed").is_empty());
+
+    // The confirmation is in French first, then English.
+    let queue = site.store.billing_mail().await.expect("queue");
+    assert_eq!(queue.len(), 1);
+    let mail = &queue[0].mail;
+    assert_eq!(mail.recipient, "qc@example.com");
+    assert_eq!(
+        mail.subject,
+        "Votre forfait Noura est résilié / Your Noura plan is cancelled"
+    );
+    assert!(mail.body.contains("Nous vous remboursons 76,80 USD"));
+    assert!(mail.body.contains("We're refunding USD 76.80 plus the tax"));
+
+    // The pages no longer offer to cancel.
+    let page = site.page("/account", &session).await;
+    assert!(!page.contains("/account/cancel"));
+    assert_eq!(
+        location(&site.get("/account/cancel", Some(&session)).await),
+        "/account"
+    );
+}
+
+#[tokio::test]
+async fn elsewhere_a_cancellation_ends_with_the_period() {
+    let site = site(true).await;
+    let fake = site.fake.clone().expect("billing");
+    let (account, session) = site.paying("on@example.com", "CA", "CA-ON", 30).await;
+    let ask = site.page("/account/cancel", &session).await;
+    assert!(ask.contains("stays active until"));
+    assert!(!ask.contains("value=\"today\""));
+
+    // Asking for today outside Québec still ends with the period.
+    let done = site
+        .post_form("/account/cancel", &session, "when=today", None)
+        .await;
+    assert!(
+        done.text()
+            .await
+            .expect("a body")
+            .contains("It stays active until")
+    );
+    assert_eq!(
+        fake.last("PATCH /v1/subscriptions").body["cancel_at_period_end"],
+        true
+    );
+    assert_eq!(fake.count("/v1/refunds/"), 0);
+    assert_eq!(fake.count("DELETE /v1/subscriptions"), 0);
+    assert_eq!(site.plan(account).await, "plus_year");
+    let page = site.page("/account", &session).await;
+    assert!(page.contains("Your plan ends on"));
+    assert!(!page.contains("/account/cancel"));
+    let subjects = site.queued().await;
+    assert_eq!(subjects.len(), 1);
+    assert!(subjects[0].starts_with("Your Noura plan ends on"));
+
+    // A cross-site post changes nothing.
+    let (_, other) = site.paying("on2@example.com", "CA", "CA-ON", 30).await;
+    let foreign = site
+        .http
+        .post(format!("{}/account/cancel", site.base))
+        .header("cookie", &other)
+        .header("origin", "https://evil.example")
+        .body("when=end")
+        .send()
+        .await
+        .expect("an answer");
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+    assert_eq!(fake.count("PATCH /v1/subscriptions"), 1);
+}
+
+#[tokio::test]
+async fn a_withdrawal_in_the_eu_refunds_everything_and_ends_the_plan() {
+    let site = site(true).await;
+    let fake = site.fake.clone().expect("billing");
+    let (account, session) = site.paying("fr@example.com", "FR", "", 3).await;
+    let page = site.page("/account", &session).await;
+    assert!(page.contains("Withdraw from contract here"));
+    assert!(
+        !page.contains("/account/refund"),
+        "withdrawal replaces the refund"
+    );
+
+    let ask = site.page("/account/withdraw", &session).await;
+    assert!(ask.contains("everything you paid, USD 96.00 plus tax"));
+    let french = site
+        .http
+        .get(format!("{}/account/withdraw", site.base))
+        .header("cookie", format!("{session}; noura_lang=fr"))
+        .send()
+        .await
+        .expect("an answer")
+        .text()
+        .await
+        .expect("a body");
+    assert!(french.contains("Se rétracter du contrat"));
+    assert!(french.contains("Confirmer la rétractation"));
+
+    site.post_form("/account/withdraw", &session, "when=today", None)
+        .await;
+    assert_eq!(fake.last("/v1/refunds/").body["amount"], 9_600);
+    assert_eq!(fake.count("DELETE /v1/subscriptions"), 1);
+    assert_eq!(site.plan(account).await, "free");
+    assert_eq!(site.queued().await, ["We received your withdrawal"]);
+    let page = site.page("/account", &session).await;
+    assert!(!page.contains("Withdraw from contract here"));
+
+    // After 14 days the button is gone.
+    let (_, late) = site.paying("late@example.com", "DE", "", 15).await;
+    assert!(
+        !site
+            .page("/account", &late)
+            .await
+            .contains("/account/withdraw")
+    );
+    assert_eq!(
+        location(&site.get("/account/withdraw", Some(&late)).await),
+        "/account"
+    );
+}
+
+#[tokio::test]
+async fn a_refund_ends_the_plan_at_once_and_the_jobs_retry_what_failed() {
+    let site = site(true).await;
+    let fake = site.fake.clone().expect("billing");
+    let (account, session) = site.paying("us@example.com", "US", "US-CA", 2).await;
+    assert!(
+        site.page("/account", &session)
+            .await
+            .contains("Refund last payment")
+    );
+    assert!(
+        site.page("/account/refund", &session)
+            .await
+            .contains("You get USD 96.00 back")
+    );
+
+    // Polar's refunds fail for a while: the plan still ends at once, and
+    // the store keeps the refund it owes.
+    fake.refunds_fail
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    site.post_form("/account/refund", &session, "when=today", None)
+        .await;
+    assert_eq!(site.plan(account).await, "free");
+    assert_eq!(fake.count("DELETE /v1/subscriptions"), 1);
+    let owed = site.store.refunds_owed().await.expect("owed");
+    assert_eq!(owed.len(), 1);
+    assert_eq!((owed[0].amount, owed[0].revoke), (9_600, false));
+    assert_eq!(site.queued().await, ["Your Noura refund"]);
+    assert_eq!(site.plan_jobs().await.settled, 0);
+    assert_eq!(site.store.refunds_owed().await.expect("owed").len(), 1);
+
+    // Once Polar answers, the next pass pays it, once.
+    fake.refunds_fail
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(site.plan_jobs().await.settled, 1);
+    assert_eq!(fake.count("/v1/refunds/"), 1);
+    assert_eq!(fake.last("/v1/refunds/").body["amount"], 9_600);
+    assert!(site.store.refunds_owed().await.expect("owed").is_empty());
+    assert_eq!(site.plan_jobs().await.settled, 0);
+    assert_eq!(fake.count("/v1/refunds/"), 1);
+
+    // A second post finds nothing to refund.
+    let again = site
+        .post_form("/account/refund", &session, "when=today", None)
+        .await;
+    assert_eq!(location(&again), "/account");
+    assert_eq!(fake.count("/v1/refunds/"), 1);
 }
