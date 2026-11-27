@@ -11,7 +11,7 @@ use plugin_host::{KernelEvent, ShortcutEvent};
 
 use super::App;
 use crate::speech_kernel::SpeechKernel;
-use crate::{AppError, GlobalShortcut, MenuBarItems};
+use crate::{AppError, GlobalShortcut, MenuBarItems, Platform};
 
 /// A model as Settings > Speech lists it.
 #[derive(Debug, Clone, PartialEq)]
@@ -313,8 +313,9 @@ impl App {
         id: &str,
         keys: Option<&str>,
     ) -> Result<(), AppError> {
+        let platform = self.platform();
         let keys = keys
-            .map(|typed| plugin_host::keys_from_label(typed).ok_or_else(invalid_keys))
+            .map(|typed| plugin_host::keys_from_label(typed).ok_or_else(|| invalid_keys(platform)))
             .transpose()?;
         let keys = keys.as_deref();
         if !self
@@ -334,6 +335,12 @@ impl App {
             .map_err(speech_error)?;
         kernel.changed();
         Ok(())
+    }
+
+    /// `keys`, such as `Alt+Space`, as the app's platform writes them:
+    /// `⌥Space` on macOS and `Alt+Space` elsewhere.
+    pub fn keys_label(&self, keys: &str) -> String {
+        plugin_host::keys_label_on(keys, self.platform() == Platform::MacOs)
     }
 
     /// Note whether the system took the keys of `plugin`'s shortcut `id`.
@@ -397,10 +404,10 @@ fn speech_error(error: speech::SpeechError) -> AppError {
     AppError::new(&error.code, error.message)
 }
 
-/// Keys you typed that aren't a shortcut, with an example in the form this
-/// computer's system writes keys.
-fn invalid_keys() -> AppError {
-    let hint = if cfg!(target_os = "macos") {
+/// Keys you typed that aren't a shortcut, with an example in the form
+/// `platform` writes keys.
+fn invalid_keys(platform: Platform) -> AppError {
+    let hint = if platform == Platform::MacOs {
         "Use modifiers such as \u{2303} Control or \u{2325} Option, then one key, as in \
          \u{2325}Space."
     } else {

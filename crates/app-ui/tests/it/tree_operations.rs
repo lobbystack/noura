@@ -286,6 +286,44 @@ fn linux_hides_open_in_terminal_and_names_its_file_manager() {
     assert!(harness.query_by_label("Open in Terminal").is_none());
 }
 
+/// The keys a row's menu shows beside each item that has some.
+fn menu_keys(harness: &Ui, name: &str) -> Vec<(String, String)> {
+    harness
+        .get_by_label(&format!("Actions for {name}"))
+        .get_all_by_role(Role::Button)
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            Some((node.label()?, node.data().keyboard_shortcut()?.to_owned()))
+        })
+        .collect()
+}
+
+#[test]
+fn a_rows_menu_writes_its_keys_as_the_platform_does() {
+    for (platform, trash) in [
+        (Platform::MacOs, "\u{2318}\u{232b}"),
+        (Platform::Windows, "Delete"),
+        (Platform::Linux, "Delete"),
+    ] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let (mut harness, _system) =
+            opened_on(app_data.path(), &parent.path().join("Garden"), platform);
+
+        row(&harness, "Readme").click_secondary();
+        harness.run();
+
+        assert_eq!(
+            menu_keys(&harness, "Readme"),
+            [
+                ("Rename\u{2026}".to_owned(), "F2".to_owned()),
+                ("Move to Trash".to_owned(), trash.to_owned()),
+            ],
+            "{platform:?}"
+        );
+    }
+}
+
 #[test]
 fn a_folders_menu_creates_a_note_inside_it() {
     let app_data = tempfile::tempdir().unwrap();

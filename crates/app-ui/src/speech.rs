@@ -6,7 +6,7 @@
 
 use app_core::{
     App, SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, keys_from_label,
-    keys_label, speech_language_name,
+    speech_language_name,
 };
 use egui::{
     Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke, TextEdit, Ui, UiBuilder,
@@ -579,7 +579,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut SpeechSettingsView
                 let typed = view
                     .keys
                     .entry(key.clone())
-                    .or_insert_with(|| keys_label(&shortcut.keys));
+                    .or_insert_with(|| app.keys_label(&shortcut.keys));
                 text_field(ui, &shortcut.title, typed, false);
                 ui.horizontal(|ui| {
                     let saved = keys_from_label(typed).as_deref() == Some(shortcut.keys.as_str());
@@ -595,13 +595,13 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut SpeechSettingsView
                         if saved.is_ok()
                             && let Some(keys) = keys_from_label(typed)
                         {
-                            *typed = keys_label(&keys);
+                            *typed = app.keys_label(&keys);
                         }
                         changed = Some(saved);
                     }
                     if shortcut.keys != shortcut.declared && ui.button("Reset").clicked() {
                         changed = Some(app.set_shortcut_keys(&shortcut.plugin, &shortcut.id, None));
-                        *typed = keys_label(&shortcut.declared);
+                        *typed = app.keys_label(&shortcut.declared);
                     }
                 });
             }
