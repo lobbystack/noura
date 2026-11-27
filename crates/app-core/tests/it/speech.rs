@@ -128,6 +128,15 @@ fn recording_sets_the_shortcuts_aside_until_the_keys_go_in_or_settings_closes() 
     app.close_settings();
     assert_eq!(app.recording_shortcut(), None);
     assert!(!app.global_shortcuts_paused());
+
+    // A window that goes while it records lets the shortcuts back.
+    let mut other = app.new_window().unwrap();
+    other.open_settings_at(app_core::settings_section::SPEECH);
+    other.record_shortcut("probe", "paste");
+    assert!(app.global_shortcuts_paused());
+    assert_eq!(app.recording_shortcut(), None);
+    drop(other);
+    assert!(!app.global_shortcuts_paused());
 }
 
 #[test]

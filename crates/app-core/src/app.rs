@@ -606,6 +606,8 @@ impl App {
         if self.closed {
             return;
         }
+        // The system's shortcuts come back if Settings was recording keys.
+        self.stop_recording_shortcut();
         if self.hides_when_last && !self.session.others_open(self.key) {
             self.hide_window_now();
             return;
@@ -1023,6 +1025,7 @@ impl App {
     /// Another window opened a different workspace, so this one closed.
     /// Its tabs stay saved with the workspace it showed.
     fn closed_by_another_window(&mut self) {
+        self.stop_recording_shortcut();
         self.closed = true;
         self.release();
     }
@@ -1269,6 +1272,7 @@ const LAST_WINDOW_WAIT: Duration = Duration::from_secs(1);
 
 impl Drop for App {
     fn drop(&mut self) {
+        self.stop_recording_shortcut();
         // Quitting drops every window without closing it, so each one's
         // tabs stay saved for the next launch.
         self.session.leave(self.key);
