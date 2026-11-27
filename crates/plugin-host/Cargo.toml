@@ -22,7 +22,7 @@ blake3.workspace = true
 jiff.workspace = true
 # Plugins' network requests and release downloads go through its web
 # access boundary.
-local-core = { version = "0.3.3", path = "../local-core" }
+local-core = { version = "0.4.0", path = "../local-core" }
 # Waits a bounded time for a plugin that another plugin's command call
 # needs.
 parking_lot.workspace = true
@@ -40,7 +40,7 @@ url.workspace = true
 wasmtime.workspace = true
 # The workspace format's date and date-time rules, which input values
 # follow, and the envelope and schemas of the object types plugins register.
-workspace-format = { version = "0.3.3", path = "../workspace-format" }
+workspace-format = { version = "0.4.0", path = "../workspace-format" }
 # Reads the release archives plugins install from, and writes them for the
 # stand-in release server.
 zip.workspace = true

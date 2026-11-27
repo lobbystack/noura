@@ -33,9 +33,9 @@ reqwest.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
-sync-store = { version = "0.3.3", path = "../sync-store" }
-sync-store-postgres = { version = "0.3.3", path = "../sync-store-postgres" }
-sync-store-sqlite = { version = "0.3.3", path = "../sync-store-sqlite" }
+sync-store = { version = "0.4.0", path = "../sync-store" }
+sync-store-postgres = { version = "0.4.0", path = "../sync-store-postgres" }
+sync-store-sqlite = { version = "0.4.0", path = "../sync-store-sqlite" }
 # Writes each disk segment to a temporary file before it renames it into place.
 tempfile.workspace = true
 thiserror.workspace = true
@@ -60,9 +60,9 @@ s3s.workspace = true
 s3s-fs.workspace = true
 # The tests read and change the database the way an operator's tools would.
 sqlx = { workspace = true, features = ["postgres", "sqlite-bundled"] }
-sync-key-envelope = { version = "0.3.3", path = "../sync-key-envelope" }
-sync-store = { version = "0.3.3", path = "../sync-store", features = ["conformance"] }
+sync-key-envelope = { version = "0.4.0", path = "../sync-key-envelope" }
+sync-store = { version = "0.4.0", path = "../sync-store", features = ["conformance"] }
 # Throwaway PostgreSQL clusters for the PostgreSQL mode tests.
-sync-store-postgres = { version = "0.3.3", path = "../sync-store-postgres", features = ["testing"] }
+sync-store-postgres = { version = "0.4.0", path = "../sync-store-postgres", features = ["testing"] }
 tempfile.workspace = true
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }

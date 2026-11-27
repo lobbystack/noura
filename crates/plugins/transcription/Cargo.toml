@@ -17,11 +17,11 @@ isolang = { version = "2", default-features = false, features = ["english_names"
 # Instants, days and the device's time zone. Plugins get no file access,
 # so the time zone database is compiled in.
 jiff = { version = "0.2", default-features = false, features = ["std", "tzdb-bundle-always"] }
-plugin-sdk = { version = "0.3.3", path = "../../plugin-sdk" }
+plugin-sdk = { version = "0.4.0", path = "../../plugin-sdk" }
 serde_json.workspace = true
 # Renders anarlog's prompt templates and your prompt. Apache-2.0.
 minijinja = { version = "2", default-features = false, features = ["builtins", "macros", "serde"] }
 
 [dev-dependencies]
 # Checks the plugin's types against their fixture. Tests only.
-workspace-format = { version = "0.3.3", path = "../../workspace-format" }
+workspace-format = { version = "0.4.0", path = "../../workspace-format" }
