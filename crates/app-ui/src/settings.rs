@@ -59,7 +59,6 @@ fn section_icon(id: &str) -> Icon {
         settings_section::SPEECH => icons::DESKTOP,
         settings_section::SYNC_ACCOUNT => icons::USER_CIRCLE,
         settings_section::WORKSPACE => icons::FOLDER_SIMPLE,
-        settings_section::AI => icons::AI,
         settings_section::AI_TOOLS => icons::PLUGS_CONNECTED,
         settings_section::SYNC => icons::ARROWS_CLOCKWISE,
         settings_section::MEMBERS => icons::USERS,
@@ -343,18 +342,17 @@ fn content(
         settings_section::SPEECH => crate::speech::settings(ui, app, &mut view.speech),
         settings_section::WORKSPACE => workspace(ui, app),
         settings_section::PLUGINS => {
-            crate::plugins::section(ui, app, picker, &mut view.release_address);
+            let mut ai = crate::plugins::AiPage {
+                ai: &mut view.ai,
+                web: &mut view.web,
+            };
+            crate::plugins::section(ui, app, picker, &mut view.release_address, &mut ai);
         }
         settings_section::SYNC_ACCOUNT => {
             crate::account::section(ui, app, &mut view.account, picker)
         }
         settings_section::SYNC => crate::folder_sync::section(ui, app),
         settings_section::MEMBERS => crate::members::section(ui, app, &mut view.members),
-        settings_section::AI => {
-            crate::ai::settings(ui, app, &mut view.ai);
-            ui.add_space(24.0);
-            crate::web_search::settings(ui, app, &mut view.web);
-        }
         settings_section::IGNORED_FILES => ignored_files(ui, app, view),
         settings_section::ABOUT => about(ui, app),
         settings_section::AI_TOOLS => ai_tools(ui, app),

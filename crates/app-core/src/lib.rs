@@ -189,7 +189,7 @@ pub use remote_images::RemoteImageState;
 pub use saves::{NoPendingSaves, PendingSaves};
 pub use search::{SEARCH_LIMIT, SEARCH_PAGE, SearchHit, SearchQuery, SearchState};
 pub use settings::{
-    ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
+    ABOUT_LINKS, AI_PLUGIN, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
     THIRD_PARTY_LICENSES, VERSION, settings_section,
 };
 pub use system::{NoSystem, Platform, System, move_to_system_trash};

@@ -19,6 +19,8 @@ The run loop, the provider requests, the credentials and every durable write sta
 - **Provider transport**: `local-core` streams through `genai`. A provider endpoint must use HTTPS, or HTTP to a loopback address.
 - **Credentials**: the operating system's credential store holds each provider key under the service `org.noura.ai`. `ai/providers.json` in the app data keeps only a reference to it, and `local-core` reads the key only when a request starts.
 
+The AI settings have no section of their own in Settings. They sit on the page in Settings > Plugins of each plugin that declares the `ai` capability: the AI plugin's page, which also holds the Brave Search key, and Transcription's. The `ai-providers` and `web-search` sections, which "Open AI settings" and Search settings use, open the AI plugin's page while it's installed, on or off, or else the page of the first installed plugin that uses the providers. External tools stays a section of its own: it sets up Noura's MCP server for apps outside Noura, which needs no provider and works with the AI plugin off.
+
 Noura loads the provider file when the session starts. If it can't read them, AI requests fail with `ai_settings_unreadable` until Noura restarts.
 
 ### Retired models

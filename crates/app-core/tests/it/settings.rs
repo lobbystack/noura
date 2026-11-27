@@ -111,7 +111,6 @@ fn settings_lists_its_sections_under_this_computer_workspace_and_app() {
                 vec![
                     "Location".to_owned(),
                     "Plugins".to_owned(),
-                    "AI".to_owned(),
                     "Sync and devices".to_owned(),
                     "People".to_owned(),
                     "Ignored files".to_owned()
@@ -145,7 +144,6 @@ fn later_areas_add_their_sections_to_a_group_and_settings_shows_them() {
             vec![
                 "Location".to_owned(),
                 "Plugins".to_owned(),
-                "AI".to_owned(),
                 "Sync and devices".to_owned(),
                 "People".to_owned(),
                 "Ignored files".to_owned(),
@@ -179,7 +177,10 @@ fn updates_and_web_search_open_the_sections_that_show_them() {
         Some(settings_section::GENERAL)
     );
     app.select_settings_section(settings_section::WEB_SEARCH);
-    assert_eq!(shown_section(&app).as_deref(), Some(settings_section::AI));
+    assert_eq!(
+        shown_section(&app).as_deref(),
+        Some(settings_section::PLUGINS)
+    );
 }
 
 #[test]

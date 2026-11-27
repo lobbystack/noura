@@ -7,7 +7,10 @@ use crate::{
     AboutLink, LoginItem, Notice, NoticeKind, OpenAtLogin, Settings, SettingsGroup,
     SettingsSection, THIRD_PARTY_LICENSES,
     diagnostics::{self, WorkspaceHealth},
-    settings::{is_web_link, section_keywords, section_rank, section_showing, settings_section},
+    settings::{
+        AI_PLUGIN, ai_search_entry, is_web_link, section_keywords, section_rank, section_showing,
+        settings_section, shows_ai_settings,
+    },
 };
 
 /// The folder and file names in a path, split at both kinds of slash.
@@ -30,11 +33,12 @@ impl App {
     /// nothing registered `id`. When Settings is open already, it shows
     /// the section `id`.
     pub fn open_settings_at(&mut self, id: &str) {
-        let id = section_showing(id);
+        let plugin = self.plugin_showing(id);
         if self.settings.is_some() {
             self.select_settings_section(id);
             return;
         }
+        let id = section_showing(id);
         let section = if self.settings_section(id).is_some() {
             id.to_owned()
         } else {
@@ -45,7 +49,7 @@ impl App {
             open_at_login: OpenAtLogin::read(self.login_item.as_ref()),
             notice: None,
             query: String::new(),
-            plugin_details: None,
+            plugin_details: plugin,
         });
         self.follow_settings_section();
         if self.mcp_test != crate::McpTest::Testing {
@@ -77,6 +81,27 @@ impl App {
         }
     }
 
+    /// The plugin whose page in Plugins holds the AI settings: the AI
+    /// plugin while it's installed, on or off, or else the first plugin
+    /// installed that uses the AI providers, such as Transcription. None
+    /// when no plugin installed uses them.
+    pub fn ai_settings_plugin(&self) -> Option<String> {
+        let rows = self.plugins();
+        let installed = || rows.iter().filter(|row| row.installed);
+        installed()
+            .find(|row| row.id == AI_PLUGIN)
+            .or_else(|| installed().find(|row| row.uses_ai()))
+            .map(|row| row.id.clone())
+    }
+
+    /// The plugin page Plugins opens on for the section `id`: the AI
+    /// settings open [`Self::ai_settings_plugin`].
+    fn plugin_showing(&self, id: &str) -> Option<String> {
+        shows_ai_settings(id)
+            .then(|| self.ai_settings_plugin())
+            .flatten()
+    }
+
     /// Show the details of the plugin `id` in Plugins, in place of the
     /// list, or the list again with `None`.
     pub fn show_plugin_details(&mut self, id: Option<&str>) {
@@ -103,17 +128,22 @@ impl App {
     }
 
     /// Show the section `id` in the open Settings.
+    /// The AI settings and Web search open the AI plugin's page in
+    /// Plugins.
     pub fn select_settings_section(&mut self, id: &str) {
+        let plugin = self.plugin_showing(id);
         let id = section_showing(id);
         if self.settings_section(id).is_none() {
             return;
         }
         if let Some(settings) = &mut self.settings
-            && settings.section != id
+            && (settings.section != id || settings.plugin_details != plugin)
         {
+            if settings.section != id {
+                settings.notice = None;
+            }
             settings.section = id.to_owned();
-            settings.notice = None;
-            settings.plugin_details = None;
+            settings.plugin_details = plugin;
             self.follow_settings_section();
             self.listeners.emit(Change::Settings);
         }
@@ -155,19 +185,31 @@ impl App {
 
     /// The sections Search settings shows for what it holds, by group:
     /// every section while it is empty.
+    /// While it holds something, the AI plugin's page shows as AI when
+    /// it matches, beside Plugins, which holds it.
     pub fn matching_settings_sections(&self) -> Vec<(SettingsGroup, Vec<&SettingsSection>)> {
         let query = self
             .settings
             .as_ref()
             .map(|settings| settings.query.as_str())
             .unwrap_or_default();
+        let ai = ai_search_entry();
+        let ai_found =
+            !query.trim().is_empty() && ai.matches(query) && self.ai_settings_plugin().is_some();
         self.settings_sections()
             .into_iter()
             .map(|(group, sections)| {
-                let sections = sections
+                let mut sections = sections
                     .into_iter()
                     .filter(|section| section.matches(query))
                     .collect::<Vec<_>>();
+                if ai_found && group == ai.group {
+                    let at = sections
+                        .iter()
+                        .position(|section| section.id == settings_section::PLUGINS)
+                        .map_or(0, |index| index + 1);
+                    sections.insert(at, ai);
+                }
                 (group, sections)
             })
             .filter(|(_, sections)| !sections.is_empty())

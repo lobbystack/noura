@@ -17,6 +17,7 @@ mod ai_chat_storage;
 mod ai_chatgpt;
 mod ai_no_consent;
 mod ai_providers;
+mod ai_settings_place;
 mod ai_tools;
 mod ai_web;
 mod app;

@@ -52,10 +52,12 @@ pub mod settings_section {
     /// The sync account: the server, this computer's sign-in, your devices
     /// and the recovery kit.
     pub const SYNC_ACCOUNT: &str = "sync-account";
-    /// The AI providers on this device, their keys, your consent for the
-    /// open workspace, and the Brave Search key for web search.
+    /// The AI providers on this device, their keys and the Brave Search
+    /// key, which the AI plugin's page in Plugins shows. Opening it opens
+    /// that page.
     pub const AI: &str = "ai-providers";
-    /// Web search, which the AI section shows. Opening it opens AI.
+    /// Web search, which the AI plugin's page shows. Opening it opens that
+    /// page.
     pub const WEB_SEARCH: &str = "web-search";
     /// The patterns of files the workspace leaves out.
     pub const IGNORED_FILES: &str = "ignored-files";
@@ -68,14 +70,37 @@ pub mod settings_section {
     pub const AI_TOOLS: &str = "ai-tools";
 }
 
-/// The section that shows `id`: General shows Updates, and AI shows Web
-/// search.
+/// The plugin whose page in Plugins holds the AI settings when it's
+/// installed. Every plugin that uses the AI providers holds them too.
+pub const AI_PLUGIN: &str = "ai";
+
+/// The section that shows `id`: General shows Updates, and Plugins shows
+/// AI and Web search on the AI plugin's page.
 pub(crate) fn section_showing(id: &str) -> &str {
     match id {
         settings_section::UPDATES => settings_section::GENERAL,
-        settings_section::WEB_SEARCH => settings_section::AI,
+        settings_section::AI | settings_section::WEB_SEARCH => settings_section::PLUGINS,
         id => id,
     }
+}
+
+/// Whether `id` is the AI settings, which live on a plugin's page in
+/// Plugins.
+pub(crate) fn shows_ai_settings(id: &str) -> bool {
+    matches!(id, settings_section::AI | settings_section::WEB_SEARCH)
+}
+
+/// What Search settings finds the AI plugin's page by, though Settings
+/// lists no section of its own for it.
+pub(crate) fn ai_search_entry() -> &'static SettingsSection {
+    static ENTRY: std::sync::LazyLock<SettingsSection> =
+        std::sync::LazyLock::new(|| SettingsSection {
+            id: settings_section::AI.to_owned(),
+            title: "AI".to_owned(),
+            group: SettingsGroup::Workspace,
+            keywords: section_keywords(settings_section::AI).to_owned(),
+        });
+    &ENTRY
 }
 
 /// One section of Settings.
@@ -102,7 +127,7 @@ impl SettingsSection {
 /// Where the kernel's sections and the sections later areas register by
 /// a known ID go, in the order Settings lists them. Other sections follow
 /// these in their group, in the order they register.
-const SECTION_ORDER: [&str; 13] = [
+const SECTION_ORDER: [&str; 12] = [
     settings_section::GENERAL,
     settings_section::EDITOR,
     settings_section::SHORTCUTS,
@@ -110,7 +135,6 @@ const SECTION_ORDER: [&str; 13] = [
     settings_section::SYNC_ACCOUNT,
     settings_section::WORKSPACE,
     settings_section::PLUGINS,
-    settings_section::AI,
     settings_section::AI_TOOLS,
     settings_section::SYNC,
     settings_section::MEMBERS,
@@ -138,7 +162,9 @@ pub(crate) fn section_keywords(id: &str) -> &'static str {
         settings_section::SYNC_ACCOUNT => "sign in log out disconnect server",
         settings_section::WORKSPACE => "rename folder path",
         settings_section::PLUGINS => "notes tasks calendar projects folders sync",
-        settings_section::AI => "providers models api keys permissions consent web search brave",
+        settings_section::AI => {
+            "ai providers models api keys openai anthropic gemini chatgpt plan web search brave"
+        }
         settings_section::AI_TOOLS => "mcp claude cursor assistant model context protocol",
         settings_section::SYNC => "encryption recovery conflicts join devices",
         settings_section::MEMBERS => "invitations roles sharing access members",
@@ -186,7 +212,6 @@ pub(crate) fn kernel_sections() -> Vec<SettingsSection> {
             "Plugins",
             SettingsGroup::Workspace,
         ),
-        (settings_section::AI, "AI", SettingsGroup::Workspace),
         (
             settings_section::SYNC,
             "Sync and devices",

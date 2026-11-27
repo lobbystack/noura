@@ -35,6 +35,17 @@ fn the_key_field_hides_the_key_and_no_prompt_asks_per_workspace() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     create_workspace(app_data.path(), &parent.path().join("Garden"));
+    // The Brave Search key lives on the AI plugin's page in Plugins.
+    let Some(component) = support::plugins::built("ai_plugin") else {
+        return;
+    };
+    let plugin = support::plugins::folder(
+        parent.path(),
+        include_str!("../../../plugins/ai/plugin.toml"),
+        "ai_plugin.wasm",
+        &component,
+    );
+    support::plugins::install_and_enable(app_data.path(), &plugin, "ai");
     let system = FakeSystem::new(Platform::current());
     let mut harness = harness_with(app_data.path(), FakePicker::default(), system.clone());
     settle(&mut harness);

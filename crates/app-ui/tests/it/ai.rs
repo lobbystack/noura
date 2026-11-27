@@ -809,10 +809,13 @@ fn without_a_provider_the_page_offers_open_ai_settings_which_opens_settings_on_a
             .query_by_role_and_label(Role::Dialog, "Settings")
             .is_some()
     });
-    assert_eq!(
-        harness.state().app().settings().unwrap().section,
-        app_core::settings_section::AI
-    );
+    // The AI settings live on the AI plugin's page in Plugins.
+    let settings = harness.state().app().settings().unwrap().clone();
+    assert_eq!(settings.section, app_core::settings_section::PLUGINS);
+    assert_eq!(settings.plugin_details.as_deref(), Some("ai"));
+    run(&mut harness);
+    harness.get_by_role_and_label(Role::Group, "OpenAI");
+    harness.get_by_role_and_label(Role::Group, "Brave Search key");
 }
 
 /// Continue with ChatGPT in the OpenAI row: the browser opens on the
@@ -820,12 +823,18 @@ fn without_a_provider_the_page_offers_open_ai_settings_which_opens_settings_on_a
 /// the plan answers, and Sign out brings the button back.
 #[test]
 fn continue_with_chatgpt_uses_your_plan_and_sign_out_ends_it() {
+    let Some(component) = plugins::built("ai_plugin") else {
+        return;
+    };
     let fake = app_core::chatgpt_fake::FakeOpenAi::start();
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();
     create_workspace(app_data.path(), &parent.path().join("Garden"));
+    let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
+    plugins::install_and_enable(app_data.path(), &plugin, "ai");
     let system = FakeSystem::new(Platform::current());
     let mut harness = harness_with(app_data.path(), FakePicker::default(), system.clone());
+    settle(&mut harness);
     harness
         .state_mut()
         .app_mut()
@@ -913,5 +922,66 @@ fn continue_with_chatgpt_uses_your_plan_and_sign_out_ends_it() {
         all_labels(&harness)
             .iter()
             .all(|label| !label.contains("access_1") && !label.contains("refresh_1"))
+    );
+}
+
+/// With the AI plugin gone, Transcription, which asks the AI providers
+/// for its summaries, holds their settings on its page in Plugins, and
+/// Search settings finds them as AI.
+#[test]
+fn transcription_holds_the_ai_settings_while_the_ai_plugin_is_gone() {
+    let Some(component) = plugins::built("transcription_plugin") else {
+        return;
+    };
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
+    let plugin = plugins::folder(
+        parent.path(),
+        include_str!("../../../plugins/transcription/plugin.toml"),
+        "transcription_plugin.wasm",
+        &component,
+    );
+    plugins::install_and_enable(app_data.path(), &plugin, "transcription");
+    let system = FakeSystem::new(Platform::current());
+    let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
+    settle(&mut harness);
+    harness.state_mut().app_mut().open_settings_at("plugins");
+    run(&mut harness);
+    let nav = harness.get_by_role_and_label(Role::Navigation, "Settings sections");
+    assert!(nav.query_by_role_and_label(Role::Button, "AI").is_none());
+
+    harness
+        .get_by_role_and_label(Role::Button, "Transcription settings")
+        .click_accesskit();
+    run(&mut harness);
+    harness.get_by_role_and_label(Role::Group, "OpenAI");
+    harness.get_by_role_and_label(Role::Group, "Anthropic");
+    // Web search is for the AI plugin's chats, so its key stays there.
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Brave Search key")
+            .is_none()
+    );
+
+    // Search settings finds the AI settings, and choosing them opens the
+    // same page.
+    harness.state_mut().app_mut().show_plugin_details(None);
+    harness.state_mut().app_mut().set_settings_query("api keys");
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::Navigation, "Settings sections")
+        .get_by_role_and_label(Role::Button, "AI")
+        .click_accesskit();
+    run(&mut harness);
+    assert_eq!(
+        harness
+            .state()
+            .app()
+            .settings()
+            .unwrap()
+            .plugin_details
+            .as_deref(),
+        Some("transcription")
     );
 }

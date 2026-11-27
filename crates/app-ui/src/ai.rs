@@ -397,9 +397,6 @@ fn chatgpt_plan(ui: &mut Ui, app: &mut App, status: &ChatGptStatus) {
                             app.cancel_chatgpt_sign_in();
                         }
                     });
-                    // The browser answers on its own time.
-                    ui.ctx()
-                        .request_repaint_after(std::time::Duration::from_millis(250));
                 } else if Btn::new("Continue with ChatGPT")
                     .variant(Variant::Default)
                     .show(ui)
