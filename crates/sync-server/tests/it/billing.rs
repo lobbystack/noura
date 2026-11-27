@@ -1189,8 +1189,14 @@ async fn quebec_cancels_today_and_gets_the_unused_part_back() {
     assert!(!page.contains("/account/withdraw"));
 
     // The page offers today, with 292 of 365 days back, or the period's end.
+    // The refund counts seconds, so a second that ticks during the test
+    // takes a cent off.
     let ask = site.page("/account/cancel", &session).await;
-    assert!(ask.contains("get USD 76.80 back, plus tax"), "{ask}");
+    assert!(
+        ask.contains("get USD 76.80 back, plus tax")
+            || ask.contains("get USD 76.79 back, plus tax"),
+        "{ask}"
+    );
     assert!(ask.contains("value=\"today\""));
     assert!(ask.contains("value=\"end\""));
 
@@ -1206,7 +1212,8 @@ async fn quebec_cancels_today_and_gets_the_unused_part_back() {
     );
     let refund = fake.last("/v1/refunds/");
     assert_eq!(refund.body["order_id"], "ord-1");
-    assert_eq!(refund.body["amount"], 7_680);
+    let amount = refund.body["amount"].as_u64().expect("an amount");
+    assert!((7_679..=7_680).contains(&amount), "{amount}");
     assert_eq!(refund.body["reason"], "customer_request");
     assert_eq!(fake.last("DELETE /v1/subscriptions").body["id"], "sub-1");
     assert_eq!(fake.count("PATCH /v1/subscriptions"), 0);
@@ -1226,8 +1233,14 @@ async fn quebec_cancels_today_and_gets_the_unused_part_back() {
         mail.subject,
         "Votre forfait Noura est résilié / Your Noura plan is cancelled"
     );
-    assert!(mail.body.contains("Nous vous remboursons 76,80 USD"));
-    assert!(mail.body.contains("We're refunding USD 76.80 plus the tax"));
+    let (dollars, cents) = (amount / 100, amount % 100);
+    assert!(
+        mail.body
+            .contains(&format!("Nous vous remboursons {dollars},{cents:02} USD"))
+    );
+    assert!(mail.body.contains(&format!(
+        "We're refunding USD {dollars}.{cents:02} plus the tax"
+    )));
 
     // The pages no longer offer to cancel.
     let page = site.page("/account", &session).await;
