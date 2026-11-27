@@ -571,7 +571,8 @@ fn moving_a_file_to_the_trash_from_its_row_menu_closes_its_tab() {
     let mut harness = opened(app_data.path(), &folder);
     choose_from_row_menu(&mut harness, "Alpha", "Open in new tab");
     choose_from_row_menu(&mut harness, "Beta", "Open in new tab");
-    choose_from_row_menu(&mut harness, "Gamma", "Open");
+    row(&harness, "Gamma").click();
+    harness.run();
     assert_eq!(tabs(&harness), ["Alpha", "Beta", "Gamma (preview)"]);
     harness.get_by_role_and_label(Role::Tab, "Beta").click();
     harness.run();

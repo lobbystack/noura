@@ -83,7 +83,6 @@ struct RenameField {
 
 /// A choice from a row's menu.
 enum Command {
-    Open(String),
     OpenInNewTab(String),
     NewNote(String),
     NewFolder(String),
@@ -787,7 +786,6 @@ fn drag(ui: &mut Ui, app: &mut App, started: Option<usize>, rects: &[(usize, Rec
 
 fn run(app: &mut App, command: Command) {
     match command {
-        Command::Open(path) => app.open_file(&path, OpenAs::Preview),
         Command::OpenInNewTab(path) => app.open_file(&path, OpenAs::Kept),
         Command::NewNote(folder) => app.new_note(Some(&folder)),
         Command::NewFolder(folder) => app.new_folder(Some(&folder)),
@@ -826,10 +824,6 @@ pub(crate) fn item_menu(
     match row_menu(response, row, &menu, can_open_terminal, reveal_label) {
         MenuOutcome::Open => true,
         MenuOutcome::Closed => false,
-        MenuOutcome::Chose(Command::Open(path)) => {
-            app.open_from_files(&path, OpenAs::Preview);
-            false
-        }
         MenuOutcome::Chose(Command::OpenInNewTab(path)) => {
             app.open_from_files(&path, OpenAs::Kept);
             false
@@ -884,10 +878,9 @@ fn row_menu(
                 first = false;
                 response.clicked()
             };
+            // A click on the row already opens it, so the menu offers only
+            // a tab of its own.
             if row.kind == EntryKind::File {
-                if item(ui, "Open", None) {
-                    chosen = Some(Command::Open(path.clone()));
-                }
                 if item(ui, "Open in new tab", None) {
                     chosen = Some(Command::OpenInNewTab(path.clone()));
                 }

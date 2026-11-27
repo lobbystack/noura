@@ -222,7 +222,6 @@ fn shift_f10_the_menu_key_and_a_right_click_open_a_rows_menu_with_labeled_items(
     assert_eq!(
         items,
         [
-            "Open",
             "Open in new tab",
             "Rename\u{2026}",
             "Duplicate",
@@ -233,7 +232,7 @@ fn shift_f10_the_menu_key_and_a_right_click_open_a_rows_menu_with_labeled_items(
         ]
     );
     assert!(
-        menu.get_by_role_and_label(Role::Button, "Open")
+        menu.get_by_role_and_label(Role::Button, "Open in new tab")
             .is_focused()
     );
     assert!(harness.unnamed_widgets().is_empty());
