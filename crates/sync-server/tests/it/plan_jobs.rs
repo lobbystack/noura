@@ -7,14 +7,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sync_protocol::messages::OwnedState;
-use sync_protocol::types::Id;
+use sync_protocol::types::{Digest, Id};
 use sync_server::accounts::mail::{Mail, MailTransport, SendFuture};
 use sync_server::maintenance::{month_of, plan_jobs};
 use sync_server::{Accounts, Allowlist, PublicOrigin};
 use sync_store::{AccountPlanRow, Backend, Session, Store, SubscriptionState, WriteTxn};
 use sync_store_sqlite::SqliteBackend;
 
-use crate::support::{Account, seed_store};
+use crate::support::{Account, push_body, seed_store};
 
 const DAY: u64 = 86_400;
 
@@ -233,6 +233,91 @@ async fn an_upgrade_stops_the_notices() {
         .await
         .expect("report");
     assert_eq!(account.workspaces.0.len(), 2);
+}
+
+/// The code of a refused push.
+fn refused_code<T: std::fmt::Debug>(result: Result<T, sync_store::Error>) -> String {
+    match result {
+        Err(sync_store::Error::Refused(refusal)) => refusal.code.to_string(),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_upgrade_on_day_70_reopens_the_workspaces_and_cancels_the_close() {
+    let world = world().await;
+    let owner = world.owner("owner@example.com").await;
+    world
+        .subscribe(owner.account, "e1", SubscriptionState::Active, 1)
+        .await;
+    let session = Session::new(owner.account, owner.keys[0].device());
+    let mut created = Vec::new();
+    for _ in 0..3 {
+        let workspace = owner.creation();
+        world
+            .store
+            .create_workspace(session, workspace.body.clone())
+            .await
+            .expect("created");
+        created.push(workspace);
+    }
+    // The subscription ends: Free keeps one workspace, and the owner chose
+    // the newest.
+    world
+        .subscribe(owner.account, "e2", SubscriptionState::Ended, 2)
+        .await;
+    world
+        .store
+        .set_active_workspaces(session, vec![created[2].workspace])
+        .await
+        .expect("chosen");
+    let push = |index: usize, counter: u64| {
+        let op = created[index].op(&owner.keys[0], counter, Digest::ZERO, |_| {});
+        world.store.push(
+            session,
+            created[index].workspace,
+            push_body(std::slice::from_ref(&op)),
+        )
+    };
+    assert_eq!(refused_code(push(0, 1).await), "over_plan");
+
+    // Day 0 and day 60 send their notices.
+    assert_eq!(world.run().await.notices, 2);
+    world.advance_days(60);
+    assert_eq!(world.run().await.notices, 2);
+    world.outbox.take();
+
+    // Day 70: the owner upgrades, and every workspace takes writes again.
+    world.advance_days(10);
+    world
+        .subscribe(owner.account, "e3", SubscriptionState::Active, 3)
+        .await;
+    let report = world
+        .store
+        .account_report(owner.account)
+        .await
+        .expect("report");
+    assert_eq!(report.workspaces.0.len(), 3);
+    for workspace in &report.workspaces.0 {
+        assert_eq!(workspace.state, OwnedState::Active);
+        assert_eq!(workspace.closes_at, None);
+    }
+    push(0, 1).await.expect("the oldest takes writes again");
+    push(1, 1).await.expect("so does the second");
+
+    // Days 85 and 90 pass with no notice and no close.
+    for days in [15, 5, 10] {
+        world.advance_days(days);
+        let jobs = world.run().await;
+        assert_eq!((jobs.notices, jobs.closed_over_plan), (0, 0));
+    }
+    assert!(world.outbox.take().is_empty());
+    let report = world
+        .store
+        .account_report(owner.account)
+        .await
+        .expect("report");
+    assert_eq!(report.workspaces.0.len(), 3);
 }
 
 #[tokio::test]
