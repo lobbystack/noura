@@ -84,7 +84,7 @@ A new crate runs on every platform until you add it to the list.
 
 A pull request that changes only `apps/website/`, Markdown at the repository root, or `docs/` outside `docs/workspace-format/` and `docs/plugins/` skips the Rust jobs, since the Rust code reads those two folders. A pull request that leaves the website alone skips the website job. Both run when the pull request's base hasn't passed CI. `.github/scripts/ci-changes.sh` holds these rules.
 
-After a squash merge, CI on `main` skips the Rust and website jobs when a pull request's run already passed on the same tree, as it does when `main` hasn't moved since that run. It still publishes the server image, and it refills the build caches when a dependency changed. If `main` has moved, CI on `main` runs every job. To run every job on any branch, start the workflow from the **Actions** tab.
+After a squash merge, CI on `main` skips the Rust and website jobs when a pull request's run already passed on the same tree, as it does when `main` hasn't moved since that run. It still publishes the server image, and it runs the build and extras jobs to refill the caches that pull requests restore. If `main` has moved, CI on `main` runs every job. To run every job on any branch, start the workflow from the **Actions** tab.
 
 ## Share a build cache across worktrees
 

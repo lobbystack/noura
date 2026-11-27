@@ -8,8 +8,9 @@
 #   turns a failing main green.
 # - A push to main skips both when a CI run already passed on the same tree,
 #   which a pull request's run does when main hasn't moved since. `warm`
-#   then asks the build and extras jobs to refill their caches when a
-#   dependency changed or a cache is missing.
+#   then asks the build and extras jobs to refill main's caches: most merges
+#   change Cargo.lock, which every version bump rewrites, and rust-cache
+#   skips the save when main already has the entry.
 # - Any other event runs everything.
 #
 # Needs a checkout of HEAD and its parent, and GH_TOKEN with `actions: read`.
@@ -63,22 +64,7 @@ case "${GITHUB_EVENT_NAME:?}" in
   push)
     if evidence="$("$here/ci-evidence.sh" "$(git rev-parse HEAD)")"; then
       echo "CI already passed on this tree: $evidence"
-      if git diff --name-only HEAD^1 HEAD |
-        grep -qE '(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^\.cargo/|^\.github/(workflows/(ci|rust-tests)\.yml|cargo-ci\.toml)$'; then
-        echo "A dependency or the workflow changed, so the caches refill."
-        warm=true
-      fi
-      for cache in tests extras; do
-        for platform in Linux-x64 Windows_NT-x64 Darwin-arm64; do
-          key="v0-rust-$cache-$platform"
-          found="$(gh cache list -R "${GITHUB_REPOSITORY:?}" --ref refs/heads/main --key "$key" \
-            --limit 1 --json key --jq length)"
-          if [ "$found" = 0 ]; then
-            echo "Main has no $key cache, so the caches refill."
-            warm=true
-          fi
-        done
-      done
+      warm=true
     else
       rust=true
       website=true
