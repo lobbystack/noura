@@ -709,6 +709,49 @@ impl Plugins {
             .collect()
     }
 
+    /// The shortcuts of the plugins installed here that are off in the
+    /// open workspace, with the keys you gave each: what turning the
+    /// plugin on would register.
+    pub(crate) fn idle_shortcuts(&self) -> Vec<crate::GlobalShortcut> {
+        let Some(kernel) = &self.speech else {
+            return Vec::new();
+        };
+        if self.workspace.is_none() {
+            return Vec::new();
+        }
+        let enabled = self.enabled();
+        self.records
+            .plugins
+            .iter()
+            .filter(|(id, _)| !enabled.contains(id))
+            .flat_map(|(id, record)| {
+                crate::speech_kernel::approved_shortcuts(&record.approved)
+                    .into_iter()
+                    .map(|shortcut| crate::GlobalShortcut {
+                        plugin: id.clone(),
+                        keys: kernel
+                            .speech
+                            .shortcut_keys(id, &shortcut.id, shortcut.keys_here()),
+                        declared: shortcut.keys_here().to_owned(),
+                        id: shortcut.id,
+                        title: shortcut.title,
+                    })
+            })
+            .collect()
+    }
+
+    /// The name of the plugin `id`, as its manifest gives it, or its ID.
+    pub(crate) fn shown_name(&self, id: &str) -> String {
+        self.plugin_name(id)
+            .or_else(|| {
+                SHIPPED_PLUGINS
+                    .iter()
+                    .find(|(shipped, _)| *shipped == id)
+                    .map(|(_, name)| (*name).to_owned())
+            })
+            .unwrap_or_else(|| id.to_owned())
+    }
+
     /// Whether the running plugin `id` was approved `capability`.
     fn holds(&self, id: &str, capability: &str) -> bool {
         self.running.contains_key(id)

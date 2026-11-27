@@ -1,8 +1,9 @@
 //! Settings > Speech through AccessKit: the Models table with its search,
 //! its Live preview and Translates filters, its sections, the radio that
 //! picks the model in use, download with its progress in the row, and
-//! delete, and a plugin's shortcut shown with its keys as this system
-//! writes them.
+//! delete, and the plugins' shortcuts: their keys as the app's platform
+//! writes them, recorded anew with a click, a shortcut whose plugin is
+//! off and one whose keys the system refused.
 
 use crate::support;
 use app_core::Platform;
@@ -254,31 +255,183 @@ fn a_download_shows_its_progress_in_the_row() {
     drop(listener);
 }
 
-#[test]
-fn a_shortcut_shows_its_keys_as_this_system_writes_them() {
-    let Some(probe) = plugins::built("probe_plugin") else {
-        return;
-    };
-    let app_data = tempfile::tempdir().unwrap();
-    let parent = tempfile::tempdir().unwrap();
-    create_workspace(app_data.path(), &parent.path().join("Garden"));
+/// Settings > Speech on `platform`, with the probe plugin on and its
+/// Dictation shortcut on Alt+Space.
+fn speech_with_a_shortcut(
+    app_data: &std::path::Path,
+    parent: &std::path::Path,
+    platform: Platform,
+) -> Option<Ui> {
+    let probe = plugins::built("probe_plugin")?;
+    create_workspace(app_data, &parent.join("Garden"));
     let manifest = plugins::probe_manifest_with(&["name = \"global-shortcuts\"\n\
          shortcuts = [{ id = \"paste\", title = \"Dictation\", keys = \"Alt+Space\" }]"]);
-    let folder = plugins::folder(parent.path(), &manifest, "plugin.wasm", &probe);
-    plugins::install_and_enable(app_data.path(), &folder, "probe");
-    let system = FakeSystem::new(Platform::current());
-    let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
+    let folder = plugins::folder(parent, &manifest, "plugin.wasm", &probe);
+    plugins::install_and_enable(app_data, &folder, "probe");
+    let system = FakeSystem::new(platform);
+    let mut harness = harness_with(app_data, FakePicker::default(), system);
     settle(&mut harness);
     harness.state_mut().app_mut().open_settings_at("speech");
     run(&mut harness);
+    Some(harness)
+}
 
-    let keys = if cfg!(target_os = "macos") {
-        "\u{2325}Space"
-    } else {
-        "Alt+Space"
-    };
-    let field = harness
+/// The keys the Dictation shortcut's button shows.
+fn shortcut_keys(harness: &Ui) -> Option<String> {
+    harness
         .get_by_role_and_label(Role::Group, "Shortcuts")
-        .get_by_role_and_label(Role::TextInput, "Dictation");
-    assert_eq!(field.accesskit_node().value().as_deref(), Some(keys));
+        .get_by_role_and_label(Role::Button, "Dictation")
+        .accesskit_node()
+        .value()
+}
+
+/// Click the Dictation shortcut's keys. The Shortcuts group sits below the
+/// models, out of the window's view, so the click goes through AccessKit.
+fn click_shortcut(harness: &mut Ui) {
+    harness
+        .get_by_role_and_label(Role::Group, "Shortcuts")
+        .get_by_role_and_label(Role::Button, "Dictation")
+        .click_accesskit();
+    run(harness);
+}
+
+fn shortcut_lines(harness: &Ui) -> Vec<String> {
+    harness
+        .get_by_role_and_label(Role::Group, "Shortcuts")
+        .query_all(By::new().role(Role::Label))
+        .filter_map(|node| node.accesskit_node().value())
+        .collect()
+}
+
+#[test]
+fn a_shortcut_shows_its_keys_as_the_app_s_platform_writes_them() {
+    for (platform, keys) in [
+        (Platform::MacOs, "\u{2325}Space"),
+        (Platform::Windows, "Alt+Space"),
+    ] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let Some(harness) = speech_with_a_shortcut(app_data.path(), parent.path(), platform) else {
+            return;
+        };
+        assert_eq!(
+            shortcut_keys(&harness).as_deref(),
+            Some(keys),
+            "{platform:?}"
+        );
+    }
+}
+
+#[test]
+fn a_click_records_the_next_keys_you_press_and_reset_brings_the_plugin_s_back() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let Some(mut harness) = speech_with_a_shortcut(app_data.path(), parent.path(), Platform::MacOs)
+    else {
+        return;
+    };
+
+    click_shortcut(&mut harness);
+    assert_eq!(shortcut_keys(&harness).as_deref(), Some("Press keys"));
+    assert!(harness.state().app().global_shortcuts_paused());
+    // ⌘W would close the window; while recording it is only keys.
+    harness.key_press_modifiers(
+        egui::Modifiers::MAC_CMD | egui::Modifiers::COMMAND,
+        egui::Key::W,
+    );
+    run(&mut harness);
+    assert!(
+        shortcut_lines(&harness)
+            .iter()
+            .any(|line| line.starts_with("Noura uses these keys for ")),
+        "{:?}",
+        shortcut_lines(&harness)
+    );
+    assert_eq!(shortcut_keys(&harness).as_deref(), Some("\u{2325}Space"));
+    assert!(!harness.state().app().global_shortcuts_paused());
+
+    click_shortcut(&mut harness);
+    harness.key_press_modifiers(egui::Modifiers::ALT | egui::Modifiers::SHIFT, egui::Key::D);
+    run(&mut harness);
+    assert_eq!(
+        shortcut_keys(&harness).as_deref(),
+        Some("\u{2325}\u{21e7}D")
+    );
+    assert_eq!(
+        harness.state().app().global_shortcuts()[0].keys,
+        "Alt+Shift+D"
+    );
+    assert!(!harness.state().app().global_shortcuts_paused());
+
+    // Escape keeps the keys, and leaves Settings open.
+    click_shortcut(&mut harness);
+    harness.key_press(egui::Key::Escape);
+    run(&mut harness);
+    assert_eq!(
+        shortcut_keys(&harness).as_deref(),
+        Some("\u{2325}\u{21e7}D")
+    );
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Shortcuts")
+            .is_some()
+    );
+
+    harness
+        .get_by_role_and_label(Role::Group, "Shortcuts")
+        .get_by_role_and_label(Role::Button, "Reset")
+        .click_accesskit();
+    run(&mut harness);
+    assert_eq!(shortcut_keys(&harness).as_deref(), Some("\u{2325}Space"));
+    assert!(
+        harness
+            .get_by_role_and_label(Role::Group, "Shortcuts")
+            .query_by_role_and_label(Role::Button, "Reset")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_shortcut_whose_plugin_is_off_says_so_and_turns_it_on() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let Some(mut harness) = speech_with_a_shortcut(app_data.path(), parent.path(), Platform::MacOs)
+    else {
+        return;
+    };
+    harness
+        .state_mut()
+        .app_mut()
+        .shortcut_registered("probe", "paste", false);
+    run(&mut harness);
+    assert!(
+        shortcut_lines(&harness).contains(&"These keys didn't register. Choose others.".to_owned())
+    );
+
+    assert!(
+        harness
+            .state_mut()
+            .app_mut()
+            .set_plugin_enabled("probe", false)
+    );
+    settle(&mut harness);
+    run(&mut harness);
+    let shortcuts = harness.get_by_role_and_label(Role::Group, "Shortcuts");
+    assert!(
+        shortcuts
+            .query_by_role_and_label(Role::Button, "Dictation")
+            .is_none()
+    );
+    assert!(
+        shortcut_lines(&harness).contains(&"Probe is off in this workspace.".to_owned()),
+        "{:?}",
+        shortcut_lines(&harness)
+    );
+    harness
+        .get_by_role_and_label(Role::Group, "Shortcuts")
+        .get_by_role_and_label(Role::Button, "Turn on")
+        .click_accesskit();
+    settle(&mut harness);
+    run(&mut harness);
+    assert_eq!(shortcut_keys(&harness).as_deref(), Some("\u{2325}Space"));
 }

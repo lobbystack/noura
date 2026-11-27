@@ -67,8 +67,8 @@ pub use palette::{
 };
 pub use plugins::{NameDraft, PluginPlace};
 pub use speech::{
-    SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, SpeechModelsPage,
-    speech_language_name,
+    SPEECH_LANGUAGES, ShortcutStatus, SpeechModelFilter, SpeechModelRow, SpeechModelSection,
+    SpeechModelsPage, SpeechShortcut, speech_language_name,
 };
 
 /// What the window shows.
@@ -295,6 +295,8 @@ pub struct App {
     ignored_files: Option<IgnoredFiles>,
     /// Settings, while it is open.
     settings: Option<Settings>,
+    /// The shortcut Settings records new keys for, as (plugin, ID).
+    recording_shortcut: Option<(String, String)>,
     /// The plugin install dialog, while it is open.
     plugin_install: Option<PluginInstall>,
     /// Brings the install dialog of a release that is downloading.
@@ -433,6 +435,7 @@ impl App {
             renaming: None,
             ignored_files: None,
             settings: None,
+            recording_shortcut: None,
             plugin_install: None,
             plugin_download: None,
             settings_sections: kernel_sections(),
