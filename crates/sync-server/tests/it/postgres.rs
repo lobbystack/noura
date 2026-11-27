@@ -119,8 +119,19 @@ async fn migrate_then_serve_on_an_empty_postgres_database() {
         Some(&secret),
     ));
     assert!(first.status.success(), "{}", stderr(&first));
+    let migrations = std::fs::read_dir(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../sync-store-postgres/migrations"
+    ))
+    .expect("the migrations")
+    .filter(|entry| {
+        entry
+            .as_ref()
+            .is_ok_and(|entry| entry.path().extension().is_some_and(|ext| ext == "sql"))
+    })
+    .count();
     assert!(
-        stderr(&first).contains("ran 9 migration(s)"),
+        stderr(&first).contains(&format!("ran {migrations} migration(s)")),
         "{}",
         stderr(&first)
     );
