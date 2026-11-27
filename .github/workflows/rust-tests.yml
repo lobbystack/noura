@@ -183,6 +183,10 @@ jobs:
           echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
         with: { tool: cargo-nextest@0.9.152 }
+      # plugin-host's outside_project test builds a plugin with `--offline`,
+      # from the crates Cargo has already downloaded.
+      - name: Download the crates the plugins build from
+        run: cargo fetch --locked --target wasm32-wasip2
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tests-${{ runner.os }}
