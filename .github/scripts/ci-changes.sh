@@ -64,7 +64,7 @@ case "${GITHUB_EVENT_NAME:?}" in
     if evidence="$("$here/ci-evidence.sh" "$(git rev-parse HEAD)")"; then
       echo "CI already passed on this tree: $evidence"
       if git diff --name-only HEAD^1 HEAD |
-        grep -qE '(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^\.cargo/|^\.github/workflows/ci\.yml$'; then
+        grep -qE '(^|/)Cargo\.(toml|lock)$|^rust-toolchain\.toml$|^\.cargo/|^\.github/(workflows/(ci|rust-tests)\.yml|cargo-ci\.toml)$'; then
         echo "A dependency or the workflow changed, so the caches refill."
         warm=true
       fi

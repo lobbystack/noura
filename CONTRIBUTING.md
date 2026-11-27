@@ -67,15 +67,15 @@ The `ci` profile retries the tests listed there once, keeps going after a failur
 
 ## Know where CI runs your tests
 
-CI tests each change once, in its pull request, and spreads the tests over several runners. The `.github/workflows/ci.yml` jobs that run your tests:
+CI tests each change once, in its pull request, and spreads the tests over several runners. The jobs that run your tests:
 
-- **`build`**: builds the workspace and its tests once per platform, with dependencies optimized, then runs the doctests and the TypeScript author kit's tests
-- **`test`**: runs that build's tests in shards, four on Linux, six on Windows and two on macOS, each with `cargo nextest run --partition slice:<m>/<n>`
+- **`tests (<platform>) / build`**: builds the workspace and its tests once per platform, then runs the doctests and the TypeScript author kit's tests. It optimizes the crypto crates and SQLite, as `.github/cargo-ci.toml` lists
+- **`tests (<platform>) / test (<m>/<n>)`**: runs that build's tests in shards, four on Linux, six on Windows and two on macOS, each with `cargo nextest run --partition slice:<m>/<n>`. `.github/workflows/rust-tests.yml` holds both jobs
 - **`lint`**: runs `cargo fmt` on Linux and Clippy on each platform
 - **`extras`**: runs the plugin host and the collaboration sandbox on Pulley, the editor's large note in release mode, and the macOS frame-time reports
 - **`CI passed`**: fails when any job failed and counts a skipped job as passing, so branch protection requires only this check
 
-Linux runs every crate's tests. macOS and Windows skip the crates in `LINUX_ONLY_TESTS` at the top of `ci.yml`: `workspace-format`, `sync-protocol`, `sync-key-envelope`, `sync-store`, `account-web`, `plugin-sdk`, the plugins in `crates/plugins` and plugin-host's test plugins. A crate joins that list only when both hold:
+Linux runs every crate's tests. macOS and Windows skip the crates in `LINUX_ONLY_TESTS` at the top of `rust-tests.yml`: `workspace-format`, `sync-protocol`, `sync-key-envelope`, `sync-store`, `account-web`, `plugin-sdk`, the plugins in `crates/plugins` and plugin-host's test plugins. A crate joins that list only when both hold:
 
 - Its code has no platform-specific branch. `rg 'cfg!?\((not\()?(target_os|windows|unix|target_family)' crates/<crate>` finds none
 - Its tests read only checked-in fixtures, and touch no temporary file, path, process, socket or credential

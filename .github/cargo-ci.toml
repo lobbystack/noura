@@ -1,0 +1,28 @@
+# Cargo settings for CI's test build, passed with `--config
+# .github/cargo-ci.toml`. They optimize the dependencies whose code runs
+# hot in the tests and isn't generic, so it doesn't compile into Noura's
+# own crates: the crypto crates and the bundled SQLite. Unoptimized, the
+# SIMD code in curve25519-dalek made one sync-server test take 12 minutes
+# on an x86-64 runner against 24 seconds on Apple silicon. Noura's crates
+# stay unoptimized, with debug assertions.
+
+[profile.dev.package]
+aes = { opt-level = 3 }
+aes-gcm = { opt-level = 3 }
+blake3 = { opt-level = 3 }
+chacha20 = { opt-level = 3 }
+chacha20poly1305 = { opt-level = 3 }
+curve25519-dalek = { opt-level = 3 }
+ed25519-dalek = { opt-level = 3 }
+ghash = { opt-level = 3 }
+hkdf = { opt-level = 3 }
+hmac = { opt-level = 3 }
+hpke = { opt-level = 3 }
+keccak = { opt-level = 3 }
+libsqlite3-sys = { opt-level = 3 }
+ml-kem = { opt-level = 3 }
+poly1305 = { opt-level = 3 }
+polyval = { opt-level = 3 }
+sha2 = { opt-level = 3 }
+sha3 = { opt-level = 3 }
+x25519-dalek = { opt-level = 3 }

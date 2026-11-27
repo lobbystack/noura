@@ -1,0 +1,206 @@
+name: Rust tests
+
+# One platform's build and test shards, which ci.yml calls once for each
+# platform, so each platform's shards wait for that platform's build alone.
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: The runner image, such as ubuntu-latest.
+        type: string
+        required: true
+      shards:
+        description: The shard numbers as a JSON array, such as [1, 2, 3, 4].
+        type: string
+        required: true
+      test:
+        description: Whether to upload the archive and run the shards. Without it, the build only refills the cache.
+        type: boolean
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  # Tests of these crates run on Linux only. Their code has no
+  # platform-specific branch, and their tests read only checked-in
+  # fixtures; CONTRIBUTING.md has the rule. A new crate runs everywhere
+  # until it joins this list.
+  LINUX_ONLY_TESTS: >-
+    package(workspace-format) | package(sync-protocol) |
+    package(sync-key-envelope) | package(sync-store) | package(account-web) |
+    package(plugin-sdk) | package(s7-rust-hello) |
+    package(kit-plugin) | package(misbehave-plugin) | package(probe-plugin) |
+    package(recipes-plugin) | package(uses-files-plugin) | package(ai-plugin) |
+    package(calendar-plugin) | package(dictation-plugin) | package(hello-plugin) |
+    package(projects-plugin) | package(tasks-plugin) | package(transcription-plugin)
+
+jobs:
+  # Builds the workspace and its tests, runs the TypeScript author kit's
+  # tests and the doctests, and hands the shards a nextest archive with the
+  # plugins the tests load. Only main saves the cache, so pull requests
+  # restore main's instead of evicting it. The Cargo steps run in the
+  # platform's default shell: on Windows, Git Bash's Perl can't configure
+  # the OpenSSL that sync-server vendors.
+  build:
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the Linux build libraries
+        if: runner.os == 'Linux'
+        run: scripts/install-linux-build-deps.sh
+      # rustup reads the version and components from rust-toolchain.toml.
+      - name: Install the pinned Rust toolchain and the WebAssembly component target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-wasip2
+      - run: rustc --version
+      # rav1d, which decodes AVIF images in notes, assembles its x86 code
+      # with NASM.
+      - name: Install NASM
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            choco install nasm --no-progress -y
+            echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+          else
+            sudo apt-get update && sudo apt-get install -y nasm
+          fi
+      - name: Keep Defender out of the build folders
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
+      # The key leaves out the runner's other Rust toolchains, which change
+      # with each runner image. rust-toolchain.toml pins the one that builds.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: tests
+          add-rust-environment-hash-key: false
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/faster-pipeline' }}
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: cargo-nextest@0.9.152 }
+      - name: Build the workspace
+        run: cargo build --workspace --locked --config .github/cargo-ci.toml
+      # Trial S7 loads a Rust and a TypeScript hello plugin in plugin-host's
+      # tests. jco needs Node and npm, which AGENTS.md allows only for
+      # sdk/typescript.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            sdk/typescript/s7-hello/package-lock.json
+            sdk/typescript/package-lock.json
+      - name: Build the trial S7 plugins
+        shell: bash
+        run: bash crates/plugin-host/trial/build-plugins.sh
+      # Seam 5: the TypeScript author kit under Node. Its tests create,
+      # build, rebuild in dev mode and package plugins, and run them in
+      # the real host, noura-kit-host, which the workspace build built
+      # above, and in the mock host.
+      - name: Install the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund
+      - name: Build the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm run build
+      - name: Type-check the TypeScript author kit
+        working-directory: sdk/typescript
+        run: npm run check
+      - name: Test the TypeScript author kit against the mock and real hosts
+        working-directory: sdk/typescript
+        run: npm test
+        env:
+          NOURA_REQUIRE_KIT_HOST: '1'
+      # The hello plugin and plugin-host's test plugins, which the plugin
+      # tests in plugin-host, app-core and app-ui load.
+      - name: Build the plugins
+        shell: bash
+        run: bash crates/plugin-sdk/build-plugins.sh
+      - name: Build and archive the tests
+        run: >-
+          cargo nextest archive --workspace --locked --profile ci --config .github/cargo-ci.toml
+          -E "${{ runner.os == 'Linux' && 'all()' || format('not ({0})', env.LINUX_ONLY_TESTS) }}"
+          --archive-file nextest-archive.tar.zst
+      # The archive holds the test binaries and the binaries they start.
+      # The plugins sit beside it at the paths the tests read them from.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: inputs.test
+        with:
+          name: tests-${{ runner.os }}
+          path: |
+            nextest-archive.tar.zst
+            target/wasm32-wasip2/debug/*.wasm
+            target/wasm32-wasip2/release/s7_rust_hello.wasm
+            sdk/typescript/s7-hello/dist/s7-hello.wasm
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Run the doctests
+        run: cargo test --workspace --locked --doc --config .github/cargo-ci.toml
+
+  # Nextest runs each test in a process of its own, with the limits in
+  # .config/nextest.toml, and each shard runs every Nth test of the
+  # archive. Linux runs every crate; macOS and Windows skip
+  # LINUX_ONLY_TESTS.
+  test:
+    name: test (${{ matrix.shard }}/${{ strategy.job-total }})
+    needs: build
+    if: inputs.test
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards) }}
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the Linux libraries
+        if: runner.os == 'Linux'
+        run: scripts/install-linux-build-deps.sh
+      # Some tests run Cargo: plugin-host's builds a plugin outside the
+      # repository, and app-core's reads the dependency graph.
+      - name: Install the pinned Rust toolchain and the WebAssembly component target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-wasip2
+      - name: Keep Defender out of the build folders
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
+      # The PostgreSQL store's tests start throwaway clusters with the
+      # runner's initdb and pg_ctl and fail when PostgreSQL is missing. The
+      # Linux and Windows images ship PostgreSQL; Homebrew provides it on
+      # macOS.
+      - name: Install PostgreSQL on macOS
+        if: runner.os == 'macOS'
+        run: |
+          brew list postgresql@16 > /dev/null 2>&1 || brew install postgresql@16
+          echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
+        with: { tool: cargo-nextest@0.9.152 }
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tests-${{ runner.os }}
+      # Extracting into the checkout puts every binary back at the path its
+      # tests compiled in, such as CARGO_BIN_EXE_noura.
+      - name: Run the tests
+        timeout-minutes: 60
+        run: >-
+          cargo nextest run --archive-file nextest-archive.tar.zst
+          --extract-to "${{ github.workspace }}" --extract-overwrite --profile ci
+          --partition "slice:${{ matrix.shard }}/${{ strategy.job-total }}"
+          -E "${{ runner.os == 'Linux' && 'all()' || format('not ({0})', env.LINUX_ONLY_TESTS) }}"
+        env:
+          NOURA_S7_REQUIRE_PLUGINS: '1'
+          NOURA_REQUIRE_PLUGINS: '1'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: junit-${{ runner.os }}-${{ matrix.shard }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
