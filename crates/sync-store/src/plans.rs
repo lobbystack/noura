@@ -432,6 +432,135 @@ impl<B: Backend> Store<B> {
             .await
     }
 
+    /// Up to 4,096 open workspaces over plan, earliest first, after each
+    /// of their owners' workspaces came back in line with the plan, so a
+    /// plan that changed or a server that stopped selling plans releases
+    /// them first.
+    pub async fn over_plan_workspaces(&self) -> Result<Vec<crate::OverPlanRow>> {
+        let read = || {
+            self.backend.read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move { txn.over_plan_workspaces(4_096).await })
+            }))
+        };
+        let mut owners: Vec<Id> = read().await?.iter().map(|row| row.owner).collect();
+        owners.sort();
+        owners.dedup();
+        for owner in owners {
+            self.reconcile_plan(owner).await?;
+        }
+        read().await
+    }
+
+    /// Records that `notices` notices went out about `workspace`, still
+    /// over plan since `since`. Returns false when the workspace left that
+    /// state in the meantime.
+    pub async fn record_over_plan_notice(
+        &self,
+        owner: Id,
+        workspace: Id,
+        since: u64,
+        notices: u8,
+    ) -> Result<bool> {
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move {
+                    txn.lock_account(owner).await?;
+                    let still = txn
+                        .owned_workspace_rows(owner)
+                        .await?
+                        .into_iter()
+                        .any(|row| {
+                            row.workspace == workspace && row.over_plan_since == Some(since)
+                        });
+                    if still {
+                        txn.set_over_plan(workspace, Some(since), notices).await?;
+                    }
+                    Ok(still)
+                })
+            }))
+            .await
+    }
+
+    /// The emails of a workspace's members, its owner first.
+    pub async fn member_emails(&self, workspace: Id, owner: Id) -> Result<Vec<String>> {
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    let mut accounts = vec![owner];
+                    accounts.extend(
+                        txn.member_accounts(workspace)
+                            .await?
+                            .into_iter()
+                            .filter(|account| *account != owner),
+                    );
+                    let mut emails = Vec::new();
+                    for account in accounts {
+                        if let Some(email) = txn.account_email(account).await? {
+                            emails.push(email);
+                        }
+                    }
+                    Ok(emails)
+                })
+            }))
+            .await
+    }
+
+    /// Up to 4,096 accounts that own an open workspace and were last
+    /// active in `month` or before (§20, Inactive accounts).
+    pub async fn inactive_owners(&self, month: u64) -> Result<Vec<Id>> {
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move { txn.inactive_owners(month, 4_096).await })
+            }))
+            .await
+    }
+
+    /// Where an owner stands for the inactivity rule: the latest month that
+    /// it or a member of a workspace it owns was active, the warnings it
+    /// got, whether its plan is `free`, its email, and its open workspaces.
+    pub async fn inactivity(&self, account: Id) -> Result<Inactivity> {
+        let billing = self.billing;
+        self.backend
+            .read(Box::new(move |txn: &mut B::Read| {
+                Box::pin(async move {
+                    let (mut last_month, warnings) =
+                        txn.account_activity(account).await?.unwrap_or((0, 0));
+                    let row = txn.account_plan(account).await?;
+                    let free = billing && effective(true, row.as_ref()).0 == FREE;
+                    let workspaces: Vec<Id> = txn
+                        .owned_workspace_rows(account)
+                        .await?
+                        .into_iter()
+                        .map(|row| row.workspace)
+                        .collect();
+                    for workspace in &workspaces {
+                        for member in txn.member_accounts(*workspace).await? {
+                            if let Some((month, _)) = txn.account_activity(member).await? {
+                                last_month = last_month.max(month);
+                            }
+                        }
+                    }
+                    Ok(Inactivity {
+                        last_month,
+                        warnings,
+                        free,
+                        email: txn.account_email(account).await?,
+                        workspaces,
+                    })
+                })
+            }))
+            .await
+    }
+
+    /// Records how many inactivity warnings `account` got.
+    pub async fn set_inactivity_warnings(&self, account: Id, warnings: u8) -> Result<()> {
+        self.backend
+            .write(Box::new(move |txn: &mut B::Write| {
+                Box::pin(async move { txn.set_inactivity_warnings(account, warnings).await })
+            }))
+            .await
+    }
+
     /// Records that `account` sent an authenticated request in `month`,
     /// counted from January of year 0, and clears its inactivity warnings
     /// (§20, Inactive accounts). Returns whether the month moved.
@@ -442,6 +571,21 @@ impl<B: Backend> Store<B> {
             }))
             .await
     }
+}
+
+/// An owner as the inactivity rule sees it (§20, Inactive accounts).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Inactivity {
+    /// The latest month it or a member of its workspaces was active.
+    pub last_month: u64,
+    /// The warnings it got since.
+    pub warnings: u8,
+    /// Whether its plan is `free` on a server that sells plans.
+    pub free: bool,
+    /// Its email.
+    pub email: Option<String>,
+    /// The open workspaces it owns.
+    pub workspaces: Vec<Id>,
 }
 
 /// `over_plan`: the workspace is read-only until it returns within its

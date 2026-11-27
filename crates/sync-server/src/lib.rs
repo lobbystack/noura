@@ -378,10 +378,11 @@ pub async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<()
     let lease = restore::spawn_lease(store.clone(), instance, restore::LEASE_PERIOD, moved);
     tracing::info!("serving");
     eprintln!("sync-server listening on {bound}");
-    let maintenance = maintenance::spawn(store.clone(), blobs.clone());
+    let accounts = Arc::new(accounts);
+    let maintenance = maintenance::spawn(store.clone(), blobs.clone(), accounts.clone());
     let state = AppState {
         store: store.clone(),
-        accounts: Arc::new(accounts),
+        accounts,
         blobs,
         rate: Arc::new(rate),
     };

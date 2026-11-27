@@ -789,6 +789,17 @@ async fn the_account_route_reports_the_day_and_the_plan() {
     );
     assert!(report.downloaded_today >= policy.body.len() as u64);
     assert_eq!(report.workspaces.0.len(), 1);
+    // A server that sells plans notes the month the account was active.
+    let activity = world
+        .store
+        .inactivity(world.account.account)
+        .await
+        .expect("activity");
+    assert_eq!(
+        activity.last_month,
+        sync_server::maintenance::month_of(world.store.clock().now())
+    );
+    assert!(activity.free);
 
     // A 6 MB file is past free's 5 MB.
     let large = sync_protocol::blob::blob_ciphertext_len(6_000_000);
@@ -845,6 +856,13 @@ async fn without_billing_the_account_route_reports_the_operator_plan() {
     assert!(!report.billing);
     assert_eq!(report.owned_workspaces, 100);
     assert_eq!((report.uploaded_today, report.downloaded_today), (0, 0));
+    // Nor does it keep any activity.
+    let activity = world
+        .store
+        .inactivity(world.account.account)
+        .await
+        .expect("activity");
+    assert_eq!((activity.last_month, activity.free), (0, false));
 }
 
 /// Each limiter reads back what a key used in the current window, apart

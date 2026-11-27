@@ -148,7 +148,9 @@ async fn admit<B: Backend>(
             budget,
             meter,
         )
-        .await
+        .await?;
+    state.accounts.note_activity(&state.store, account).await;
+    Ok(())
 }
 
 /// Refuses a session that holds no card yet.

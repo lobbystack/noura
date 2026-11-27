@@ -123,6 +123,8 @@ pub struct Accounts {
     deliveries: Deliveries,
     billing: Option<Arc<dyn crate::billing::BillingProvider>>,
     sign_ups: Option<signups::SignUpGuard>,
+    /// The accounts noted active this month on this instance.
+    active: std::sync::Mutex<std::collections::HashMap<Id, u64>>,
 }
 
 impl Accounts {
@@ -149,6 +151,23 @@ impl Accounts {
             deliveries: Deliveries::default(),
             billing: None,
             sign_ups: None,
+            active: Default::default(),
+        }
+    }
+
+    /// Notes that `account` sent an authenticated request, once a month on
+    /// each instance, on a server that sells plans (§20, Inactive
+    /// accounts).
+    pub(crate) async fn note_activity<B: Backend>(&self, store: &Store<B>, account: Id) {
+        if !store.billing() {
+            return;
+        }
+        let month = crate::maintenance::month_of(store.clock().now());
+        if crate::maintenance::noted(&self.active, account, month) {
+            return;
+        }
+        if let Err(error) = store.note_activity(account, month).await {
+            tracing::warn!(cause = %error, "an account's activity couldn't be noted");
         }
     }
 
@@ -212,7 +231,13 @@ impl Accounts {
         )
     }
 
-    async fn send(&self, to: &str, subject: &str, text: String) -> Result<(), MailError> {
+    /// Sends one message from the server's sender.
+    pub(crate) async fn send(
+        &self,
+        to: &str,
+        subject: &str,
+        text: String,
+    ) -> Result<(), MailError> {
         let mail = Mail {
             from: self.mail_from.clone(),
             to: to.to_owned(),

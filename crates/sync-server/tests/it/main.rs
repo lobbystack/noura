@@ -17,6 +17,7 @@ mod devices;
 mod invitations;
 mod logs;
 mod notices;
+mod plan_jobs;
 mod postgres;
 mod rate_limits;
 mod realtime;
