@@ -41,6 +41,28 @@ retries = 0
 [profile.ci.junit]
 path = "junit.xml"
 
+# CI splits the tests into shards with `--partition slice:<m>/<n>`. Each
+# shard starts these first, the tests that took more than a minute on a
+# Linux or Windows runner, so none of them starts last and holds the shard
+# open alone.
+[[profile.ci.overrides]]
+filter = """
+binary(sync_soak) | binary(sync_scale) | binary(sync_attachment_memory)
+| test(=chains::a_removed_device_id_never_enrolls_again_and_a_257th_card_is_refused)
+| test(=limits_follow_section_27) | test(=share_limit_holds_a_thousand_links)
+| test(=workspace_requests_hold_a_hundred)
+| test(=sync_retention::over_quota_a_replacement_and_a_kit_still_work)
+| test(=sync_retention::over_quota_a_replacement_and_a_kit_still_work_on_postgres)
+| test(=sync_text::the_lowest_device_snapshots_past_the_volume_rule)
+| test(=sync_restore::many_devices_pick_one_writer_for_a_lost_object)
+| test(=restore::serve_may_start_while_the_pass_runs_over_a_large_store)
+| test(=soak::two_instances_sustain_400_pushes_a_second_into_one_domain)
+| test(=the_writer_keeps_the_write_ahead_log_bounded)
+| test(=plugin_capabilities::a_package_ships_every_first_party_plugin_and_each_installs_at_launch)
+| test(/^tests::edit_props::(cursor_|cmd_line_jump|fold_toggle)/)
+"""
+priority = 100
+
 # Tests known to fail now and then on a loaded runner. Each gets one retry;
 # a retry that passes shows as flaky in the summary.
 [[profile.ci.overrides]]
