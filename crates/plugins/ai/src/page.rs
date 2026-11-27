@@ -14,7 +14,7 @@ use plugin_sdk::{
     navigation::{self, SettingsSection},
 };
 
-use crate::{State, look, panel, reason, web};
+use crate::{State, failures, look, panel, reason, web};
 
 /// The node IDs events name.
 pub(crate) const PILL: &str = "orb-pill";
@@ -168,7 +168,14 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
     {
         view.text(talk, "chat-problem", problem);
     }
-    draw_messages(&mut view, talk, &messages, run.as_ref(), &orb.title);
+    draw_messages(
+        &mut view,
+        talk,
+        &messages,
+        run.as_ref(),
+        &orb.title,
+        &providers,
+    );
     if let Some(run) = &run {
         // A message Noura didn't write to the chat, as when you said no or
         // the write failed, comes back to the message box.
@@ -177,7 +184,7 @@ pub(crate) fn render(state: &mut State) -> Vec<Node> {
         } else if !busy && let Some(message) = state.unsent.remove(&run.id) {
             state.draft = message;
         }
-        draw_run_status(&mut view, talk, run);
+        draw_run_status(&mut view, talk, run, &providers);
     }
     if let Some(notice) = &state.notice {
         view.text(talk, "notice", notice);
@@ -300,7 +307,14 @@ fn stopped_before_answering(messages: &[Message]) -> bool {
 /// named `who` for screen readers. Each tool call shows with the result
 /// that answers it, which pairs with the latest call before it of the
 /// same tool that has none yet.
-fn draw_messages(view: &mut View, talk: u32, messages: &[Message], run: Option<&Run>, who: &str) {
+fn draw_messages(
+    view: &mut View,
+    talk: u32,
+    messages: &[Message],
+    run: Option<&Run>,
+    who: &str,
+    providers: &[ai::Provider],
+) {
     let mut answers: BTreeMap<usize, usize> = BTreeMap::new();
     for (index, message) in messages.iter().enumerate() {
         if message.kind != MessageKind::ToolResult {
@@ -323,14 +337,21 @@ fn draw_messages(view: &mut View, talk: u32, messages: &[Message], run: Option<&
                 draw_tool_call(view, talk, message, result, run);
             }
             MessageKind::ToolResult if answered.contains(&index) => {}
-            _ => draw_message(view, talk, message, run, who),
+            _ => draw_message(view, talk, message, run, who, providers),
         }
     }
 }
 
 /// One message of the thread. The answer that streams in shows the text
 /// that arrived so far.
-fn draw_message(view: &mut View, talk: u32, message: &Message, run: Option<&Run>, who: &str) {
+fn draw_message(
+    view: &mut View,
+    talk: u32,
+    message: &Message,
+    run: Option<&Run>,
+    who: &str,
+    providers: &[ai::Provider],
+) {
     match message.kind {
         MessageKind::User => {
             view.message(
@@ -367,7 +388,13 @@ fn draw_message(view: &mut View, talk: u32, message: &Message, run: Option<&Run>
                 MessageStatus::Interrupted => {
                     view.note(shown, "Noura stopped before this answer finished.");
                 }
-                MessageStatus::Failed => view.warn(shown, "This answer failed."),
+                MessageStatus::Failed => {
+                    let provider = failures::provider_name(message.provider.as_deref(), providers);
+                    view.warn(
+                        shown,
+                        &failures::line(message.error_code.as_deref(), provider),
+                    );
+                }
             }
         }
         // A result whose call isn't in the chat shows on its own.
@@ -521,12 +548,21 @@ fn draw_web_result(view: &mut View, row: u32, id: &str, shown: Option<web::Shown
 
 /// What the run of the last message you sent says, when the messages
 /// don't: it ended early.
-fn draw_run_status(view: &mut View, talk: u32, run: &Run) {
+/// A failed run's answer message carries its provider's failure; a run
+/// that failed before it wrote one, or for a reason of Noura's own, says
+/// so here.
+fn draw_run_status(view: &mut View, talk: u32, run: &Run, providers: &[ai::Provider]) {
     let line = match run.status {
-        RunStatus::Failed => run
-            .failure
-            .as_ref()
-            .map(|failure| format!("The answer failed: {}", failure.message)),
+        RunStatus::Failed => run.failure.as_ref().and_then(|failure| {
+            if !failures::speaks_for(&failure.code) {
+                Some(format!("The answer failed: {}", failure.message))
+            } else if run.message.is_none() {
+                let provider = failures::provider_name(Some(&run.provider), providers);
+                Some(failures::line(Some(&failure.code), provider))
+            } else {
+                None
+            }
+        }),
         RunStatus::Interrupted => {
             Some("You turned off a plugin this answer relied on, so it stopped.".to_owned())
         }

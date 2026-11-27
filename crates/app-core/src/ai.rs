@@ -2419,6 +2419,18 @@ fn failure_of(error: &CoreError) -> AiFailure {
         "endpoint_insecure" => "Use HTTPS, or HTTP only for a server on this computer.",
         "revision_conflict" => "The chat changed elsewhere, so the answer wasn't saved.",
         "provider_stream_incomplete" => "The provider stopped early. Try again.",
+        "provider_auth_failed" => "The provider didn't accept the key. Update it in AI settings.",
+        "provider_key_missing" => "The provider has no key yet. Add one in AI settings.",
+        "provider_billing" => "The provider account is out of credit. Check its billing.",
+        "provider_rate_limited" => "The provider is limiting requests. Try again in a minute.",
+        "provider_model_not_found" | "provider_model_retired" => {
+            "The provider doesn't offer this model anymore. Pick another one."
+        }
+        "provider_too_long" => "This chat is too long for the model. Start a new chat.",
+        "provider_overloaded" => "The provider is down or busy. Try again in a few minutes.",
+        "provider_unreachable" => "Noura couldn't reach the provider. Check your connection.",
+        "provider_connection_lost" => "The connection to the provider dropped. Try again.",
+        "provider_plan_limit" => "The ChatGPT plan has no usage left for Noura.",
         PLUGIN_DISABLED => "You turned off a plugin this answer relied on.",
         _ => match error.category {
             local_core::ErrorCategory::Provider | local_core::ErrorCategory::Transient => {

@@ -18,12 +18,14 @@ use genai::{
     resolver::{AuthData, Endpoint, ServiceTargetResolver},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 use ts_rs::TS;
 
 use crate::{CoreError, ErrorCategory, Result};
 use crate::{CredentialStore, SystemCredentials};
 
+pub mod failures;
 mod genai_streamer;
 mod operations;
 mod providers;

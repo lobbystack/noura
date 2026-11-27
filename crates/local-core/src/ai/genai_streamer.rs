@@ -11,6 +11,14 @@ impl AiStreamer for GenAiStreamer {
         request: ResolvedAiStreamRequest,
     ) -> Pin<Box<dyn Future<Output = Result<AiProviderEventStream>> + Send + '_>> {
         Box::pin(async move {
+            let kind = request.provider.kind.clone();
+            if request.credential.is_none() && needs_key(&request.provider) {
+                return Err(failures::ProviderFailure {
+                    error_type: Some("missing_key".into()),
+                    ..failures::ProviderFailure::default()
+                }
+                .into_error(&kind, "ai_stream"));
+            }
             let client = provider_client(
                 &request.provider,
                 request.credential.as_deref(),
@@ -39,37 +47,49 @@ impl AiStreamer for GenAiStreamer {
                     Some(&options),
                 )
                 .await
-                .map_err(|_| provider_error("ai_stream"))?;
-            let stream = response.stream.filter_map(|event| async move {
-                match event {
-                    Ok(ChatStreamEvent::Chunk(chunk)) => {
-                        Some(Ok(AiProviderStreamEvent::TextDelta(chunk.content)))
+                .map_err(|error| failures::of_genai(&error).into_error(&kind, "ai_stream"))?;
+            let stream = response.stream.filter_map(move |event| {
+                let kind = kind.clone();
+                async move {
+                    match event {
+                        Ok(ChatStreamEvent::Chunk(chunk)) => {
+                            Some(Ok(AiProviderStreamEvent::TextDelta(chunk.content)))
+                        }
+                        Ok(ChatStreamEvent::End(end)) => {
+                            let tool_calls = end
+                                .captured_tool_calls()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(tool_call_from_genai)
+                                .collect();
+                            Some(Ok(AiProviderStreamEvent::Completed {
+                                usage: end.captured_usage.map(|usage| AiUsage {
+                                    prompt_tokens: usage.prompt_tokens,
+                                    completion_tokens: usage.completion_tokens,
+                                    total_tokens: usage.total_tokens,
+                                }),
+                                stop_reason: end.captured_stop_reason.map(stop_reason),
+                                tool_calls,
+                            }))
+                        }
+                        Ok(_) => None,
+                        Err(error) => Some(Err(
+                            failures::of_genai(&error).into_error(&kind, "ai_stream")
+                        )),
                     }
-                    Ok(ChatStreamEvent::End(end)) => {
-                        let tool_calls = end
-                            .captured_tool_calls()
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(tool_call_from_genai)
-                            .collect();
-                        Some(Ok(AiProviderStreamEvent::Completed {
-                            usage: end.captured_usage.map(|usage| AiUsage {
-                                prompt_tokens: usage.prompt_tokens,
-                                completion_tokens: usage.completion_tokens,
-                                total_tokens: usage.total_tokens,
-                            }),
-                            stop_reason: end.captured_stop_reason.map(stop_reason),
-                            tool_calls,
-                        }))
-                    }
-                    Ok(_) => None,
-                    Err(_) => Some(Err(provider_error("ai_stream"))),
                 }
             });
             let stream: AiProviderEventStream = Box::pin(stream);
             Ok(stream)
         })
     }
+}
+
+/// Whether a request to `provider` goes nowhere without a key: a hosted
+/// provider at its own address. Ollama and a server you named may take
+/// none.
+fn needs_key(provider: &AiProviderConfig) -> bool {
+    provider.endpoint.is_none() && provider.kind != "ollama"
 }
 
 fn provider_client(

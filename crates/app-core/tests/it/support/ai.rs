@@ -52,6 +52,8 @@ enum Say {
     Text(String),
     Done(Vec<AiToolCall>),
     Fail,
+    /// A failure with this code, as the provider client classifies one.
+    FailWith(&'static str),
 }
 
 /// One request's stream, open until the test ends it or Noura drops it.
@@ -112,6 +114,12 @@ impl FakeProvider {
     /// Fail request `index` as a provider that answered with an error.
     pub fn fail(&self, index: usize) {
         self.send(index, Say::Fail);
+    }
+
+    /// End request `index`'s stream with a failure the provider client
+    /// classified as `code`.
+    pub fn fail_with(&self, index: usize, code: &'static str) {
+        self.send(index, Say::FailWith(code));
     }
 
     /// Whether Noura dropped request `index`'s stream before it ended.
@@ -200,6 +208,15 @@ impl AiStreamer for FakeProvider {
                             );
                             error.details = Some(serde_json::json!({ "body": RAW_FAILURE }));
                             Err(error)
+                        }
+                        Say::FailWith(code) => {
+                            guard.ended = true;
+                            Err(CoreError::new(
+                                code,
+                                ErrorCategory::Provider,
+                                "The AI provider request failed",
+                                "ai_stream",
+                            ))
                         }
                     };
                     Some((event, (receiver, guard)))
