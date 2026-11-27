@@ -92,6 +92,12 @@ pub struct Config {
     /// The payment provider that sells plans (§20, §26 Billing); without
     /// one every account keeps the operator's settings.
     pub billing: Option<billing::polar::PolarConfig>,
+    /// New accounts one client IP starts per UTC day while the server
+    /// sells plans; `None` takes the default.
+    pub sign_ups_per_day: Option<u64>,
+    /// Email domains that may not sign up, one a line, on top of the
+    /// built-in disposable ones, while the server sells plans.
+    pub blocked_email_domains: String,
 }
 
 /// Where `serve` keeps blob segments (§21).
@@ -147,6 +153,8 @@ impl Config {
             trusted_proxy_header: None,
             connections: ConnectionLimits::default(),
             billing: None,
+            sign_ups_per_day: None,
+            blocked_email_domains: String::new(),
         }
     }
 }
@@ -204,7 +212,16 @@ pub fn accounts_for(config: &Config, origin: PublicOrigin) -> Result<Accounts, C
         config.account_web.clone(),
     );
     Ok(match &config.billing {
-        Some(polar) => accounts.with_billing(Arc::new(billing::polar::Polar::new(polar.clone()))),
+        Some(polar) => accounts
+            .with_billing(Arc::new(billing::polar::Polar::new(polar.clone())))
+            .with_sign_up_guard(accounts::signups::SignUpGuard::new(
+                Some(
+                    config
+                        .sign_ups_per_day
+                        .unwrap_or(accounts::signups::DEFAULT_PER_DAY),
+                ),
+                &config.blocked_email_domains,
+            )),
         None => accounts,
     })
 }

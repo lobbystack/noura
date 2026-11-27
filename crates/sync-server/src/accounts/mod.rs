@@ -21,6 +21,7 @@ pub mod config;
 pub mod mail;
 mod pages;
 pub mod plan;
+pub mod signups;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -121,6 +122,7 @@ pub struct Accounts {
     assets: Option<PathBuf>,
     deliveries: Deliveries,
     billing: Option<Arc<dyn crate::billing::BillingProvider>>,
+    sign_ups: Option<signups::SignUpGuard>,
 }
 
 impl Accounts {
@@ -146,7 +148,21 @@ impl Accounts {
             assets,
             deliveries: Deliveries::default(),
             billing: None,
+            sign_ups: None,
         }
+    }
+
+    /// These account pages, checking each sign-up with `guard` (§20).
+    pub fn with_sign_up_guard(mut self, guard: signups::SignUpGuard) -> Self {
+        self.sign_ups = Some(guard);
+        self
+    }
+
+    /// Whether the sign-up checks refuse `email`'s domain.
+    fn blocks(&self, email: &str) -> bool {
+        self.sign_ups
+            .as_ref()
+            .is_some_and(|guard| guard.blocks(email))
     }
 
     /// These account pages, selling plans through `provider` (§26,
@@ -807,6 +823,7 @@ async fn account_page<B: Backend>(
 /// answers every email the same way.
 async fn email_link<B: Backend>(
     State(state): State<AppState<B>>,
+    client: Option<axum::Extension<signups::ClientKey>>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
@@ -828,10 +845,17 @@ async fn email_link<B: Backend>(
             "Enter an email address, such as you@example.com.",
         );
     };
+    if accounts.blocks(&email) {
+        return refused_domain();
+    }
     if accounts.allowlist.admits(&email) {
         let (store, accounts) = (state.store.clone(), state.accounts.clone());
         let to = email.clone();
+        let client = client.map(|axum::Extension(key)| key);
         state.accounts.deliveries.spawn(async move {
+            if !sign_up_admitted(&store, &accounts, &to, client).await {
+                return;
+            }
             let text = |link: &str| {
                 format!(
                     "Use this link to sign in to Noura. It works once, within 10 minutes.\n\n{link}\n\nIf you didn't ask to sign in, ignore this email.\n"
@@ -841,6 +865,47 @@ async fn email_link<B: Backend>(
         });
     }
     html(StatusCode::OK, &pages::CheckEmail { email: &email })
+}
+
+/// The answer for an address at a domain the sign-up checks refuse.
+fn refused_domain() -> Response {
+    message(
+        StatusCode::BAD_REQUEST,
+        "Use another address",
+        "Noura doesn't take addresses at disposable email services.",
+    )
+}
+
+/// Whether `email` may get a mail that signs it in: always when it holds an
+/// account, and otherwise while `client`'s day has room for a new one. A
+/// refusal sends nothing, and the answer already went out.
+async fn sign_up_admitted<B: Backend>(
+    store: &Store<B>,
+    accounts: &Accounts,
+    email: &str,
+    client: Option<signups::ClientKey>,
+) -> bool {
+    let Some(guard) = &accounts.sign_ups else {
+        return true;
+    };
+    let existing = match store.account_id(email) {
+        Ok(account) => store.account_email(account).await,
+        Err(error) => Err(error),
+    };
+    match existing {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            let admitted = guard.admit(store, client).await;
+            if !admitted {
+                tracing::warn!("a client passed its daily sign-ups");
+            }
+            admitted
+        }
+        Err(error) => {
+            tracing::error!(cause = %error, "a sign-up couldn't read its account");
+            false
+        }
+    }
 }
 
 /// Issues a magic link for `email` and mails it in the message `text`
@@ -1056,6 +1121,13 @@ async fn sign_up_start<B: Backend>(
         Ok(email) => email,
         Err(response) => return *response,
     };
+    if accounts.blocks(&email) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "email_refused",
+            "Noura doesn't take addresses at disposable email services.",
+        );
+    }
     let (account, handle) = match state
         .store
         .account_id(&email)
@@ -1099,6 +1171,7 @@ async fn sign_up_start<B: Backend>(
 /// hold that email. Every email gets the same answer, before any mail.
 async fn sign_up_finish<B: Backend>(
     State(state): State<AppState<B>>,
+    client: Option<axum::Extension<signups::ClientKey>>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
@@ -1135,7 +1208,11 @@ async fn sign_up_finish<B: Backend>(
         };
         let (store, accounts) = (state.store.clone(), state.accounts.clone());
         let credential_id = passkey.cred_id().to_vec();
+        let client = client.map(|axum::Extension(key)| key);
         state.accounts.deliveries.spawn(async move {
+            if !sign_up_admitted(&store, &accounts, &email, client).await {
+                return;
+            }
             mail_sign_up(&store, &accounts, &email, credential_id, bytes).await;
         });
     }

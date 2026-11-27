@@ -47,6 +47,10 @@
 //!   `NOURA_POLAR_PRODUCTS`, with an optional `NOURA_POLAR_API`: sell plans
 //!   through Polar, with its products mapped to plan IDs as `plan=product`
 //!   pairs. Without them the server sells no plans.
+//! - `NOURA_SIGN_UPS_PER_DAY` and `NOURA_BLOCKED_EMAIL_DOMAINS`: while the
+//!   server sells plans, the new accounts one client IP starts per UTC day,
+//!   5 by default, and a file of email domains that may not sign up, on top
+//!   of the built-in disposable ones.
 //! - `NOURA_RATE_PUSHES_PER_SECOND`, `NOURA_RATE_PUSH_BYTES_PER_MINUTE`,
 //!   `NOURA_RATE_UPLOAD_BYTES_PER_MINUTE`, `NOURA_RATE_READ_BYTES_PER_MINUTE`,
 //!   `NOURA_RATE_BOOTSTRAP_BYTES_PER_MINUTE`,
@@ -197,6 +201,17 @@ fn serve(arguments: Arguments) -> Result<(), String> {
     config.rate_limits = rate_limits()?;
     config.trusted_proxy_header = env("NOURA_TRUSTED_PROXY_HEADER");
     config.billing = polar()?;
+    if let Some(value) = env("NOURA_SIGN_UPS_PER_DAY") {
+        config.sign_ups_per_day = Some(
+            value
+                .parse()
+                .map_err(|_| "NOURA_SIGN_UPS_PER_DAY isn't a whole number")?,
+        );
+    }
+    if let Some(path) = env("NOURA_BLOCKED_EMAIL_DOMAINS") {
+        config.blocked_email_domains = std::fs::read_to_string(&path)
+            .map_err(|e| format!("can't read NOURA_BLOCKED_EMAIL_DOMAINS: {e}"))?;
+    }
     if let Some(value) = env("NOURA_MAX_CONNECTIONS") {
         config.connections.connections = value
             .parse()

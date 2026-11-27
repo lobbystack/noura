@@ -537,3 +537,112 @@ fn the_binary_refuses_a_partial_or_unknown_polar_setting() {
         assert!(!stderr.contains("secret_value"), "{stderr}");
     }
 }
+
+/// Keeps every message it sends.
+#[derive(Clone, Default)]
+struct Outbox(Arc<Mutex<Vec<sync_server::accounts::mail::Mail>>>);
+
+impl sync_server::accounts::mail::MailTransport for Outbox {
+    fn send<'a>(
+        &'a self,
+        mail: &'a sync_server::accounts::mail::Mail,
+    ) -> sync_server::accounts::mail::SendFuture<'a> {
+        self.0.lock().unwrap().push(mail.clone());
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// While the server sells plans, a disposable address gets a page that
+/// says so, and each client IP starts only its day's new accounts; the
+/// answer is the same either way, and existing accounts still sign in.
+#[tokio::test]
+async fn sign_up_refuses_disposable_addresses_and_counts_per_client() {
+    use sync_server::accounts::Deliveries;
+    use sync_server::accounts::signups::SignUpGuard;
+
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let data = dir.path().join("data");
+    sync_server::migrate(&data).await.expect("migrated");
+    let store = Arc::new(
+        sync_server::open_store(&sync_server::Config::new(
+            data,
+            "127.0.0.1:0".parse().expect("an address"),
+        ))
+        .await
+        .expect("the store opens")
+        .with_billing(true),
+    );
+    let outbox = Outbox::default();
+    let deliveries = Deliveries::default();
+    let (mailer, counted) = (outbox.clone(), deliveries.clone());
+    let address = sync_server::spawn_limited(
+        store.clone(),
+        "127.0.0.1:0",
+        move |origin| {
+            sync_server::Accounts::new(
+                origin,
+                sync_server::Allowlist::parse("*"),
+                "Noura <noura@example.com>".into(),
+                Box::new(mailer),
+                None,
+            )
+            .with_deliveries(counted)
+            .with_sign_up_guard(SignUpGuard::new(Some(2), "blocked.test\n"))
+        },
+        Arc::new(sync_server::blobs::Objects::memory()),
+        sync_server::RateGate::new(sync_server::RateLimits::default(), None),
+    )
+    .await
+    .expect("serving");
+    let base = format!("http://localhost:{}", address.port());
+    let http = reqwest::Client::new();
+    let ask = async |email: &str| {
+        let response = http
+            .post(format!("{base}/account/email-link"))
+            .header("origin", &base)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("email={}", email.replace('@', "%40")))
+            .send()
+            .await
+            .expect("an answer");
+        let status = response.status();
+        let text = response.text().await.expect("a body");
+        deliveries.idle().await;
+        (status, text)
+    };
+
+    for email in ["someone@mailinator.com", "someone@mail.blocked.test"] {
+        let (status, text) = ask(email).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{email}");
+        assert!(text.contains("disposable email"), "{text}");
+    }
+
+    // An account that exists signs in whatever the day's count.
+    let link = store
+        .issue_magic_link("member@example.com")
+        .await
+        .expect("a link");
+    store
+        .sign_in_with_magic_link(&link)
+        .await
+        .expect("used")
+        .expect("signed up");
+    for email in ["one@example.com", "two@example.com", "three@example.com"] {
+        let (status, _) = ask(email).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, _) = ask("member@example.com").await;
+    assert_eq!(status, StatusCode::OK);
+    let sent: Vec<String> = outbox
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|m| m.to.clone())
+        .collect();
+    assert_eq!(
+        sent,
+        vec!["one@example.com", "two@example.com", "member@example.com"],
+        "the third new account waits for tomorrow"
+    );
+}

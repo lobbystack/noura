@@ -582,6 +582,9 @@ pub(crate) async fn layer<B: Backend>(
             Ok(subject) => subject,
             Err(error) => return ApiError(error).into_response(),
         };
+        request
+            .extensions_mut()
+            .insert(crate::accounts::signups::ClientKey(subject));
         match limiter
             .take(&key("sign-in", &subject.0), 1, limits.sign_in)
             .await
