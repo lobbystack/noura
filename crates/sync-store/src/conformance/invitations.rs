@@ -975,6 +975,7 @@ pub async fn forged_policy_case<B: Backend>(
                         creation_response: Vec::new(),
                         policy_revision: last.body.revision,
                         policy_head: last.digest(),
+                        over_plan: false,
                     },
                 )
                 .await?;

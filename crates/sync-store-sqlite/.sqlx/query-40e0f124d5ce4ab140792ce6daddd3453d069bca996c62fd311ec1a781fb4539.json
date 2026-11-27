@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO account_plans\n               (account, provider, customer, subscription, plan, state, period_end, changed_at)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)\n             ON CONFLICT (account) DO UPDATE SET\n               provider = excluded.provider, customer = excluded.customer,\n               subscription = excluded.subscription, plan = excluded.plan,\n               state = excluded.state, period_end = excluded.period_end,\n               changed_at = excluded.changed_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "40e0f124d5ce4ab140792ce6daddd3453d069bca996c62fd311ec1a781fb4539"
+}

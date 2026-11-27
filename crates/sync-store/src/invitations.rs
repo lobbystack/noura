@@ -170,15 +170,19 @@ impl<B: Backend> Store<B> {
         }
         let now = self.clock().now();
         let cache = self.policies.clone();
+        let billing = self.billing();
         let workspace_domain = self.workspace_domain(workspace).await?;
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
                     txn.lock(&plan(workspace, workspace_domain)).await?;
-                    let (_, role) = manager(txn, &cache, session, workspace).await?;
+                    let (policy, role) = manager(txn, &cache, session, workspace).await?;
                     if creation.role == Role::Admin && role != Role::Owner {
                         return Err(refuse("forbidden", "only the owner invites admins"));
                     }
+                    let Some(workspace_row) = txn.workspace(workspace).await? else {
+                        return Err(refuse("not_found", "no such workspace"));
+                    };
                     let bytes = creation.invite_context.to_bytes();
                     let expires_at = now + INVITATION_TTL;
                     let held = match txn.invitation(creation.invitation).await? {
@@ -207,11 +211,23 @@ impl<B: Backend> Store<B> {
                         // must not open the link again.
                         return Err(invalid());
                     }
-                    if txn.invitations(workspace, now).await?.len() >= MAX_INVITATIONS {
+                    if workspace_row.over_plan {
+                        return Err(crate::plans::over_plan());
+                    }
+                    let open = txn.invitations(workspace, now).await?.len();
+                    if open >= MAX_INVITATIONS {
                         return Err(refuse(
                             "invitation_limit",
                             "the workspace already has 100 open invitations",
                         ));
+                    }
+                    // Members and open invitations together stay within the
+                    // owner's plan (§11, §20).
+                    let limits =
+                        crate::retention::plan_of(txn, workspace_row.owner, billing).await?;
+                    let members = policy.head_snapshot().members.len() + open;
+                    if limits.members.is_some_and(|limit| members as u64 >= limit) {
+                        return Err(crate::plans::member_limit());
                     }
                     txn.insert_invitation(&InvitationRow {
                         invitation: creation.invitation,
@@ -339,6 +355,7 @@ impl<B: Backend> Store<B> {
                 Box::pin(async move {
                     txn.lock(&plan(workspace, workspace_domain)).await?;
                     let row = open_row(txn, token_hash, now).await?;
+                    crate::shares::refuse_over_plan(txn, workspace).await?;
                     match row.accepted_by {
                         Some(account) if account == session.account => Ok(()),
                         Some(_) => Err(invalid()),

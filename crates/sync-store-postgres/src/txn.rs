@@ -11,12 +11,13 @@ use sync_protocol::messages::DeviceRemovedDetail;
 use sync_protocol::records::{AccountHead, OpClass, Ref, Role};
 use sync_protocol::types::{Digest, Id, Key};
 use sync_store::{
-    ApprovalRequestRow, BlobRow, BlobToCollect, CeremonyKind, CeremonyRow, ChainHeadRow,
-    CheckpointProgress, CheckpointRow, DeleteRow, DeviceGrantRow, DomainHistory, DomainRow,
-    ENTRY_OPERATION, EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan, OfferRow,
-    OperationState, OperationWrite, PasskeyRow, PendingDomain, PendingPasskeyRow, PruneScan,
-    PrunedEntry, RawEntry, ReadTxn, RemovedBy, Result, RewrapRow, Session, SessionRow, ShareRow,
-    WorkspaceRow, WorkspaceUsage, WriteTxn,
+    AccountPlanRow, ApprovalRequestRow, BlobRow, BlobToCollect, CeremonyKind, CeremonyRow,
+    ChainHeadRow, CheckpointProgress, CheckpointRow, DeleteRow, DeviceGrantRow, DomainHistory,
+    DomainRow, ENTRY_OPERATION, EpochRow, Error, InvitationRow, KeyRow, LinkRow, LockPlan,
+    OfferRow, OperationState, OperationWrite, OverPlanRow, OwnedWorkspaceRow, PasskeyRow,
+    PendingDomain, PendingPasskeyRow, PruneScan, PrunedEntry, RawEntry, ReadTxn, RemovedBy, Result,
+    RewrapRow, Session, SessionRow, ShareRow, SubscriptionState, WorkspaceRow, WorkspaceUsage,
+    WriteTxn,
 };
 
 /// One transaction: a read-only REPEATABLE READ snapshot for reads, or a
@@ -205,6 +206,11 @@ fn uint(value: i64) -> Result<u64> {
 
 fn byte(value: i16) -> Result<u8> {
     u8::try_from(value).map_err(|_| Error::internal("a type column exceeds a byte"))
+}
+
+/// A small count kept in a BIGINT, such as notices sent.
+fn small(value: i64) -> Result<u8> {
+    u8::try_from(value).map_err(|_| Error::internal("a count column exceeds a byte"))
 }
 
 fn class_code(class: OpClass) -> i16 {
@@ -1223,7 +1229,8 @@ impl ReadTxn for PgTxn {
         }
         let workspace = &workspace_id.0[..];
         let row = sqlx::query!(
-            "SELECT owner, creation_digest, creation_response, policy_revision, policy_head
+            "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,
+                    over_plan_since
              FROM workspaces WHERE workspace = $1 AND closed = 0",
             workspace
         )
@@ -1241,6 +1248,7 @@ impl ReadTxn for PgTxn {
                     creation_response: r.creation_response,
                     policy_revision: uint(r.policy_revision)?,
                     policy_head: digest(r.policy_head)?,
+                    over_plan: r.over_plan_since.is_some(),
                 })
             })
             .transpose()?;
@@ -2446,6 +2454,134 @@ impl ReadTxn for PgTxn {
                 })
             })
             .collect()
+    }
+
+    async fn account_plan(&mut self, account: Id) -> Result<Option<AccountPlanRow>> {
+        let account = &account.0[..];
+        let row = sqlx::query!(
+            "SELECT provider, customer, subscription, plan, state, period_end, changed_at
+             FROM account_plans WHERE account = $1",
+            account
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| {
+            Ok(AccountPlanRow {
+                provider: r.provider,
+                customer: r.customer,
+                subscription: r.subscription,
+                plan: r.plan,
+                state: SubscriptionState::from_code(byte(r.state)?),
+                period_end: r.period_end.map(uint).transpose()?,
+                changed_at: uint(r.changed_at)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn account_usage(&mut self, account: Id) -> Result<(u64, u64)> {
+        let account = &account.0[..];
+        let row = sqlx::query!(
+            r#"SELECT CAST(COALESCE(SUM(d.usage_bytes), 0) AS BIGINT) AS "usage!: i64",
+                      CAST(COALESCE(SUM(d.history_bytes), 0) AS BIGINT) AS "history!: i64"
+               FROM domains d JOIN workspaces w ON w.workspace = d.workspace
+               WHERE w.owner = $1 AND w.closed = 0 AND d.deleted = FALSE"#,
+            account
+        )
+        .fetch_one(self.c())
+        .await
+        .map_err(db)?;
+        Ok((uint(row.usage)?, uint(row.history)?))
+    }
+
+    async fn owned_workspace_rows(&mut self, account: Id) -> Result<Vec<OwnedWorkspaceRow>> {
+        let account = &account.0[..];
+        let rows = sqlx::query!(
+            "SELECT workspace, created_order, kept, over_plan_since, over_plan_notices
+             FROM workspaces WHERE owner = $1 AND closed = 0
+             ORDER BY created_order, workspace",
+            account
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(OwnedWorkspaceRow {
+                    workspace: id(r.workspace)?,
+                    created_order: uint(r.created_order)?,
+                    kept: r.kept,
+                    over_plan_since: r.over_plan_since.map(uint).transpose()?,
+                    notices: small(r.over_plan_notices)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn member_accounts(&mut self, workspace: Id) -> Result<Vec<Id>> {
+        let workspace = &workspace.0[..];
+        let rows = sqlx::query!(
+            "SELECT account FROM members WHERE workspace = $1 ORDER BY account",
+            workspace
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.account)).collect()
+    }
+
+    async fn over_plan_workspaces(&mut self, limit: u32) -> Result<Vec<OverPlanRow>> {
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            r#"SELECT workspace, owner, over_plan_since AS "since!", over_plan_notices
+               FROM workspaces WHERE over_plan_since IS NOT NULL AND closed = 0
+               ORDER BY over_plan_since, workspace LIMIT $1"#,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(OverPlanRow {
+                    workspace: id(r.workspace)?,
+                    owner: id(r.owner)?,
+                    since: uint(r.since)?,
+                    notices: small(r.over_plan_notices)?,
+                })
+            })
+            .collect()
+    }
+
+    async fn account_activity(&mut self, account: Id) -> Result<Option<(u64, u8)>> {
+        let account = &account.0[..];
+        let row = sqlx::query!(
+            "SELECT month, warnings FROM account_activity WHERE account = $1",
+            account
+        )
+        .fetch_optional(self.c())
+        .await
+        .map_err(db)?;
+        row.map(|r| Ok((uint(r.month)?, small(r.warnings)?)))
+            .transpose()
+    }
+
+    async fn inactive_owners(&mut self, month: u64, limit: u32) -> Result<Vec<Id>> {
+        let month = at_most(month);
+        let limit = i64::from(limit);
+        let rows = sqlx::query!(
+            "SELECT a.account FROM account_activity a
+             WHERE a.month <= $1
+               AND EXISTS (SELECT 1 FROM workspaces w WHERE w.owner = a.account AND w.closed = 0)
+             ORDER BY a.month, a.account LIMIT $2",
+            month,
+            limit
+        )
+        .fetch_all(self.c())
+        .await
+        .map_err(db)?;
+        rows.into_iter().map(|r| id(r.account)).collect()
     }
 }
 
@@ -4754,5 +4890,127 @@ impl WriteTxn for PgTxn {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    async fn put_account_plan(&mut self, account: Id, row: &AccountPlanRow) -> Result<()> {
+        let account = &account.0[..];
+        let state = i16::from(row.state.code());
+        let period_end = row.period_end.map(int).transpose()?;
+        let changed_at = int(row.changed_at)?;
+        sqlx::query!(
+            "INSERT INTO account_plans
+               (account, provider, customer, subscription, plan, state, period_end, changed_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (account) DO UPDATE SET
+               provider = excluded.provider, customer = excluded.customer,
+               subscription = excluded.subscription, plan = excluded.plan,
+               state = excluded.state, period_end = excluded.period_end,
+               changed_at = excluded.changed_at",
+            account,
+            row.provider,
+            row.customer,
+            row.subscription,
+            row.plan,
+            state,
+            period_end,
+            changed_at
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_kept(&mut self, workspace: Id, kept: bool) -> Result<()> {
+        let workspace = &workspace.0[..];
+        sqlx::query!(
+            "UPDATE workspaces SET kept = $1 WHERE workspace = $2",
+            kept,
+            workspace
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn set_over_plan(
+        &mut self,
+        workspace: Id,
+        since: Option<u64>,
+        notices: u8,
+    ) -> Result<()> {
+        let workspace = &workspace.0[..];
+        let since = since.map(int).transpose()?;
+        let notices = i64::from(notices);
+        sqlx::query!(
+            "UPDATE workspaces SET over_plan_since = $1, over_plan_notices = $2 WHERE workspace = $3",
+            since,
+            notices,
+            workspace
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn note_activity(&mut self, account: Id, month: u64) -> Result<bool> {
+        let account = &account.0[..];
+        let month = int(month)?;
+        let done = sqlx::query!(
+            "INSERT INTO account_activity (account, month, warnings) VALUES ($1, $2, 0)
+             ON CONFLICT (account) DO UPDATE SET month = excluded.month, warnings = 0
+             WHERE account_activity.month < excluded.month",
+            account,
+            month
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn set_inactivity_warnings(&mut self, account: Id, warnings: u8) -> Result<()> {
+        let account = &account.0[..];
+        let warnings = i64::from(warnings);
+        sqlx::query!(
+            "UPDATE account_activity SET warnings = $1 WHERE account = $2",
+            warnings,
+            account
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(())
+    }
+
+    async fn insert_billing_event(
+        &mut self,
+        provider: &str,
+        event: &str,
+        day: u64,
+    ) -> Result<bool> {
+        let day = int(day)?;
+        let done = sqlx::query!(
+            "INSERT INTO billing_events (provider, event, day) VALUES ($1, $2, $3)
+             ON CONFLICT (provider, event) DO NOTHING",
+            provider,
+            event,
+            day
+        )
+        .execute(self.c())
+        .await
+        .map_err(db)?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn delete_billing_events_before(&mut self, day: u64) -> Result<u64> {
+        let day = at_most(day);
+        let done = sqlx::query!("DELETE FROM billing_events WHERE day < $1", day)
+            .execute(self.c())
+            .await
+            .map_err(db)?;
+        Ok(done.rows_affected())
     }
 }

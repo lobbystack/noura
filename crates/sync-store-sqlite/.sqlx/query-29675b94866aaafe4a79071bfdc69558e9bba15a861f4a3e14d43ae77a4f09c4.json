@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head,\n                    over_plan_since\n             FROM workspaces WHERE workspace = ?1 AND closed = 0",
+  "describe": {
+    "columns": [
+      {
+        "name": "owner",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "owner"
+          }
+        }
+      },
+      {
+        "name": "creation_digest",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "creation_digest"
+          }
+        }
+      },
+      {
+        "name": "creation_response",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "creation_response"
+          }
+        }
+      },
+      {
+        "name": "policy_revision",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "policy_revision"
+          }
+        }
+      },
+      {
+        "name": "policy_head",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "policy_head"
+          }
+        }
+      },
+      {
+        "name": "over_plan_since",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "over_plan_since"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "29675b94866aaafe4a79071bfdc69558e9bba15a861f4a3e14d43ae77a4f09c4"
+}

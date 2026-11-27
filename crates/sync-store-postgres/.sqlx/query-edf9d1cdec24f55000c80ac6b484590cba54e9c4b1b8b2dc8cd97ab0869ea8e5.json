@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO account_plans\n               (account, provider, customer, subscription, plan, state, period_end, changed_at)\n             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n             ON CONFLICT (account) DO UPDATE SET\n               provider = excluded.provider, customer = excluded.customer,\n               subscription = excluded.subscription, plan = excluded.plan,\n               state = excluded.state, period_end = excluded.period_end,\n               changed_at = excluded.changed_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int2",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "edf9d1cdec24f55000c80ac6b484590cba54e9c4b1b8b2dc8cd97ab0869ea8e5"
+}

@@ -151,7 +151,7 @@ impl<B: Backend> Store<B> {
             ));
         }
         let cache = self.policies.clone();
-        let quota = self.retention.quota_bytes;
+        let quota = self.quota();
         let now = self.clock().now();
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
@@ -169,6 +169,20 @@ impl<B: Backend> Store<B> {
                     }
                     if !snapshot.can_write(&device, &creation.domain) {
                         return Err(refuse("forbidden", "the device can't write this domain"));
+                    }
+                    // The owner's plan (§20, Plans).
+                    let Some(workspace_row) = txn.workspace(workspace).await? else {
+                        return Err(refuse("not_found", "no such workspace"));
+                    };
+                    if workspace_row.over_plan {
+                        return Err(crate::plans::over_plan());
+                    }
+                    let limits =
+                        crate::retention::plan_of(txn, workspace_row.owner, quota.billing).await?;
+                    if let Some(max) = limits.max_file_bytes
+                        && creation.length > blob_ciphertext_len(max)
+                    {
+                        return Err(crate::plans::file_too_large(max));
                     }
                     let row = BlobRow {
                         blob: creation.blob,

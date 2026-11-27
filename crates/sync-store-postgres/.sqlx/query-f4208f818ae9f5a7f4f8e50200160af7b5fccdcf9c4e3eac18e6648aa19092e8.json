@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO account_activity (account, month, warnings) VALUES ($1, $2, 0)\n             ON CONFLICT (account) DO UPDATE SET month = excluded.month, warnings = 0\n             WHERE account_activity.month < excluded.month",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f4208f818ae9f5a7f4f8e50200160af7b5fccdcf9c4e3eac18e6648aa19092e8"
+}

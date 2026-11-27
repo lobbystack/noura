@@ -33,6 +33,7 @@ mod devices;
 mod domains;
 mod invitations;
 mod keys;
+mod plans;
 mod resets;
 mod retention;
 mod shares;
@@ -42,6 +43,7 @@ pub use devices::*;
 pub use domains::*;
 pub use invitations::*;
 pub use keys::*;
+pub use plans::*;
 pub use resets::*;
 pub use retention::*;
 pub use shares::*;
@@ -161,6 +163,13 @@ macro_rules! conformance_tests {
             a_listed_upload_returns_to_offset_zero,
             only_the_uploader_abandons_a_listed_blob,
             chain_reads_take_at_most_256_distinct_cursors,
+            a_server_without_billing_keeps_the_operator_settings,
+            the_plan_bounds_owned_workspaces,
+            owned_workspaces_share_the_allowance,
+            uploads_past_the_largest_file_are_too_large,
+            invitations_stop_at_the_member_limit,
+            a_downgrade_puts_the_newest_workspaces_over_plan,
+            billing_events_apply_once_and_in_order,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

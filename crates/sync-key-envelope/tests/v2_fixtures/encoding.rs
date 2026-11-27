@@ -555,6 +555,73 @@ pub fn fixture() -> Fixture {
             }]),
         },
     );
+    body(
+        &mut f,
+        "account_response",
+        &AccountResponse {
+            plan: Text::new("plus_year").unwrap(),
+            status: SubscriptionStatus::Active,
+            period_end: Some(1_790_000_000),
+            billing: true,
+            storage_bytes: Some(10_000_000_000),
+            owned_workspaces: 10,
+            max_file_bytes: Some(200_000_000),
+            members: Some(20),
+            upload_bytes_per_day: Some(50_000_000_000),
+            download_bytes_per_day: Some(500_000_000_000),
+            used_bytes: 4_096,
+            history_bytes: 512,
+            uploaded_today: 1_024,
+            downloaded_today: 2_048,
+            workspaces: List(vec![
+                OwnedWorkspace {
+                    workspace: w.workspace,
+                    state: OwnedState::Active,
+                    closes_at: None,
+                },
+                OwnedWorkspace {
+                    workspace: id("over plan workspace"),
+                    state: OwnedState::OverPlan,
+                    closes_at: Some(1_772_000_000),
+                },
+            ]),
+        },
+    );
+    body(
+        &mut f,
+        "account_response_operator",
+        &AccountResponse {
+            plan: Text::new("operator").unwrap(),
+            status: SubscriptionStatus::None,
+            period_end: None,
+            billing: false,
+            storage_bytes: None,
+            owned_workspaces: 100,
+            max_file_bytes: None,
+            members: None,
+            upload_bytes_per_day: None,
+            download_bytes_per_day: None,
+            used_bytes: 0,
+            history_bytes: 0,
+            uploaded_today: 0,
+            downloaded_today: 0,
+            workspaces: List(Vec::new()),
+        },
+    );
+    body(
+        &mut f,
+        "active_workspaces_request",
+        &ActiveWorkspacesRequest {
+            workspaces: List(vec![w.workspace]),
+        },
+    );
+    body(
+        &mut f,
+        "file_too_large_detail",
+        &FileTooLargeDetail {
+            max_file_bytes: 5_000_000,
+        },
+    );
     let envelope_alice = w.envelope_bob.clone();
     body(
         &mut f,

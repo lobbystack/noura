@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT workspace, created_order, kept, over_plan_since, over_plan_notices\n             FROM workspaces WHERE owner = $1 AND closed = 0\n             ORDER BY created_order, workspace",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_order",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "created_order"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kept",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "kept"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "over_plan_since",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "over_plan_since"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "over_plan_notices",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "over_plan_notices"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "b5b5a54dcf6883adc8389ba9951973d0e0cb1d697d0c69cd65ec4a29bccbc636"
+}

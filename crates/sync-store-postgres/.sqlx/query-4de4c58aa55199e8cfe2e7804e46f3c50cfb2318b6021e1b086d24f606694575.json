@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM billing_events WHERE day < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4de4c58aa55199e8cfe2e7804e46f3c50cfb2318b6021e1b086d24f606694575"
+}

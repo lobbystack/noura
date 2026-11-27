@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT provider, customer, subscription, plan, state, period_end, changed_at\n             FROM account_plans WHERE account = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "provider",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "name": "customer",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "customer"
+          }
+        }
+      },
+      {
+        "name": "subscription",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "subscription"
+          }
+        }
+      },
+      {
+        "name": "plan",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "plan"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "period_end",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "period_end"
+          }
+        }
+      },
+      {
+        "name": "changed_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "changed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "3f7a6380aa339bde0eed62d2b9cc23a81ec833c462a0894f532063b8af96f26d"
+}

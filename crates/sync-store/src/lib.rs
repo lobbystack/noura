@@ -25,6 +25,7 @@ mod hub;
 mod invitations;
 pub mod limiter;
 mod live;
+pub mod plans;
 mod policy;
 mod pull;
 mod push;
@@ -67,6 +68,7 @@ use sync_protocol::types::{Digest, Id, SecretKey};
 
 pub use hub::{EventHub, Relayed, Subscription};
 pub use limiter::{Limit, Limiter, MemoryLimiter, Taken};
+pub use plans::{AccountPlanRow, PlanLimits, SubscriptionState};
 pub use policy::PolicyCache;
 pub use push::ENTRY_OPERATION;
 pub use realtime::Watch;
@@ -106,6 +108,12 @@ impl Refusal {
             detail: None,
             retry_after_seconds: None,
         }
+    }
+
+    /// This refusal, with the code's structured detail.
+    pub fn detail(mut self, detail: Vec<u8>) -> Self {
+        self.detail = Some(detail);
+        self
     }
 
     /// This refusal, telling the client to retry after `seconds`.
@@ -385,6 +393,37 @@ pub struct WorkspaceRow {
     pub policy_revision: u64,
     /// The policy head's digest.
     pub policy_head: Digest,
+    /// Whether the workspace is over its owner's plan, and read-only
+    /// (§20, Over plan). A new workspace never is.
+    pub over_plan: bool,
+}
+
+/// A workspace an account owns, as plans see it (§20, Over plan).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OwnedWorkspaceRow {
+    /// The workspace.
+    pub workspace: Id,
+    /// The order the server created it in.
+    pub created_order: u64,
+    /// Whether the owner chose to keep it active.
+    pub kept: bool,
+    /// The day, from the Unix epoch, it went over plan.
+    pub over_plan_since: Option<u64>,
+    /// The notices that went out since.
+    pub notices: u8,
+}
+
+/// A workspace over plan, for the job that warns and closes (§20).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OverPlanRow {
+    /// The workspace.
+    pub workspace: Id,
+    /// Its owner.
+    pub owner: Id,
+    /// The day it went over plan.
+    pub since: u64,
+    /// The notices that went out since.
+    pub notices: u8,
 }
 
 /// A workspace's numbers against its quota (§20).
@@ -1278,6 +1317,38 @@ pub trait ReadTxn: Send {
         workspace: Id,
         now: u64,
     ) -> impl Future<Output = Result<Vec<ShareRow>>> + Send;
+    /// The account's stored subscription (§20, Plans).
+    fn account_plan(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Option<AccountPlanRow>>> + Send;
+    /// Usage and history summed over the open workspaces `account` owns,
+    /// leaving out domains that wait to be reclaimed.
+    fn account_usage(&mut self, account: Id) -> impl Future<Output = Result<(u64, u64)>> + Send;
+    /// The open workspaces `account` owns, oldest first.
+    fn owned_workspace_rows(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Vec<OwnedWorkspaceRow>>> + Send;
+    /// The member accounts of a workspace, by account ID.
+    fn member_accounts(&mut self, workspace: Id) -> impl Future<Output = Result<Vec<Id>>> + Send;
+    /// Up to `limit` open workspaces over plan, earliest day first.
+    fn over_plan_workspaces(
+        &mut self,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<OverPlanRow>>> + Send;
+    /// The month `account` was last active and the warnings it got since.
+    fn account_activity(
+        &mut self,
+        account: Id,
+    ) -> impl Future<Output = Result<Option<(u64, u8)>>> + Send;
+    /// Up to `limit` accounts that own an open workspace and were last
+    /// active in `month` or before, the least active first.
+    fn inactive_owners(
+        &mut self,
+        month: u64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Id>>> + Send;
 }
 
 /// The writes a store's write transaction offers, besides its reads.
@@ -1865,6 +1936,50 @@ pub trait WriteTxn: ReadTxn {
     ) -> impl Future<Output = Result<()>> + Send;
     /// Deletes a share link and its snapshot.
     fn delete_share(&mut self, token_hash: Digest) -> impl Future<Output = Result<()>> + Send;
+    /// Stores the account's subscription in place of the one it had.
+    fn put_account_plan(
+        &mut self,
+        account: Id,
+        row: &AccountPlanRow,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Records whether the owner chose to keep a workspace active.
+    fn set_kept(&mut self, workspace: Id, kept: bool) -> impl Future<Output = Result<()>> + Send;
+    /// Sets the day a workspace went over plan, or `None` once it's active,
+    /// and how many notices went out about it.
+    fn set_over_plan(
+        &mut self,
+        workspace: Id,
+        since: Option<u64>,
+        notices: u8,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Records that `account` was active in `month`, when that's later than
+    /// the month it holds, and clears its warnings. Returns whether the row
+    /// changed.
+    fn note_activity(
+        &mut self,
+        account: Id,
+        month: u64,
+    ) -> impl Future<Output = Result<bool>> + Send;
+    /// Records how many inactivity warnings `account` got.
+    fn set_inactivity_warnings(
+        &mut self,
+        account: Id,
+        warnings: u8,
+    ) -> impl Future<Output = Result<()>> + Send;
+    /// Records a webhook event the server applies, on `day`. Returns false
+    /// when it already holds the event.
+    fn insert_billing_event(
+        &mut self,
+        provider: &str,
+        event: &str,
+        day: u64,
+    ) -> impl Future<Output = Result<bool>> + Send;
+    /// Deletes the webhook events recorded before `day`, and returns how
+    /// many.
+    fn delete_billing_events_before(
+        &mut self,
+        day: u64,
+    ) -> impl Future<Output = Result<u64>> + Send;
 }
 
 /// A job that runs in one read transaction.
@@ -1983,6 +2098,8 @@ pub struct Store<B: Backend> {
     hub: EventHub,
     generation: u64,
     retention: Retention,
+    /// Whether the server sells plans (§20, Plans).
+    billing: bool,
     interval: CheckpointInterval,
     secret: Option<SecretKey>,
     clock: Clock,
@@ -2008,6 +2125,7 @@ impl<B: Backend> Store<B> {
             hub,
             generation,
             retention: Retention::default(),
+            billing: false,
             interval: CheckpointInterval::default(),
             secret: None,
             clock: Clock::default(),
@@ -2024,6 +2142,26 @@ impl<B: Backend> Store<B> {
     pub fn with_retention(mut self, retention: Retention) -> Self {
         self.retention = retention;
         self
+    }
+
+    /// Makes the store give each account the limits of its plan, as a
+    /// server that sells plans does (§20, Plans).
+    pub fn with_billing(mut self, billing: bool) -> Self {
+        self.billing = billing;
+        self
+    }
+
+    /// Whether the store gives accounts the limits of their plans.
+    pub fn billing(&self) -> bool {
+        self.billing
+    }
+
+    /// The quotas a write answers to.
+    pub(crate) fn quota(&self) -> retention::Quota {
+        retention::Quota {
+            workspace: self.retention.quota_bytes,
+            billing: self.billing,
+        }
     }
 
     /// Sets the server secret that account IDs derive from (§14).
@@ -2328,12 +2466,13 @@ impl<B: Backend> Store<B> {
         create::check_signatures(&checked, session, &chain)?;
         let cache = self.policies.clone();
         let interval = self.interval;
+        let billing = self.billing;
         let digest = sync_protocol::crypto::hash(&body);
         let response = self
             .backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
-                    create::commit(txn, &cache, interval, session, checked, digest).await
+                    create::commit(txn, &cache, interval, billing, session, checked, digest).await
                 })
             }))
             .await?;
@@ -2611,7 +2750,7 @@ impl<B: Backend> Store<B> {
         let cache = self.policies.clone();
         let generation = self.generation;
         let interval = self.interval;
-        let quota = self.retention.quota_bytes;
+        let quota = self.quota();
         let now = self.clock().now();
         let response = if let [push::Pushed::Checkpoint(..)] = ops.as_slice() {
             let Some(push::Pushed::Checkpoint(_, bundle)) = ops.pop() else {

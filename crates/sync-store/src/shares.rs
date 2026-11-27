@@ -118,6 +118,18 @@ async fn live_row(
         .ok_or_else(|| refuse("not_found", "no such share link"))
 }
 
+/// Refuses a write to a workspace over its owner's plan (§20, Over plan).
+pub(crate) async fn refuse_over_plan(txn: &mut impl crate::ReadTxn, workspace: Id) -> Result<()> {
+    if txn
+        .workspace(workspace)
+        .await?
+        .is_some_and(|row| row.over_plan)
+    {
+        return Err(crate::plans::over_plan());
+    }
+    Ok(())
+}
+
 impl<B: Backend> Store<B> {
     /// `POST .../shares`: a new link from an owner or admin device active
     /// in the workspace, which expires `expires_in_days` days from now. A
@@ -140,7 +152,7 @@ impl<B: Backend> Store<B> {
             return Err(refuse("bad_request", "a new link's snapshot_revision is 1"));
         }
         let now = self.clock().now();
-        let quota = self.retention.quota_bytes;
+        let quota = self.quota();
         let cache = self.policies.clone();
         // The workspace domain never changes, so it may come from the
         // policy before the locks.
@@ -173,6 +185,7 @@ impl<B: Backend> Store<B> {
                     {
                         return Err(refuse("not_found", "no such domain"));
                     }
+                    refuse_over_plan(txn, workspace).await?;
                     let bytes = creation.share.to_bytes();
                     let length = bytes.len() as i64;
                     let expires_at = now + u64::from(creation.expires_in_days) * DAY;
@@ -258,12 +271,13 @@ impl<B: Backend> Store<B> {
         let now = self.clock().now();
         let domain = self.share_domain(workspace, token_hash, now).await?;
         let cache = self.policies.clone();
-        let quota = self.retention.quota_bytes;
+        let quota = self.quota();
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
                     txn.lock(&plan(workspace, vec![domain])).await?;
                     manager(txn, &cache, session, workspace).await?;
+                    refuse_over_plan(txn, workspace).await?;
                     let row = live_row(txn, workspace, token_hash, now).await?;
                     if row.device != session.device {
                         return Err(refuse(

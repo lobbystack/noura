@@ -1194,7 +1194,7 @@ Each limit applies where the server can check it:
 - **Storage**: a record or upload that would raise the owner's usage while it stands above the allowance gets `quota_exceeded`, as above.
 - **Owned workspaces**: `POST /v2/workspaces` from an account that already owns as many open workspaces as its plan allows gets `workspace_limit`.
 - **Largest file**: a tus creation whose `Upload-Length` exceeds the ciphertext length of a file of the plan's largest size gets `file_too_large`, whose `detail` holds that size as `u64` ([§21](#21-attachments)). A device checks a file's size before it uploads, keeps a file over the limit out of sync, and shows it as too large. A file of 262,144 bytes or less travels inline and always fits.
-- **Members**: an `add_member` that would give a workspace more member accounts than its owner's plan allows gets `member_limit`, and so does an invitation created while members and open invitations together already reach that number ([§11](#11-invitations)).
+- **Members**: an `add_member` that would give a workspace more member accounts, the owner included, than its owner's plan allows gets `member_limit`, and so does an invitation created while members and open invitations together already reach that number ([§11](#11-invitations)).
 - **Transfer**: the server counts what each account pushes and uploads, and what it reads, per UTC day ([§26](#transfer-budgets)).
 
 ### Over plan
@@ -1205,7 +1205,7 @@ The server records the day a workspace went over plan, and closes it 90 days lat
 
 ### Inactive accounts
 
-The server keeps the month each account last sent an authenticated request, and nothing finer. On a server that sells plans, an account on `free` whose own month and those of every member of the workspaces it owns lie 11 months back gets a first warning email, and at 12 months a second. At 13 months the server closes every workspace the account owns. Any request from the account or one of those members before then makes it active again and clears the warnings. Accounts on a paid plan, and servers that sell no plans, keep their workspaces whatever the activity.
+A server that sells plans keeps the month each account last sent an authenticated request, and nothing finer. An account on `free` whose own month and those of every member of the workspaces it owns lie 11 months back gets a first warning email, and at 12 months a second. At 13 months the server closes every workspace the account owns. Any request from the account or one of those members before then makes it active again and clears the warnings. Accounts on a paid plan, and servers that sell no plans, keep their workspaces whatever the activity.
 
 ## 21. Attachments
 
@@ -1740,7 +1740,7 @@ At the default bootstrap allowance of 512 MiB a minute ([§26](#rate-limits)), t
 | Workspaces | workspace ID, owner account, per-domain usage and history, the order the server created it in among all workspaces, whether its owner chose to keep it active, and while it's over plan the day it went over and how many notices went out; a closed workspace keeps its row after the reclaim | that the workspace exists, how much data it holds, which of an owner's workspaces is older, and when one went over plan |
 | Plans and billing | for an account that ever started a checkout: the payment provider's name, its customer and subscription IDs, the plan ID, the subscription's status and period end, and the time of the provider's last change to it; the provider holds the name, address and payment details | that you pay, for which plan, and until when |
 | Billing events | the ID of each webhook event the server applied, with the day it arrived, for 100 days | the days your subscription changed |
-| Account activity | the month each account last sent an authenticated request, and how many inactivity warnings it got | roughly when you last synced, to the month |
+| Account activity | on a server that sells plans, the month each account last sent an authenticated request, and how many inactivity warnings it got | roughly when you last synced, to the month |
 | Policy changes | full signed records with the account heads each records, also as entries in every domain's log | members, roles, the head of each member's account chain the workspace follows, restricted domains and their grants, in order |
 | Domains | domain ID, kind (workspace or restricted), marker `rid`, current epoch, rotation state, history floors, the highest published retention floor | how many domains exist and who reads each |
 | Chain heads | per device and domain: counter, digest, sequence | the last position each device wrote |

@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT provider, customer, subscription, plan, state, period_end, changed_at\n             FROM account_plans WHERE account = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "customer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "customer"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "subscription",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "subscription"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "plan",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "plan"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "state",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "period_end",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "period_end"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "changed_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_plans",
+            "name": "changed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "7ae89b9d198b20e6d150985cd0bdaadd7bfaa4b846f9da448a80f72347bb28ca"
+}

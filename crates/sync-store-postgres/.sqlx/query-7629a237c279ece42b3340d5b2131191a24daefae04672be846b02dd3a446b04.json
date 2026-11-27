@@ -1,10 +1,21 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head\n             FROM workspaces WHERE workspace = $1 AND closed = 0",
+  "query": "SELECT workspace, owner, over_plan_since AS \"since!\", over_plan_notices\n               FROM workspaces WHERE over_plan_since IS NOT NULL AND closed = 0\n               ORDER BY over_plan_since, workspace LIMIT $1",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
         "name": "owner",
         "type_info": "Bytea",
         "origin": {
@@ -15,62 +26,39 @@
         }
       },
       {
-        "ordinal": 1,
-        "name": "creation_digest",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "workspaces",
-            "name": "creation_digest"
-          }
-        }
-      },
-      {
         "ordinal": 2,
-        "name": "creation_response",
-        "type_info": "Bytea",
+        "name": "since!",
+        "type_info": "Int8",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "creation_response"
+            "name": "over_plan_since"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "policy_revision",
+        "name": "over_plan_notices",
         "type_info": "Int8",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "policy_revision"
-          }
-        }
-      },
-      {
-        "ordinal": 4,
-        "name": "policy_head",
-        "type_info": "Bytea",
-        "origin": {
-          "Table": {
-            "table": "workspaces",
-            "name": "policy_head"
+            "name": "over_plan_notices"
           }
         }
       }
     ],
     "parameters": {
       "Left": [
-        "Bytea"
+        "Int8"
       ]
     },
     "nullable": [
       false,
       false,
-      false,
-      false,
+      true,
       false
     ]
   },
-  "hash": "49495c6396a2139a75c09df9abcc7e1314bbf346e359905af37950dacc639401"
+  "hash": "7629a237c279ece42b3340d5b2131191a24daefae04672be846b02dd3a446b04"
 }
