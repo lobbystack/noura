@@ -133,8 +133,8 @@ fn a_row_s_right_click_opens_the_tree_s_menu_for_it() {
     harness.run();
 
     let menu = harness.get_by_role_and_label(Role::Menu, "Actions for Plan");
+    assert!(menu.query_by_role_and_label(Role::Button, "Open").is_none());
     for item in [
-        "Open",
         "Open in new tab",
         "Rename\u{2026}",
         "Duplicate",

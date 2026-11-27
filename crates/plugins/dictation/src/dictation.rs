@@ -29,6 +29,8 @@ pub(crate) const FINISH_FAILED: &str = "finish-failed";
 const OPEN_SETTINGS: &str = "open-settings";
 
 const ACTIVATION: &str = "activation";
+/// The button that opens Settings > Speech, where you record the keys.
+const CHANGE_KEYS: &str = "change-keys";
 const PASTE: &str = "paste";
 const ADD_WORD: &str = "add-word";
 const WORD: &str = "word";
@@ -254,6 +256,7 @@ impl Dictation {
             &modes,
             Some(settings.activation.value()),
         );
+        view.button(View::ROOT, CHANGE_KEYS, "Change keys");
         let methods: Vec<(&str, &str)> = PasteMethod::ALL
             .iter()
             .map(|(_, value, label)| (*value, *label))
@@ -292,6 +295,10 @@ impl Dictation {
     /// Something happened on the settings page.
     pub(crate) fn settings_event(&mut self, host: &impl Host, event: Event) {
         let change = match event {
+            Event::Pressed(node) if node == CHANGE_KEYS => {
+                host.open_speech_settings();
+                return;
+            }
             Event::Changed(field) if field.node == WORD => {
                 if let Value::Text(text) = field.value {
                     self.typed = text;

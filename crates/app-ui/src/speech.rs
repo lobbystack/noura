@@ -5,17 +5,17 @@
 //! grades the rows; this file only draws them.
 
 use app_core::{
-    App, SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, keys_from_label,
-    keys_label, speech_language_name,
+    App, Platform, SPEECH_LANGUAGES, ShortcutStatus, SpeechModelFilter, SpeechModelRow,
+    SpeechModelSection, SpeechShortcut, speech_language_name,
 };
 use egui::{
-    Align, Color32, Frame, Layout, Margin, RichText, Sense, Stroke, TextEdit, Ui, UiBuilder,
-    WidgetInfo, accesskit::Role, vec2,
+    Align, Color32, Event, Frame, Key, Layout, Margin, Modifiers, RichText, Sense, Stroke,
+    TextEdit, Ui, UiBuilder, WidgetInfo, accesskit::Role, vec2,
 };
 
 use crate::{
-    ai::{alert, text_field},
-    common::{Btn, Size, Variant, badge, field_label, focus_ring, muted, primary_button},
+    ai::alert,
+    common::{Btn, Size, Variant, badge, description, field_label, focus_ring, muted},
     icons::{self, Icon},
     theme::{BODY_SIZE, Palette, SUPPORTING_SIZE, Weight, font, radius},
 };
@@ -23,10 +23,11 @@ use crate::{
 /// What the Speech section remembers between frames.
 #[derive(Default)]
 pub(crate) struct SpeechSettingsView {
-    /// Keys being typed for a shortcut, by `<plugin>/<shortcut>`.
-    keys: std::collections::BTreeMap<String, String>,
     /// Why the last change didn't go in.
     problem: Option<String>,
+    /// Why the last keys recorded for a shortcut didn't go in, by
+    /// `<plugin>/<shortcut>`.
+    shortcut_problem: Option<(String, String)>,
     /// The search and the filters over the models.
     filter: SpeechModelFilter,
 }
@@ -571,42 +572,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut SpeechSettingsView
     });
     ui.add_space(24.0);
 
-    let shortcuts = app.global_shortcuts();
-    if !shortcuts.is_empty() {
-        crate::common::settings_group(ui, "Shortcuts", |ui| {
-            for shortcut in shortcuts {
-                let key = format!("{}/{}", shortcut.plugin, shortcut.id);
-                let typed = view
-                    .keys
-                    .entry(key.clone())
-                    .or_insert_with(|| keys_label(&shortcut.keys));
-                text_field(ui, &shortcut.title, typed, false);
-                ui.horizontal(|ui| {
-                    let saved = keys_from_label(typed).as_deref() == Some(shortcut.keys.as_str());
-                    let ready = !saved && !typed.trim().is_empty();
-                    if primary_button(ui, "Save", ready).clicked() {
-                        let saved = app.set_shortcut_keys(
-                            &shortcut.plugin,
-                            &shortcut.id,
-                            Some(typed.trim()),
-                        );
-                        // The field shows the keys as this system writes
-                        // them, whichever way you typed them.
-                        if saved.is_ok()
-                            && let Some(keys) = keys_from_label(typed)
-                        {
-                            *typed = keys_label(&keys);
-                        }
-                        changed = Some(saved);
-                    }
-                    if shortcut.keys != shortcut.declared && ui.button("Reset").clicked() {
-                        changed = Some(app.set_shortcut_keys(&shortcut.plugin, &shortcut.id, None));
-                        *typed = keys_label(&shortcut.declared);
-                    }
-                });
-            }
-        });
-    }
+    shortcuts_group(ui, app, view);
 
     if let Some(action) = action {
         changed = Some(match action {
@@ -621,5 +587,305 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut SpeechSettingsView
     }
     if let Some(changed) = changed {
         view.problem = changed.err().map(|error| error.message);
+    }
+}
+
+/// The plugins' shortcuts: each one's keys, which a click records anew,
+/// and Reset once they differ from the plugin's. A shortcut whose plugin
+/// is off here says so with a way to turn it on, and one whose keys the
+/// system refused says that.
+fn shortcuts_group(ui: &mut Ui, app: &mut App, view: &mut SpeechSettingsView) {
+    let shortcuts = app.speech_shortcuts();
+    if shortcuts.is_empty() {
+        return;
+    }
+    crate::common::settings_group(ui, "Shortcuts", |ui| {
+        for shortcut in &shortcuts {
+            let key = format!("{}/{}", shortcut.plugin, shortcut.id);
+            let builder = UiBuilder::new()
+                .accessibility_role(Role::Group)
+                .accessibility_label(&shortcut.title);
+            ui.push_id(("shortcut", &key), |ui| {
+                ui.scope_builder(builder, |ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    shortcut_row(ui, app, view, shortcut, &key);
+                });
+            });
+        }
+    });
+}
+
+/// One shortcut: its title, then its keys and Reset on the right, and a
+/// line under them when the keys don't work.
+fn shortcut_row(
+    ui: &mut Ui,
+    app: &mut App,
+    view: &mut SpeechSettingsView,
+    shortcut: &SpeechShortcut,
+    key: &str,
+) {
+    let keys = app.keys_label(&shortcut.keys);
+    let recording =
+        app.recording_shortcut().as_ref() == Some(&(shortcut.plugin.clone(), shortcut.id.clone()));
+    let mut record = false;
+    let mut reset = false;
+    let mut turn_on = false;
+    let mut outside = false;
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(&shortcut.title).size(BODY_SIZE));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if shortcut.status == ShortcutStatus::PluginOff {
+                turn_on = Btn::new("Turn on").size(Size::Sm).show(ui).clicked();
+                muted(ui, &keys);
+                return;
+            }
+            if shortcut.keys != shortcut.declared {
+                reset = Btn::new("Reset")
+                    .variant(Variant::Ghost)
+                    .size(Size::Sm)
+                    .show(ui)
+                    .clicked();
+            }
+            let shown = if recording {
+                "Press keys"
+            } else {
+                keys.as_str()
+            };
+            let response = Btn::new(shown)
+                .variant(if recording {
+                    Variant::Default
+                } else {
+                    Variant::Outline
+                })
+                .size(Size::Sm)
+                .show(ui);
+            let title = shortcut.title.clone();
+            let value = shown.to_owned();
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_label(title);
+                node.set_value(value);
+            });
+            record = response.clicked();
+            outside =
+                recording && !response.hovered() && ui.input(|input| input.pointer.any_pressed());
+        });
+    });
+    if shortcut.status == ShortcutStatus::PluginOff {
+        description(
+            ui,
+            &format!("{} is off in this workspace.", shortcut.plugin_name),
+        );
+    } else if shortcut.status == ShortcutStatus::Refused {
+        alert(ui, "These keys didn't register. Choose others.");
+    }
+    if let Some((problem_key, problem)) = &view.shortcut_problem
+        && problem_key == key
+    {
+        alert(ui, problem);
+    }
+
+    if turn_on {
+        app.set_plugin_enabled(&shortcut.plugin, true);
+        return;
+    }
+    if reset {
+        let reset = app.set_shortcut_keys(&shortcut.plugin, &shortcut.id, None);
+        view.shortcut_problem = reset.err().map(|error| (key.to_owned(), error.message));
+        return;
+    }
+    if record {
+        if recording {
+            app.stop_recording_shortcut();
+        } else {
+            view.shortcut_problem = None;
+            app.record_shortcut(&shortcut.plugin, &shortcut.id);
+        }
+        return;
+    }
+    if !recording {
+        return;
+    }
+    if outside {
+        app.stop_recording_shortcut();
+        return;
+    }
+    let platform = app.platform();
+    match take_recorded_keys(ui, platform) {
+        None => {}
+        Some(Recorded::Cancel) => app.stop_recording_shortcut(),
+        Some(Recorded::Keys(keys)) => {
+            let saved = app.set_shortcut_keys(&shortcut.plugin, &shortcut.id, Some(&keys));
+            app.stop_recording_shortcut();
+            view.shortcut_problem = saved.err().map(|error| (key.to_owned(), error.message));
+        }
+    }
+}
+
+/// What a key press while recording a shortcut stands for.
+#[derive(Debug, PartialEq, Eq)]
+enum Recorded {
+    /// Escape alone: keep the keys the shortcut had.
+    Cancel,
+    /// The keys pressed, as manifests write them, such as `Alt+Space`.
+    Keys(String),
+}
+
+/// Take this frame's key presses out of `ui`'s input, so nothing else
+/// runs them, and return what the first one stands for.
+fn take_recorded_keys(ui: &mut Ui, platform: Platform) -> Option<Recorded> {
+    let mut recorded = None;
+    ui.input_mut(|input| {
+        input.events.retain(|event| match event {
+            Event::Key {
+                key,
+                physical_key,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                if recorded.is_none() {
+                    recorded = recorded_keys(*key, *physical_key, *modifiers, platform);
+                }
+                false
+            }
+            Event::Key { .. } | Event::Text(_) => false,
+            _ => true,
+        });
+    });
+    recorded
+}
+
+/// A key press as the keys a shortcut takes on `platform`, or `None` for
+/// a key no shortcut ends in. Letters and digits count where they sit on
+/// a US keyboard, as the system's shortcuts do.
+fn recorded_keys(
+    key: Key,
+    physical: Option<Key>,
+    modifiers: Modifiers,
+    platform: Platform,
+) -> Option<Recorded> {
+    let placed = physical.filter(|physical| {
+        let name = physical.name();
+        name.len() == 1 && name.chars().all(|ch| ch.is_ascii_alphanumeric())
+    });
+    let key = placed.unwrap_or(key);
+    let mac = platform == Platform::MacOs;
+    let (cmd, ctrl) = if mac {
+        (modifiers.mac_cmd || modifiers.command, modifiers.ctrl)
+    } else {
+        (modifiers.mac_cmd, modifiers.ctrl || modifiers.command)
+    };
+    if key == Key::Escape && !(cmd || ctrl || modifiers.alt || modifiers.shift) {
+        return Some(Recorded::Cancel);
+    }
+    let name = match key {
+        Key::ArrowUp => "Up",
+        Key::ArrowDown => "Down",
+        Key::ArrowLeft => "Left",
+        Key::ArrowRight => "Right",
+        key => key.name(),
+    };
+    let named = matches!(
+        name,
+        "Space"
+            | "Enter"
+            | "Tab"
+            | "Escape"
+            | "Backspace"
+            | "Delete"
+            | "Up"
+            | "Down"
+            | "Left"
+            | "Right"
+            | "Home"
+            | "End"
+            | "PageUp"
+            | "PageDown"
+    );
+    let single = name.len() == 1 && name.chars().all(|ch| ch.is_ascii_alphanumeric());
+    let function = name
+        .strip_prefix('F')
+        .and_then(|number| number.parse::<u8>().ok())
+        .is_some_and(|number| (1..=24).contains(&number));
+    if !(named || single || function) {
+        return None;
+    }
+    let mut keys = String::new();
+    for (held, modifier) in [
+        (ctrl, "Ctrl"),
+        (modifiers.alt, "Alt"),
+        (modifiers.shift, "Shift"),
+        (cmd, "Cmd"),
+    ] {
+        if held {
+            keys.push_str(modifier);
+            keys.push('+');
+        }
+    }
+    if single {
+        keys.push_str(&name.to_ascii_uppercase());
+    } else {
+        keys.push_str(name);
+    }
+    Some(Recorded::Keys(keys))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_recorded_press_reads_as_the_keys_a_shortcut_takes() {
+        let keys =
+            |key, physical, modifiers, platform| recorded_keys(key, physical, modifiers, platform);
+        let option_shift = Modifiers::ALT | Modifiers::SHIFT;
+        assert_eq!(
+            keys(Key::D, None, option_shift, Platform::MacOs),
+            Some(Recorded::Keys("Alt+Shift+D".into()))
+        );
+        // Command on macOS, Ctrl elsewhere, as egui reports them.
+        assert_eq!(
+            keys(
+                Key::Space,
+                None,
+                Modifiers::MAC_CMD | Modifiers::COMMAND,
+                Platform::MacOs
+            ),
+            Some(Recorded::Keys("Cmd+Space".into()))
+        );
+        assert_eq!(
+            keys(
+                Key::Space,
+                None,
+                Modifiers::CTRL | Modifiers::COMMAND,
+                Platform::Windows
+            ),
+            Some(Recorded::Keys("Ctrl+Space".into()))
+        );
+        assert_eq!(
+            keys(Key::Space, None, Modifiers::CTRL, Platform::MacOs),
+            Some(Recorded::Keys("Ctrl+Space".into()))
+        );
+        // The letter where it sits on a US keyboard.
+        assert_eq!(
+            keys(Key::Z, Some(Key::Y), Modifiers::ALT, Platform::MacOs),
+            Some(Recorded::Keys("Alt+Y".into()))
+        );
+        assert_eq!(
+            keys(Key::ArrowUp, None, Modifiers::CTRL, Platform::Linux),
+            Some(Recorded::Keys("Ctrl+Up".into()))
+        );
+        assert_eq!(
+            keys(Key::F5, None, Modifiers::NONE, Platform::MacOs),
+            Some(Recorded::Keys("F5".into()))
+        );
+        assert_eq!(
+            keys(Key::Escape, None, Modifiers::NONE, Platform::MacOs),
+            Some(Recorded::Cancel)
+        );
+        assert_eq!(
+            keys(Key::Comma, None, Modifiers::ALT, Platform::MacOs),
+            None
+        );
     }
 }

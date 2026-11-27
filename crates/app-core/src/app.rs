@@ -67,8 +67,8 @@ pub use palette::{
 };
 pub use plugins::{NameDraft, PluginPlace};
 pub use speech::{
-    SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, SpeechModelsPage,
-    speech_language_name,
+    SPEECH_LANGUAGES, ShortcutStatus, SpeechModelFilter, SpeechModelRow, SpeechModelSection,
+    SpeechModelsPage, SpeechShortcut, speech_language_name,
 };
 
 /// What the window shows.
@@ -295,6 +295,8 @@ pub struct App {
     ignored_files: Option<IgnoredFiles>,
     /// Settings, while it is open.
     settings: Option<Settings>,
+    /// The shortcut Settings records new keys for, as (plugin, ID).
+    recording_shortcut: Option<(String, String)>,
     /// The plugin install dialog, while it is open.
     plugin_install: Option<PluginInstall>,
     /// Brings the install dialog of a release that is downloading.
@@ -433,6 +435,7 @@ impl App {
             renaming: None,
             ignored_files: None,
             settings: None,
+            recording_shortcut: None,
             plugin_install: None,
             plugin_download: None,
             settings_sections: kernel_sections(),
@@ -603,6 +606,8 @@ impl App {
         if self.closed {
             return;
         }
+        // The system's shortcuts come back if Settings was recording keys.
+        self.stop_recording_shortcut();
         if self.hides_when_last && !self.session.others_open(self.key) {
             self.hide_window_now();
             return;
@@ -1020,6 +1025,7 @@ impl App {
     /// Another window opened a different workspace, so this one closed.
     /// Its tabs stay saved with the workspace it showed.
     fn closed_by_another_window(&mut self) {
+        self.stop_recording_shortcut();
         self.closed = true;
         self.release();
     }
@@ -1266,6 +1272,7 @@ const LAST_WINDOW_WAIT: Duration = Duration::from_secs(1);
 
 impl Drop for App {
     fn drop(&mut self) {
+        self.stop_recording_shortcut();
         // Quitting drops every window without closing it, so each one's
         // tabs stay saved for the next launch.
         self.session.leave(self.key);

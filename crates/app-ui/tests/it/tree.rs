@@ -160,7 +160,7 @@ fn a_file_cloud_storage_has_not_downloaded_offers_no_duplicate() {
 
     assert!(items(&mut harness, "Local note").contains(&"Duplicate".to_owned()));
     let cloud = items(&mut harness, "Cloud note");
-    assert!(cloud.contains(&"Open".to_owned()), "{cloud:?}");
+    assert!(cloud.contains(&"Open in new tab".to_owned()), "{cloud:?}");
     assert!(!cloud.contains(&"Duplicate".to_owned()), "{cloud:?}");
 }
 

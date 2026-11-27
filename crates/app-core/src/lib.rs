@@ -83,8 +83,8 @@ pub use app::{
     Screen, SearchScope, UnsavedPrompt,
 };
 pub use app::{
-    SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, SpeechModelsPage,
-    speech_language_name,
+    SPEECH_LANGUAGES, ShortcutStatus, SpeechModelFilter, SpeechModelRow, SpeechModelSection,
+    SpeechModelsPage, SpeechShortcut, speech_language_name,
 };
 pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{

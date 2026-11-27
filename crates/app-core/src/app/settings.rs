@@ -60,6 +60,7 @@ impl App {
     }
 
     pub fn close_settings(&mut self) {
+        self.stop_recording_shortcut();
         if self.settings.take().is_some() {
             self.close_ignored_files();
             self.listeners.emit(Change::Settings);
@@ -107,6 +108,13 @@ impl App {
         let id = section_showing(id);
         if self.settings_section(id).is_none() {
             return;
+        }
+        if self
+            .settings
+            .as_ref()
+            .is_some_and(|settings| settings.section != id)
+        {
+            self.stop_recording_shortcut();
         }
         if let Some(settings) = &mut self.settings
             && settings.section != id

@@ -209,3 +209,22 @@ fn a_word_already_in_the_list_says_so_and_a_menu_removes_one() {
             .is_none()
     );
 }
+
+#[test]
+fn change_keys_opens_speech_where_the_dictation_shortcut_records_its_keys() {
+    let Some(mut opened) = opened() else {
+        return;
+    };
+    let harness = &mut opened.harness;
+
+    page(harness)
+        .get_by_role_and_label(Role::Button, "Change keys")
+        .click_accesskit();
+    run(harness);
+
+    let section = harness.state().app().settings().unwrap().section.clone();
+    assert_eq!(section, app_core::settings_section::SPEECH);
+    settings(harness)
+        .get_by_role_and_label(Role::Group, "Shortcuts")
+        .get_by_role_and_label(Role::Button, "Dictation");
+}

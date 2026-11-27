@@ -10,7 +10,7 @@
 use crate::support;
 use std::time::Instant;
 
-use app_core::{SpeechModelFilter, SpeechModelSection, SpeechModelsPage};
+use app_core::{Platform, ShortcutStatus, SpeechModelFilter, SpeechModelSection, SpeechModelsPage};
 use support::{
     FakeSystem, Fixture,
     plugins::{self, folder_for, wait_until},
@@ -21,6 +21,156 @@ const SHORTCUTS: &str = "name = \"global-shortcuts\"\n\
 
 fn events(app: &app_core::App) -> Vec<String> {
     plugins::texts(app, "plugin:probe:events").unwrap_or_default()
+}
+
+/// Two shortcuts, so one can try to take the other's keys.
+const TWO_SHORTCUTS: &str = "name = \"global-shortcuts\"\n\
+     shortcuts = [{ id = \"paste\", title = \"Dictation\", keys = \"Alt+Space\" }, \
+     { id = \"record\", title = \"Record\", keys = \"Alt+Shift+R\" }]";
+
+fn status(app: &app_core::App, id: &str) -> ShortcutStatus {
+    app.speech_shortcuts()
+        .into_iter()
+        .find(|shortcut| shortcut.id == id)
+        .map(|shortcut| shortcut.status)
+        .unwrap_or_else(|| panic!("no shortcut {id}"))
+}
+
+#[test]
+fn new_keys_need_a_modifier_and_keys_nothing_else_uses() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    let Some(probe) = folder_for(
+        "probe_plugin",
+        "probe",
+        &["name = \"views\"", TWO_SHORTCUTS],
+    ) else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, probe.path(), "probe");
+    let refused = |app: &mut app_core::App, keys: &str| {
+        let error = app
+            .set_shortcut_keys("probe", "paste", Some(keys))
+            .unwrap_err();
+        (error.code, error.message)
+    };
+
+    // Typing would press a key alone or with Shift.
+    assert_eq!(refused(&mut app, "D").0, "invalid_keys");
+    assert_eq!(refused(&mut app, "Shift+D").0, "invalid_keys");
+    assert_eq!(
+        refused(&mut app, "Alt+Shift+R"),
+        (
+            "keys_in_use".to_owned(),
+            "Record already uses these keys.".to_owned()
+        )
+    );
+    // ⌘N is Noura's New note, and ⌘1 its first tab.
+    let (code, message) = refused(&mut app, "Cmd+N");
+    assert_eq!(code, "keys_in_use");
+    assert!(
+        message.starts_with("Noura uses these keys for "),
+        "{message}"
+    );
+    assert_eq!(refused(&mut app, "Cmd+1").0, "keys_in_use");
+    assert_eq!(
+        refused(&mut app, "\u{2318}Space"),
+        (
+            "keys_reserved".to_owned(),
+            "macOS keeps these keys for itself.".to_owned()
+        )
+    );
+    assert_eq!(app.global_shortcuts()[0].keys, "Alt+Space");
+
+    // A function key alone, and a modifier with any key, go in.
+    app.set_shortcut_keys("probe", "paste", Some("F13"))
+        .unwrap();
+    app.set_shortcut_keys("probe", "paste", Some("Ctrl+Alt+D"))
+        .unwrap();
+    let keys: Vec<String> = app
+        .speech_shortcuts()
+        .into_iter()
+        .map(|shortcut| shortcut.keys)
+        .collect();
+    assert_eq!(keys, ["Ctrl+Alt+D", "Alt+Shift+R"]);
+}
+
+#[test]
+fn recording_sets_the_shortcuts_aside_until_the_keys_go_in_or_settings_closes() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    let Some(probe) = folder_for("probe_plugin", "probe", &["name = \"views\"", SHORTCUTS]) else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, probe.path(), "probe");
+    assert!(!app.global_shortcuts_paused());
+
+    app.open_settings_at(app_core::settings_section::SPEECH);
+    app.record_shortcut("probe", "paste");
+    assert_eq!(
+        app.recording_shortcut(),
+        Some(("probe".to_owned(), "paste".to_owned()))
+    );
+    assert!(app.global_shortcuts_paused());
+    // Keys Noura refuses keep the recording going.
+    assert!(app.set_shortcut_keys("probe", "paste", Some("D")).is_err());
+    assert!(app.global_shortcuts_paused());
+    app.set_shortcut_keys("probe", "paste", Some("Ctrl+Alt+D"))
+        .unwrap();
+    assert_eq!(app.recording_shortcut(), None);
+    assert!(!app.global_shortcuts_paused());
+
+    app.record_shortcut("probe", "paste");
+    app.select_settings_section(app_core::settings_section::GENERAL);
+    assert!(!app.global_shortcuts_paused());
+    app.select_settings_section(app_core::settings_section::SPEECH);
+    app.record_shortcut("probe", "paste");
+    app.close_settings();
+    assert_eq!(app.recording_shortcut(), None);
+    assert!(!app.global_shortcuts_paused());
+
+    // A window that goes while it records lets the shortcuts back.
+    let mut other = app.new_window().unwrap();
+    other.open_settings_at(app_core::settings_section::SPEECH);
+    other.record_shortcut("probe", "paste");
+    assert!(app.global_shortcuts_paused());
+    assert_eq!(app.recording_shortcut(), None);
+    drop(other);
+    assert!(!app.global_shortcuts_paused());
+}
+
+#[test]
+fn settings_lists_a_shortcut_whose_plugin_is_off_and_one_the_system_refused() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::on(Platform::MacOs));
+    let Some(probe) = folder_for("probe_plugin", "probe", &["name = \"views\"", SHORTCUTS]) else {
+        return;
+    };
+    plugins::install_and_enable(&mut app, probe.path(), "probe");
+    assert_eq!(status(&app, "paste"), ShortcutStatus::On);
+    app.shortcut_registered("probe", "paste", false);
+    assert_eq!(status(&app, "paste"), ShortcutStatus::Refused);
+    app.shortcut_registered("probe", "paste", true);
+    assert_eq!(status(&app, "paste"), ShortcutStatus::On);
+
+    // Off in the workspace, its shortcut registers nothing and still shows,
+    // with the keys you gave it.
+    app.set_shortcut_keys("probe", "paste", Some("Ctrl+Alt+D"))
+        .unwrap();
+    assert!(app.set_plugin_enabled("probe", false));
+    support::settle(&mut app);
+    assert!(app.global_shortcuts().is_empty());
+    let shortcuts = app.speech_shortcuts();
+    assert_eq!(shortcuts.len(), 1, "{shortcuts:?}");
+    assert_eq!(shortcuts[0].status, ShortcutStatus::PluginOff);
+    assert_eq!(shortcuts[0].keys, "Ctrl+Alt+D");
+    assert_eq!(shortcuts[0].plugin_name, "probe");
+    assert_eq!(
+        app.set_shortcut_keys("probe", "paste", Some("Ctrl+Alt+E"))
+            .unwrap_err()
+            .code,
+        "shortcut_not_found"
+    );
 }
 
 #[test]

@@ -345,6 +345,14 @@ mod tests {
             shortcut_text(&Shortcut::new(Key::F2), Platform::MacOs),
             "F2"
         );
+        // The trash keys of a row's menu.
+        let trash = Shortcut::command(Key::Backspace);
+        assert_eq!(shortcut_text(&trash, Platform::MacOs), "⌘⌫");
+        assert_eq!(shortcut_text(&trash, Platform::Windows), "Ctrl+Backspace");
+        assert_eq!(
+            shortcut_text(&Shortcut::new(Key::Delete), Platform::Linux),
+            "Delete"
+        );
         // The tab and page keys.
         let page_down = Shortcut::ctrl(Key::PageDown);
         assert_eq!(

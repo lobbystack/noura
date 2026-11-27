@@ -338,7 +338,30 @@ pub(crate) fn shortcut_text(shortcut: keymap::Shortcut, apple: bool) -> String {
     if !text.is_empty() {
         text += names.concat;
     }
-    text + egui_key(shortcut.key).symbol_or_name()
+    text + key_name(egui_key(shortcut.key), apple)
+}
+
+/// How a key reads in a shortcut: macOS writes Return, Tab and Escape as
+/// `↩`, `⇥` and `⎋`, as the app's menus and Keyboard shortcuts page do.
+fn key_name(key: Key, apple: bool) -> &'static str {
+    match (key, apple) {
+        (Key::Enter, true) => "\u{21a9}",
+        (Key::Tab, true) => "\u{21e5}",
+        (Key::Escape, true) => "\u{238b}",
+        (Key::Escape, false) => "Esc",
+        (key, _) => key.symbol_or_name(),
+    }
+}
+
+/// A find bar control's name with its key, as in `Next match (↩)` on
+/// macOS and `Next match (Enter)` elsewhere.
+fn named_with_key(name: &str, key: Key, shift: bool, apple: bool) -> String {
+    let shift = match (shift, apple) {
+        (false, _) => "",
+        (true, true) => "\u{21e7}",
+        (true, false) => "Shift+",
+    };
+    format!("{name} ({shift}{})", key_name(key, apple))
 }
 
 /// A control's name with its first shortcut, as in `Bold (⌘B)`.
@@ -579,6 +602,7 @@ impl Editor {
     /// Escape closes the bar.
     pub(crate) fn show_find_bar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let apple = self.edit.renderer.mac_keys();
         let query_id = self.find_query_id();
         let replace_id = self.find_replace_id();
         let Some(bar) = self.chrome.find.as_mut() else {
@@ -642,7 +666,12 @@ impl Editor {
                         }
                         ui.label(bar.find.count_label());
                         let previous = glyph_button(ui, &Icon::Up.into(), None, has_matches)
-                            .on_hover_text("Previous match (Shift+Enter)")
+                            .on_hover_text(named_with_key(
+                                "Previous match",
+                                Key::Enter,
+                                true,
+                                apple,
+                            ))
                             .accessible_name("Previous match");
                         if previous.clicked() {
                             step = Some(true);
@@ -651,14 +680,14 @@ impl Editor {
                             ui.memory_mut(|memory| memory.request_focus(query_id));
                         }
                         let next = glyph_button(ui, &Icon::Down.into(), None, has_matches)
-                            .on_hover_text("Next match (Enter)")
+                            .on_hover_text(named_with_key("Next match", Key::Enter, false, apple))
                             .accessible_name("Next match");
                         if next.clicked() {
                             step = Some(false);
                             ui.memory_mut(|memory| memory.request_focus(query_id));
                         }
                         let close_button = glyph_button(ui, &Icon::Close.into(), None, true)
-                            .on_hover_text("Close (Esc)")
+                            .on_hover_text(named_with_key("Close", Key::Escape, false, apple))
                             .accessible_name("Close");
                         close |= close_button.clicked();
                     });
@@ -846,5 +875,41 @@ impl Editor {
         if let Some(command) = run {
             self.run_tool(ctx, command);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_find_bar_names_its_keys_as_the_platform_writes_them() {
+        assert_eq!(
+            named_with_key("Previous match", Key::Enter, true, true),
+            "Previous match (\u{21e7}\u{21a9})"
+        );
+        assert_eq!(
+            named_with_key("Previous match", Key::Enter, true, false),
+            "Previous match (Shift+Enter)"
+        );
+        assert_eq!(
+            named_with_key("Next match", Key::Enter, false, true),
+            "Next match (\u{21a9})"
+        );
+        assert_eq!(
+            named_with_key("Close", Key::Escape, false, true),
+            "Close (\u{238b})"
+        );
+        assert_eq!(
+            named_with_key("Close", Key::Escape, false, false),
+            "Close (Esc)"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_with_return_reads_as_macos_writes_it() {
+        let check = keymap::Shortcut::command(keymap::Key::Enter);
+        assert_eq!(shortcut_text(check, true), "\u{2318}\u{21a9}");
+        assert_eq!(shortcut_text(check, false), "Ctrl+Enter");
     }
 }

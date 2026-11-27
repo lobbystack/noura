@@ -574,6 +574,12 @@ impl RawManifest {
                 format!("The plugin ID \u{201c}{id}\u{201d} names Noura's own tools."),
             ));
         }
+        if workspace_format::is_kernel_module_id(id) {
+            return Err(invalid(
+                self.id.span(),
+                format!("The plugin ID \u{201c}{id}\u{201d} names a part of Noura."),
+            ));
+        }
         if !valid_plugin_id(id) {
             return Err(invalid(
                 self.id.span(),

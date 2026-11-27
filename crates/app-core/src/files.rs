@@ -9,7 +9,7 @@ use std::{
 use local_core::{WorkspaceEntry, WorkspaceEntryKind, is_online_only};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
-use crate::{AppError, Key, KeyPress, Platform, Workspace, error::Access};
+use crate::{AppError, Key, KeyPress, Platform, Shortcut, Workspace, error::Access};
 
 /// Typed characters within this window extend the type-ahead search.
 pub const TYPE_AHEAD_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -64,6 +64,18 @@ pub enum TreeKey {
 }
 
 impl TreeKey {
+    /// The keys a row's menu shows beside this action on `platform`: F2
+    /// for Rename, and ⌘⌫ on macOS or Delete elsewhere for Move to Trash.
+    /// `None` for an action the menu doesn't offer.
+    pub fn menu_shortcut(self, platform: Platform) -> Option<Shortcut> {
+        match self {
+            Self::Rename => Some(Shortcut::new(Key::F2)),
+            Self::Trash if platform == Platform::MacOs => Some(Shortcut::command(Key::Backspace)),
+            Self::Trash => Some(Shortcut::new(Key::Delete)),
+            _ => None,
+        }
+    }
+
     /// The tree key `press` stands for on `platform` while the tree has
     /// the keyboard. On macOS Return renames and Cmd+↓ or Cmd+O opens, as
     /// in Finder and VS Code; on Windows and Linux Enter opens and F2
