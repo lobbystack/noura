@@ -357,6 +357,23 @@ pub struct PdfMatch {
     /// How far down the page that line's text starts, in the page's own
     /// points.
     pub top: f32,
+    /// Where the matched text lies, one rectangle for each line it runs
+    /// across: left, top, width and height in the page's own points from
+    /// its top-left corner, as it draws.
+    pub rects: Vec<[f32; 4]>,
+}
+
+/// Part of a match on a page as the tab lays it out: a match that runs
+/// across two lines has two.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PdfHighlight {
+    /// The match's index in [`PdfSearch::matches`].
+    pub index: usize,
+    /// The match is the search's current one.
+    pub current: bool,
+    /// Left, top, width and height in the client's points, from the
+    /// top-left corner of the page as it lays out at the zoom.
+    pub rect: [f32; 4],
 }
 
 /// A PDF tab's search.
@@ -697,6 +714,28 @@ impl PdfView {
 
     pub fn search(&self) -> &PdfSearch {
         &self.search
+    }
+
+    /// Where the search's matches lie on the page `page`, for the client
+    /// to mark, in the order they come.
+    pub fn highlights(&self, page: usize) -> Vec<PdfHighlight> {
+        let matches = &self.search.matches;
+        let from = matches.partition_point(|found| found.page < page);
+        let to = matches.partition_point(|found| found.page <= page);
+        let scale = self.scale();
+        matches[from..to.max(from)]
+            .iter()
+            .enumerate()
+            .flat_map(|(offset, found)| {
+                let index = from + offset;
+                let current = self.search.current == Some(index);
+                found.rects.iter().map(move |rect| PdfHighlight {
+                    index,
+                    current,
+                    rect: rect.map(|side| side * scale),
+                })
+            })
+            .collect()
     }
 
     /// The pixels per point the thumbnail of the page `page` draws at on
@@ -1175,18 +1214,31 @@ impl PdfSession {
     }
 
     /// Scroll to the line with `found`, a third of the way down the view,
-    /// or to its page's top when the line is near it.
+    /// or to its page's top when the line is near it. When the match lies
+    /// left or right of the view, as on a page zoomed wider than the tab,
+    /// the view scrolls across to put it in the middle.
     fn show_match(&mut self, found: &PdfMatch) {
         let at = self
             .view
             .area
             .map_or(PAGE_GAP, |area| (area.height / 3.0).max(PAGE_GAP));
         self.view.page = found.page;
+        let across = self
+            .view
+            .area
+            .zip(found.rects.first())
+            .and_then(|(area, rect)| {
+                let scale = self.view.scale();
+                let left = self.view.page_left(found.page) + rect[0] * scale;
+                let width = rect[2] * scale;
+                let shows = left >= area.left && left + width <= area.left + area.width;
+                (!shows).then(|| (rect[0], ((area.width - width) / 2.0).max(PAGE_GAP)))
+            });
         self.jump_to(Anchor {
             page: found.page,
             down: found.top,
             at,
-            across: None,
+            across,
             keep_top: true,
         });
     }
@@ -2077,25 +2129,62 @@ struct Line {
     /// How far down the page the line's first glyph reaches, in the
     /// page's own points.
     top: f32,
+    /// Where each character of `text` lies on the page: its left, top,
+    /// right and bottom in the page's own points. A space Noura added
+    /// between two glyphs spans the gap between them.
+    boxes: Vec<[f32; 4]>,
 }
 
 /// Text folded for search: lowercase, one character for each of the
 /// text's, with every run of spaces and line breaks one space.
 fn fold(text: &str) -> Vec<char> {
-    let mut folded = Vec::with_capacity(text.len());
-    for ch in text.chars() {
+    fold_indexed(text).into_iter().map(|(ch, _)| ch).collect()
+}
+
+/// [`fold`], with each folded character's place among the characters of
+/// `text`. A run of spaces folds to its first.
+fn fold_indexed(text: &str) -> Vec<(char, usize)> {
+    let mut folded: Vec<(char, usize)> = Vec::with_capacity(text.len());
+    for (index, ch) in text.chars().enumerate() {
         if ch.is_whitespace() {
-            if folded.last().is_some_and(|last: &char| *last != ' ') {
-                folded.push(' ');
+            if folded.last().is_some_and(|(last, _)| *last != ' ') {
+                folded.push((' ', index));
             }
         } else {
-            folded.push(ch.to_lowercase().next().unwrap_or(ch));
+            folded.push((ch.to_lowercase().next().unwrap_or(ch), index));
         }
     }
-    while folded.last() == Some(&' ') {
+    while folded.last().is_some_and(|(last, _)| *last == ' ') {
         folded.pop();
     }
     folded
+}
+
+/// The rectangles that cover the characters at `places` of `lines`, each
+/// a line and a character of its text, one rectangle for each line they
+/// lie on: left, top, width and height in the page's own points.
+fn cover(lines: &[Line], places: &[(usize, Option<usize>)]) -> Vec<[f32; 4]> {
+    let mut covered: Vec<(usize, [f32; 4])> = Vec::new();
+    for (line, at) in places {
+        let Some(&[left, top, right, bottom]) = at.and_then(|at| lines[*line].boxes.get(at)) else {
+            continue;
+        };
+        match covered.last_mut() {
+            Some((last, edges)) if last == line => {
+                *edges = [
+                    edges[0].min(left),
+                    edges[1].min(top),
+                    edges[2].max(right),
+                    edges[3].max(bottom),
+                ];
+            }
+            _ => covered.push((*line, [left, top, right, bottom])),
+        }
+    }
+    covered
+        .into_iter()
+        .map(|(_, [left, top, right, bottom])| [left, top, right - left, bottom - top])
+        .collect()
 }
 
 /// The places on page `page`, whose text is `lines`, where `needle` is,
@@ -2104,30 +2193,34 @@ fn find(lines: &[Line], needle: &[char], page: usize) -> Vec<PdfMatch> {
     if needle.is_empty() {
         return Vec::new();
     }
-    // The page's text folded, and the line each folded character is on.
+    // The page's text folded, and the line and character each folded
+    // character comes from. The space between two lines comes from none.
     let mut folded = Vec::new();
-    let mut line_of = Vec::new();
+    let mut places = Vec::new();
     for (index, line) in lines.iter().enumerate() {
-        let text = fold(&line.text);
+        let text = fold_indexed(&line.text);
         if text.is_empty() {
             continue;
         }
         if !folded.is_empty() {
             folded.push(' ');
-            line_of.push(index);
+            places.push((index, None));
         }
-        line_of.extend(std::iter::repeat_n(index, text.len()));
-        folded.extend(text);
+        for (ch, at) in text {
+            folded.push(ch);
+            places.push((index, Some(at)));
+        }
     }
     let mut found = Vec::new();
     let mut start = 0;
     while start + needle.len() <= folded.len() {
         if folded[start..start + needle.len()] == *needle {
-            let line = &lines[line_of[start]];
+            let line = &lines[places[start].0];
             found.push(PdfMatch {
                 page,
                 snippet: line.text.trim().to_owned(),
                 top: line.top,
+                rects: cover(lines, &places[start..start + needle.len()]),
             });
             start += needle.len();
         } else {
@@ -2188,12 +2281,22 @@ impl TextDevice {
             Some(BfString::String(text)) => text,
             None => return,
         };
+        // A glyph that stands for several characters, such as a ligature,
+        // shares its advance among them.
+        let count = text.chars().count().max(1);
+        let boxes = (0..count).map(|index| {
+            let share = f64::from(advance) / count as f64;
+            glyph_box(transform, share * index as f64, share * (index + 1) as f64)
+        });
         match self.last {
             Some((last, last_size)) if (origin.y - last.y).abs() <= 0.5 * last_size.max(size) => {
                 let gap = origin.x - last.x;
                 let line = self.lines.last_mut().expect("a line holds the last glyph");
                 if gap > 0.25 * size && !line.text.ends_with(char::is_whitespace) {
                     line.text.push(' ');
+                    let [_, top, _, bottom] = glyph_box(transform, 0.0, f64::from(advance));
+                    line.boxes
+                        .push([last.x as f32, top, origin.x as f32, bottom]);
                 }
             }
             _ => self.lines.push(Line {
@@ -2201,13 +2304,46 @@ impl TextDevice {
                 // The page's own space runs down from its top, and a
                 // glyph reaches its size above its baseline.
                 top: (origin.y - size).max(0.0) as f32,
+                boxes: Vec::new(),
             }),
         }
         if let Some(line) = self.lines.last_mut() {
             line.text.push_str(&text);
+            line.boxes.extend(boxes);
         }
         self.last = Some((end, size));
     }
+}
+
+/// How far above its baseline a line of text reaches, and how far below,
+/// as shares of its size: about the ascender and descender of most text
+/// fonts.
+const ASCENT: f64 = 0.8;
+const DESCENT: f64 = 0.2;
+
+/// The box on the page around the part of a glyph from `from` to `to`
+/// units along its advance, as `transform` draws the glyph: its left,
+/// top, right and bottom in the page's own points. Glyphs use 1000 units
+/// to the em, up from the baseline, and a box spans the line's ascent and
+/// descent whatever the glyph's own outline, so the boxes of a word line
+/// up.
+fn glyph_box(transform: Affine, from: f64, to: f64) -> [f32; 4] {
+    let corners = [
+        Point::new(from, -DESCENT * 1000.0),
+        Point::new(to, -DESCENT * 1000.0),
+        Point::new(from, ASCENT * 1000.0),
+        Point::new(to, ASCENT * 1000.0),
+    ]
+    .map(|corner| transform * corner);
+    let (mut left, mut top) = (f64::INFINITY, f64::INFINITY);
+    let (mut right, mut bottom) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for corner in corners {
+        left = left.min(corner.x);
+        top = top.min(corner.y);
+        right = right.max(corner.x);
+        bottom = bottom.max(corner.y);
+    }
+    [left, top, right, bottom].map(|edge| edge as f32)
 }
 
 impl<'a> Device<'a> for TextDevice {
@@ -2250,9 +2386,10 @@ mod tests {
 
     use super::{
         Line, MAX_SIDE, PAGE_GAP, PdfArea, PdfSession, PdfState, PdfView, RenderGate, TILE_HEIGHT,
-        Zone, damaged, find, fold, is_pdf, page_in_link, page_pixels, page_to_open, side_scale,
-        tile_pixels,
+        Zone, damaged, find, fold, glyph_box, is_pdf, page_in_link, page_pixels, page_to_open,
+        side_scale, tile_pixels,
     };
+    use hayro::kurbo::Affine;
 
     #[test]
     fn a_link_names_a_page_with_page_and_a_whole_number() {
@@ -2569,18 +2706,24 @@ mod tests {
         assert!(!is_pdf("Docs.pdf/notes.md"));
     }
 
+    /// A line of `text` whose characters sit 10 points wide each from the
+    /// page's left, 12 points tall from `top` down.
+    fn line(text: &str, top: f32) -> Line {
+        Line {
+            text: text.to_owned(),
+            top,
+            boxes: (0..text.chars().count())
+                .map(|index| {
+                    let left = 10.0 * index as f32;
+                    [left, top, left + 10.0, top + 12.0]
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn a_search_ignores_case_and_how_lines_and_spaces_fall() {
-        let lines = [
-            Line {
-                text: "The quick  brown".to_owned(),
-                top: 60.0,
-            },
-            Line {
-                text: "Fox. QUICK fox".to_owned(),
-                top: 76.0,
-            },
-        ];
+        let lines = [line("The quick  brown", 60.0), line("Fox. QUICK fox", 76.0)];
         let found = find(&lines, &fold("brown fox"), 4);
         assert_eq!(found.len(), 1);
         assert_eq!(
@@ -2597,5 +2740,51 @@ mod tests {
             [("The quick  brown", 60.0), ("Fox. QUICK fox", 76.0)]
         );
         assert!(find(&lines, &fold("   "), 4).is_empty());
+    }
+
+    #[test]
+    fn a_match_covers_its_characters_with_a_rectangle_on_each_line() {
+        let lines = [line("The quick  brown", 60.0), line("Fox. QUICK fox", 76.0)];
+        // "quick" is characters 4 to 8 of the first line.
+        let found = find(&lines, &fold("QUICK"), 1);
+        assert_eq!(found[0].rects, [[40.0, 60.0, 50.0, 12.0]]);
+        assert_eq!(found[1].rects, [[50.0, 76.0, 50.0, 12.0]]);
+        // Two spaces fold to one, and the match covers both.
+        let found = find(&lines, &fold("quick brown"), 1);
+        assert_eq!(found[0].rects, [[40.0, 60.0, 120.0, 12.0]]);
+        // From the end of one line onto the next: a rectangle on each,
+        // and none for the space that joins them.
+        let found = find(&lines, &fold("brown fox"), 1);
+        assert_eq!(
+            found[0].rects,
+            [[110.0, 60.0, 50.0, 12.0], [0.0, 76.0, 30.0, 12.0]]
+        );
+        // A line without boxes, as in a PDF whose text hayro couldn't
+        // place, gives none.
+        let bare = [Line {
+            text: "quick".to_owned(),
+            top: 0.0,
+            boxes: Vec::new(),
+        }];
+        assert!(find(&bare, &fold("quick"), 1)[0].rects.is_empty());
+    }
+
+    #[test]
+    fn a_glyphs_box_spans_its_advance_and_the_lines_ascent_and_descent() {
+        // 24-point text on a baseline 122 points down the page, whose
+        // space runs down from its top.
+        let upright = Affine::new([0.024, 0.0, 0.0, -0.024, 72.0, 122.0]);
+        let [left, top, right, bottom] = glyph_box(upright, 0.0, 500.0);
+        assert!((left - 72.0).abs() < 1e-3 && (right - 84.0).abs() < 1e-3);
+        assert!((top - 102.8).abs() < 1e-3 && (bottom - 126.8).abs() < 1e-3);
+        // The second half of the advance, as for a ligature's second
+        // character.
+        let [left, _, right, _] = glyph_box(upright, 250.0, 500.0);
+        assert!((left - 78.0).abs() < 1e-3 && (right - 84.0).abs() < 1e-3);
+        // Text turned a quarter runs down the page, and its box with it.
+        let turned = Affine::new([0.0, 0.024, 0.024, 0.0, 100.0, 50.0]);
+        let [left, top, right, bottom] = glyph_box(turned, 0.0, 500.0);
+        assert!((left - 95.2).abs() < 1e-3 && (right - 119.2).abs() < 1e-3);
+        assert!((top - 50.0).abs() < 1e-3 && (bottom - 62.0).abs() < 1e-3);
     }
 }

@@ -29,7 +29,20 @@ pub struct Palette {
     pub sidebar: Color32,
     pub sidebar_accent: Color32,
     pub sidebar_border: Color32,
+    /// The marks over a PDF page's search matches, and over the current
+    /// match. They lie over the page's own pixels, so they let the text
+    /// show through.
+    pub search_match: Color32,
+    pub current_search_match: Color32,
 }
+
+/// The marks over a PDF's matches in either appearance: the note
+/// editor's light find colors, a neutral grey and its yellow at half
+/// strength, which come out the same over a white page as the editor's
+/// over a white note. A page stays white in the dark appearance, so its
+/// marks keep the light colors.
+const SEARCH_MATCH: Color32 = Color32::from_rgba_unmultiplied_const(0x10, 0x10, 0x10, 46);
+const CURRENT_SEARCH_MATCH: Color32 = Color32::from_rgba_unmultiplied_const(0xE6, 0xAC, 0x00, 128);
 
 impl Palette {
     pub fn light() -> Self {
@@ -50,6 +63,8 @@ impl Palette {
             sidebar: oklch(0.985, 0.0, 0.0),
             sidebar_accent: oklch(0.97, 0.0, 0.0),
             sidebar_border: oklch(0.922, 0.0, 0.0),
+            search_match: SEARCH_MATCH,
+            current_search_match: CURRENT_SEARCH_MATCH,
         }
     }
 
@@ -71,6 +86,8 @@ impl Palette {
             sidebar: oklch(0.205, 0.0, 0.0),
             sidebar_accent: oklch(0.269, 0.0, 0.0),
             sidebar_border: oklch_alpha(1.0, 0.0, 0.0, 0.10),
+            search_match: SEARCH_MATCH,
+            current_search_match: CURRENT_SEARCH_MATCH,
         }
     }
 

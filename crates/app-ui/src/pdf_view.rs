@@ -1,5 +1,6 @@
 //! The PDF tab: a toolbar that zooms and searches the PDF, the thumbnails
-//! panel, the pages one under the other in a scroll area, and the password
+//! panel, the pages one under the other in a scroll area with the search's
+//! matches marked on them, and the password
 //! form of a locked PDF. `app-core` reads, lays out, draws and searches the
 //! PDF on the PDF's own thread; this view uploads the tiles it draws, puts
 //! each where its pixels meet the screen's, and tells it how wide the tab
@@ -10,8 +11,8 @@
 use std::collections::HashMap;
 
 use app_core::{
-    App, PAGE_GAP, PdfArea, PdfPicture, PdfState, PdfTileKey, PdfView, THUMBNAIL_MAX_HEIGHT,
-    THUMBNAIL_WIDTH, TabId,
+    App, PAGE_GAP, PdfArea, PdfHighlight, PdfPicture, PdfState, PdfTileKey, PdfView,
+    THUMBNAIL_MAX_HEIGHT, THUMBNAIL_WIDTH, TabId,
 };
 use egui::{
     Align, Button, Color32, ColorImage, EventFilter, Frame, Id, Key, Layout, Margin, Modifiers,
@@ -737,6 +738,26 @@ fn draw_page(
         }
     }
     let palette = Palette::of(ui.ctx());
+    // The search's matches, over the page's pixels, where the page lays
+    // them out at its zoom.
+    let marks: Vec<(PdfHighlight, Rect)> = pdf
+        .highlights(page)
+        .into_iter()
+        .map(|mark| {
+            let [left, top, width, height] = mark.rect;
+            let place = Rect::from_min_size(corner + vec2(left, top), vec2(width, height));
+            (mark, place)
+        })
+        .filter(|(_, place)| clip.intersects(*place))
+        .collect();
+    for (mark, place) in &marks {
+        let fill = if mark.current {
+            palette.current_search_match
+        } else {
+            palette.search_match
+        };
+        painter.rect_filled(*place, 1.0, fill);
+    }
     painter.rect_stroke(
         rect,
         0.0,
@@ -745,6 +766,18 @@ fn draw_page(
     );
     let count = pdf.page_count();
     let response = ui.interact(rect, ui.scope_id().with(("pdf-page", page)), Sense::hover());
+    for (part, (mark, place)) in marks.iter().enumerate() {
+        let id = ui.scope_id().with(("pdf-match", page, part));
+        let response = ui.interact(*place, id, Sense::hover());
+        response.widget_info(|| {
+            let mut info = WidgetInfo::new(Role::Mark);
+            info.label = Some("Match".to_owned());
+            info
+        });
+        let current = mark.current;
+        ui.ctx()
+            .accesskit_node_builder(id, |node| node.set_selected(current));
+    }
     if drawn {
         response.widget_info(|| {
             let mut info = WidgetInfo::new(Role::Image);

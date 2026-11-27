@@ -13,7 +13,10 @@ use std::{
 use app_core::{App, PAGE_GAP, PdfState, PdfZoom, Platform, TILE_HEIGHT, TabId};
 use app_ui::NouraUi;
 use egui::{Event, Key, Modifiers, PointerButton, accesskit::Role};
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use support::{FakePicker, FakeSystem, create_workspace, harness_with, settle};
 
 type Ui = Harness<'static, app_ui::NouraUi>;
@@ -471,6 +474,137 @@ fn mod_f_gives_the_search_field_the_keyboard_and_selects_what_it_holds() {
         assert_eq!(search_field(&harness).value().as_deref(), Some("apple"));
         wait_for_status(&mut harness, "1 of 3");
     }
+}
+
+/// The marks over the search's matches that show, each with whether it's
+/// the current match, in the order they draw.
+fn marks(harness: &Ui) -> Vec<(egui::Rect, bool)> {
+    harness
+        .query_all_by_role_and_label(Role::Mark, "Match")
+        .map(|mark| {
+            let selected = mark.accesskit_node().is_selected() == Some(true);
+            (mark.rect(), selected)
+        })
+        .collect()
+}
+
+/// `mark` on the page `page` lays out at, in the page's own points: its
+/// left, top, width and height on a page 612 points wide.
+fn on_page(mark: egui::Rect, page: egui::Rect) -> [f32; 4] {
+    let scale = 612.0 / page.width();
+    [
+        (mark.left() - page.left()) * scale,
+        (mark.top() - page.top()) * scale,
+        mark.width() * scale,
+        mark.height() * scale,
+    ]
+}
+
+fn near(actual: [f32; 4], expected: [f32; 4]) -> bool {
+    actual
+        .iter()
+        .zip(expected)
+        .all(|(actual, expected)| (actual - expected).abs() <= 2.0)
+}
+
+#[test]
+fn the_pages_mark_every_match_and_the_current_one_apart_at_any_zoom() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let mut harness = workspace(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[("text.pdf", &pdf("text.pdf"))],
+    );
+    open(&mut harness, "text.pdf");
+    wait_until(&mut harness, "the PDF opens", |harness| {
+        shows_page(harness, "Page 1 of 3")
+    });
+    assert!(marks(&harness).is_empty());
+
+    let field = search_field(&harness);
+    field.focus();
+    field.type_text("apple");
+    wait_for_status(&mut harness, "1 of 3");
+    harness.run_steps(2);
+
+    // "apple" on the first page's second line: 24-point Helvetica 108
+    // points in, on a baseline 122 points down.
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 1 of 3")
+        .rect();
+    let shown = marks(&harness);
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    let (mark, current) = shown[0];
+    assert!(current);
+    assert!(page.contains_rect(mark));
+    assert!(
+        near(on_page(mark, page), [108.0, 102.8, 58.7, 24.0]),
+        "{:?}",
+        on_page(mark, page)
+    );
+
+    // The third page holds the next two: the current one, then the
+    // other.
+    harness.key_press(Key::Enter);
+    wait_for_status(&mut harness, "2 of 3");
+    wait_until(&mut harness, "page 3 draws", |harness| {
+        shows_page(harness, "Page 3 of 3")
+    });
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 3 of 3")
+        .rect();
+    let on_three: Vec<(egui::Rect, bool)> = marks(&harness)
+        .into_iter()
+        .filter(|(mark, _)| page.contains_rect(*mark))
+        .collect();
+    let selected: Vec<bool> = on_three.iter().map(|(_, current)| *current).collect();
+    assert_eq!(selected, [true, false]);
+    assert!(near(
+        on_page(on_three[0].0, page),
+        [72.0, 102.8, 61.4, 24.0]
+    ));
+    assert!(near(
+        on_page(on_three[1].0, page),
+        [186.7, 102.8, 58.7, 24.0]
+    ));
+    harness
+        .get_by_role_and_label(Role::Button, "Next match")
+        .click();
+    harness.run_steps(2);
+    let selected: Vec<bool> = marks(&harness)
+        .into_iter()
+        .filter(|(mark, _)| page.contains_rect(*mark))
+        .map(|(_, current)| current)
+        .collect();
+    assert_eq!(selected, [false, true]);
+
+    // A step smaller, the marks shrink with the page and stay on their
+    // words.
+    let before = on_three[1].0.width();
+    harness
+        .get_by_role_and_label(Role::Button, "Zoom out")
+        .click();
+    harness.run_steps(4);
+    let page = harness
+        .get_by_role_and_label(Role::Image, "Page 3 of 3")
+        .rect();
+    let on_three: Vec<egui::Rect> = marks(&harness)
+        .into_iter()
+        .map(|(mark, _)| mark)
+        .filter(|mark| page.contains_rect(*mark))
+        .collect();
+    assert_eq!(on_three.len(), 2);
+    assert!(on_three[1].width() < before);
+    assert!(near(on_page(on_three[1], page), [186.7, 102.8, 58.7, 24.0]));
+
+    // Clearing the search clears the marks.
+    let field = search_field(&harness);
+    field.focus();
+    harness.key_press_modifiers(command_on(Platform::current()), Key::A);
+    harness.key_press(Key::Backspace);
+    harness.run_steps(4);
+    assert!(marks(&harness).is_empty());
 }
 
 #[test]
