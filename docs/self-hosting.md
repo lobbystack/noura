@@ -29,7 +29,7 @@ The entrypoint runs `migrate` before `serve`, so an empty volume starts on its o
 `.dokploy/docker-compose.sync-v2.yml` runs the image with its health check and a named volume for `/data`. The file holds no secret and no hostname, so you set those in Dokploy.
 
 1. Create a Compose service from this repository, and set the compose path to `.dokploy/docker-compose.sync-v2.yml`.
-2. In the service's environment, set `NOURA_PUBLIC_ORIGIN`, `NOURA_ALLOWED_EMAILS`, `NOURA_MAIL_FROM` and either `NOURA_SMTP_URL` or `NOURA_RESEND_API_KEY`.
+2. In the service's environment, set `NOURA_PUBLIC_ORIGIN`, `NOURA_ALLOWED_EMAILS`, `NOURA_MAIL_FROM` and either `NOURA_SMTP_URL` or `NOURA_RESEND_API_KEY`. To sell plans, also set the `NOURA_POLAR_*` variables ([Sell plans with Polar](#sell-plans-with-polar)).
 3. Add your domain to the `sync-server` service on container port 8080, with HTTPS on.
 4. Deploy.
 
@@ -88,14 +88,41 @@ Each command reads `NOURA_DATA_DIR`, `NOURA_DATABASE_URL` and `NOURA_LISTEN`, an
 | `NOURA_S3_ENDPOINT` | AWS | The endpoint of an S3-compatible service |
 | `NOURA_TRUSTED_PROXY_HEADER` | none | The header your reverse proxy sets to the client's IP |
 | `NOURA_MAX_CONNECTIONS` | 1024 | How many connections stay open at once, realtime channels included; further ones wait |
+| `NOURA_POLAR_ACCESS_TOKEN` | none | Sell plans through Polar with this organization access token |
+| `NOURA_POLAR_WEBHOOK_SECRET` | none | The secret of Polar's webhook endpoint, `whsec_` and the rest |
+| `NOURA_POLAR_API` | `https://api.polar.sh` | Polar's API, or `https://sandbox-api.polar.sh` for its sandbox |
+| `NOURA_POLAR_PRODUCTS` | none | Which Polar product sells each plan, as `plan=product_id` pairs separated by commas |
+| `NOURA_SIGN_UPS_PER_DAY` | 5 with plans, else unlimited | New accounts a day from one client IP |
+| `NOURA_BLOCKED_EMAIL_DOMAINS` | none | A file of email domains that may not sign up, one a line, on top of the built-in list |
 
 Keep the process's file descriptor limit above `NOURA_MAX_CONNECTIONS`. Give a container at least 40 seconds to stop, so the 30-second wait ends before the runtime kills it. A server that gets killed leaves its lease behind for up to 90 seconds.
 
-`NOURA_RETAINED_BYTES` bounds the history a device can catch up from without a new bootstrap. `NOURA_WORKSPACE_QUOTA_BYTES` counts live data, policy changes and epoch bundles, and history gives way to the quota while those fit.
+`NOURA_RETAINED_BYTES` bounds the history a device can catch up from without a new bootstrap. `NOURA_WORKSPACE_QUOTA_BYTES` counts live data, policy changes and epoch bundles, and history gives way to the quota while those fit. It applies whether or not your server sells plans, on top of each plan's storage.
 
 ### Choose who can sign up
 
 Only addresses in `NOURA_ALLOWED_EMAILS` can create an account, and an empty list admits nobody. Set it to `*` to let anyone sign up. A `*` mixed into a list of addresses counts for nothing, so a slip in the list can't open your server. Sign-up and email sign-in also need a mail transport.
+
+### Sell plans with Polar
+
+Your server sells no plans by default. Every account then gets the limits you set with the variables above, which are unlimited unless you set them. To sell the plans of [§20 of the sync protocol](workspace-format/sync-v2.md#plans), connect a [Polar](https://polar.sh) organization. Polar acts as the merchant of record: it runs checkout, collects tax, sends invoices, processes refunds and hosts the customer portal.
+
+1. In Polar, create one product for each plan you sell, with a recurring price.
+2. Create an organization access token with the scopes `checkouts:write` and `customer_sessions:write`.
+3. Add a webhook endpoint at `https://sync.example.com/billing/polar/webhook` in the Raw format, on API version 2026-10, for the events `subscription.created`, `subscription.active`, `subscription.updated`, `subscription.canceled`, `subscription.uncanceled`, `subscription.past_due`, `subscription.revoked`, `subscription.paused` and `subscription.resumed`.
+4. Set the four `NOURA_POLAR_*` variables and restart the server.
+
+`NOURA_POLAR_PRODUCTS` maps your plan IDs to Polar's product IDs:
+
+```sh
+NOURA_POLAR_PRODUCTS=standard_year=your_product_id_here,standard_month=your_product_id_here
+```
+
+The plan IDs are `standard_year`, `standard_month`, `plus_year`, `plus_month`, `plus_100gb_year` and `plus_100gb_month`. You can leave out plans you don't sell. The server checks the mapping at start and refuses an unknown plan ID, or a token without its webhook secret.
+
+Once billing is on, an account without a paid subscription gets the `free` plan, and the account page shows its plan, usage, **Upgrade** and **Manage billing**. Link to `https://sync.example.com/account/upgrade?plan=plus_year` from your website: the page signs the visitor in first, then opens Polar's checkout. The server reads the secrets only from the environment and never logs them, nor the portal links it creates.
+
+With billing on, sign-up also refuses addresses at known disposable email domains, and counts new accounts per client IP and UTC day under `NOURA_SIGN_UPS_PER_DAY`. To block more domains, mount a file and point `NOURA_BLOCKED_EMAIL_DOMAINS` at it.
 
 ### Set the trusted proxy header
 
@@ -117,7 +144,7 @@ The defaults let a new device download a workspace of 100,000 objects and 10 GB 
 | `NOURA_RATE_OTHER_REQUESTS_PER_MINUTE` | 600 | Other sync requests |
 | `NOURA_RATE_SIGN_IN_PER_MINUTE` | 30, per client IP | Device grants, magic links, passkeys and reset codes |
 
-Keep each byte budget above 1 MiB, the largest single request or response. A smaller push or upload budget refuses a full-size request in every window. A session with no card yet counts against its account. A request over a limit gets HTTP 429 with `rate_limited` and `retry_after_seconds`, and the desktop app waits and tries again. In PostgreSQL mode, all instances count against one allowance.
+Keep each byte budget above 1 MiB, the largest single request or response. A smaller push or upload budget refuses a full-size request in every window. A session with no card yet counts against its account. A request over a limit gets HTTP 429 with `rate_limited` and `retry_after_seconds`, and the desktop app waits and tries again. In PostgreSQL mode, all instances count against one allowance. With billing on, each account also has the daily transfer budget of its plan, which these variables don't change.
 
 ## The server secret
 
