@@ -222,6 +222,11 @@ struct Run {
     resumed: bool,
     /// The Orb it runs for, whose tool calls run without asking.
     orb: Option<orbs::OrbJob>,
+    /// The reasoning each of its answers that asked for tools came with,
+    /// by the IDs of those calls, to send back unchanged with their
+    /// results. It lives as long as the run in memory: a run resumed after
+    /// a quit sends its results without it.
+    thoughts: Vec<history::Thoughts>,
 }
 
 impl Run {
@@ -256,6 +261,7 @@ impl Run {
             asking: None,
             interrupted: false,
             orb: None,
+            thoughts: Vec::new(),
         }
     }
 
@@ -1165,12 +1171,11 @@ impl Ai {
                 read.messages.push(mine);
             }
         }
-        Ok(history::request(
-            instructions,
-            &read.messages,
-            answering,
-            id,
-        ))
+        let mut request = history::request(instructions, &read.messages, answering, id);
+        if let Some(run) = lock(&self.state).runs.get(id) {
+            history::add_thoughts(&mut request, &run.thoughts);
+        }
+        Ok(request)
     }
 
     /// Whether `request` no longer fits the context window of `provider`,
@@ -1305,6 +1310,7 @@ impl Ai {
         mut on_text: impl FnMut(&str),
         mut on_call: impl FnMut(AiToolCall),
     ) -> Ended {
+        let mut thoughts = history::Thoughts::default();
         let ended = loop {
             let Some(frame) = frames.blocking_recv() else {
                 break Ended::Failed(Box::new(incomplete()));
@@ -1312,12 +1318,22 @@ impl Ai {
             match frame.event {
                 AiStreamEvent::Started { .. } => {}
                 AiStreamEvent::TextDelta { text } => on_text(&text),
-                AiStreamEvent::ToolCall { call } => on_call(AiToolCall {
-                    id: call.call_id,
-                    name: call.name,
-                    arguments: call.arguments.to_string(),
-                }),
+                AiStreamEvent::Thoughts { parts } => thoughts.parts.extend(parts),
+                AiStreamEvent::ToolCall { call } => {
+                    thoughts.calls.push(call.call_id.clone());
+                    on_call(AiToolCall {
+                        id: call.call_id,
+                        name: call.name,
+                        arguments: call.arguments.to_string(),
+                    });
+                }
                 AiStreamEvent::Completed { summary } => {
+                    if !thoughts.parts.is_empty()
+                        && !thoughts.calls.is_empty()
+                        && let Some(run) = lock(&self.state).runs.get_mut(id)
+                    {
+                        run.thoughts.push(std::mem::take(&mut thoughts));
+                    }
                     let tokens = summary
                         .usage
                         .and_then(|usage| usage.prompt_tokens)

@@ -232,6 +232,38 @@ fn conversation(
     transport
 }
 
+/// The reasoning an answer came with, and the IDs of the tool calls it
+/// asked for in that answer.
+#[derive(Debug, Default, Clone)]
+pub(super) struct Thoughts {
+    pub(super) calls: Vec<String>,
+    pub(super) parts: Vec<AiContentPart>,
+}
+
+/// Put each answer's reasoning back at the start of the assistant message
+/// that holds its tool calls, where Anthropic expects its thinking
+/// blocks. A message whose calls match no answer gets none.
+pub(super) fn add_thoughts(request: &mut [AiTransportMessage], thoughts: &[Thoughts]) {
+    for message in request
+        .iter_mut()
+        .filter(|message| message.role == "assistant")
+    {
+        let Some(first) = message.content.iter().find_map(|part| match part {
+            AiContentPart::ToolCall { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        }) else {
+            continue;
+        };
+        if let Some(found) = thoughts
+            .iter()
+            .find(|thoughts| thoughts.calls.contains(&first))
+        {
+            let rest = std::mem::take(&mut message.content);
+            message.content = found.parts.iter().cloned().chain(rest).collect();
+        }
+    }
+}
+
 /// What pairs a tool call with its result: the run, the call ID and the
 /// tool name.
 fn pair_key(message: &ChatMessage) -> Option<(&str, &str, &str)> {
@@ -257,6 +289,12 @@ pub(super) fn characters(request: &[AiTransportMessage]) -> usize {
             AiContentPart::ToolResult {
                 call_id, content, ..
             } => call_id.len() + content.chars().count(),
+            AiContentPart::Thought {
+                signature, text, ..
+            } => {
+                signature.as_ref().map_or(0, String::len)
+                    + text.as_ref().map_or(0, |text| text.chars().count())
+            }
         })
         .sum()
 }
@@ -348,11 +386,59 @@ mod tests {
                         AiContentPart::Text { text } => text.clone(),
                         AiContentPart::ToolCall { call_id, .. } => format!("call {call_id}"),
                         AiContentPart::ToolResult { call_id, .. } => format!("result {call_id}"),
+                        AiContentPart::Thought { kind, .. } => format!("thought {kind}"),
                     })
                     .collect();
                 format!("{}: {}", message.role, parts.join(" | "))
             })
             .collect()
+    }
+
+    #[test]
+    fn reasoning_goes_back_at_the_start_of_the_answer_that_made_its_calls() {
+        let call = |id: &str| AiContentPart::ToolCall {
+            call_id: id.into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({}),
+        };
+        let thought = AiContentPart::Thought {
+            kind: "anthropic".into(),
+            signature: Some("sig".into()),
+            text: Some("why".into()),
+            block: None,
+            call_id: None,
+        };
+        let mut request = vec![
+            text("user", "Echo"),
+            AiTransportMessage {
+                role: "assistant".into(),
+                content: vec![
+                    AiContentPart::Text {
+                        text: "Sure.".into(),
+                    },
+                    call("call_1"),
+                ],
+            },
+            AiTransportMessage {
+                role: "assistant".into(),
+                content: vec![call("call_9")],
+            },
+        ];
+        add_thoughts(
+            &mut request,
+            &[Thoughts {
+                calls: vec!["call_1".into()],
+                parts: vec![thought],
+            }],
+        );
+        assert_eq!(
+            lines(&request),
+            [
+                "user: Echo",
+                "assistant: thought anthropic | Sure. | call call_1",
+                "assistant: call call_9",
+            ]
+        );
     }
 
     #[test]

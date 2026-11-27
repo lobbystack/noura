@@ -4,6 +4,7 @@
 mod ai_live;
 mod ai_provider;
 mod ai_provider_failures;
+mod ai_provider_thoughts;
 mod chat_recovery;
 mod create_file;
 mod domain;

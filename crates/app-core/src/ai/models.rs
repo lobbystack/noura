@@ -42,8 +42,9 @@ pub(crate) struct Efforts {
     /// How Off reaches the provider: no reasoning, or the least it allows.
     off: AiReasoning,
     /// The model reasons only when a request asks it to. A request that
-    /// answers its tool calls then asks for no reasoning, because Noura
-    /// keeps no reasoning blocks to send back with the calls.
+    /// answers its tool calls then asks for no reasoning: Noura keeps an
+    /// answer's reasoning blocks only in memory, so a run resumed after a
+    /// quit would send its tool results without them.
     asked: bool,
 }
 

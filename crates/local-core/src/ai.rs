@@ -90,6 +90,32 @@ pub enum AiContentPart {
         name: Option<String>,
         content: String,
     },
+    /// What the model reasoned before an answer that asked for tools, as
+    /// its provider returned it, to send back unchanged with the tool
+    /// results. Anthropic requires its thinking blocks within a tool-use
+    /// turn, and Gemini 3 a call's thought signature. Only a provider of
+    /// `kind` gets it; any other drops it.
+    Thought {
+        /// The provider kind that wrote it, such as `anthropic`.
+        kind: String,
+        /// The provider's signature over the reasoning.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        signature: Option<String>,
+        /// The reasoning text, empty when the provider omits it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        text: Option<String>,
+        /// A whole block to send back as is, such as Anthropic's
+        /// `redacted_thinking`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "unknown")]
+        block: Option<serde_json::Value>,
+        /// The tool call the signature belongs to, for Gemini.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        call_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
@@ -191,12 +217,27 @@ pub struct AiStreamSummary {
 #[ts(export)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AiStreamEvent {
-    Started { model: AiModelRef },
-    TextDelta { text: String },
-    ToolCall { call: AiToolCall },
-    Completed { summary: AiStreamSummary },
+    Started {
+        model: AiModelRef,
+    },
+    TextDelta {
+        text: String,
+    },
+    /// The reasoning the answer's tool calls need sent back, as
+    /// [`AiContentPart::Thought`] parts. It comes before the calls.
+    Thoughts {
+        parts: Vec<AiContentPart>,
+    },
+    ToolCall {
+        call: AiToolCall,
+    },
+    Completed {
+        summary: AiStreamSummary,
+    },
     Cancelled,
-    Error { error: CoreError },
+    Error {
+        error: CoreError,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -232,6 +273,8 @@ pub type AiProviderEventStream = Pin<Box<dyn Stream<Item = Result<AiProviderStre
 #[derive(Debug, Clone)]
 pub enum AiProviderStreamEvent {
     TextDelta(String),
+    /// [`AiContentPart::Thought`] parts, just before `Completed`.
+    Thoughts(Vec<AiContentPart>),
     Completed {
         usage: Option<AiUsage>,
         stop_reason: Option<AiStopReason>,
