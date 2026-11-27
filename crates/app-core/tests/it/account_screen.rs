@@ -1106,6 +1106,72 @@ struct OwnerApp {
     workspace: sync_protocol::types::Id,
 }
 
+/// The Plan group shows only on a server that sells plans. A server
+/// older than plans answers `GET /v2/account` with `not_found`, as its
+/// fallback route does: the account screen then shows no Plan group and
+/// no problem, and the app logs nothing about it above debug, since an
+/// app released before its server must keep working with it.
+#[test]
+fn an_older_server_shows_no_plan_and_no_problem() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let pair =
+        runtime.block_on(async { pair_of_accounts_on(Server::start_with_billing().await).await });
+    let base = pair.proxy.base.clone();
+    let (account, app) = owner_app_at(pair, &base);
+    let screen = wait_for(
+        &account,
+        "the plan",
+        |s| matches!(&s.phase, AccountPhase::SignedIn(view) if view.plan.is_some()),
+    );
+    let AccountPhase::SignedIn(view) = &screen.phase else {
+        unreachable!()
+    };
+    assert_eq!(
+        view.plan.as_ref().map(|plan| plan.name.as_str()),
+        Some("Free")
+    );
+
+    let log = support::logs::Capture::of(
+        "app_core=info"
+            .parse::<tracing_subscriber::filter::Targets>()
+            .expect("targets"),
+    );
+    app.proxy.forge(Box::new(|method, path| {
+        (method == "GET" && path == "/v2/account").then(|| (404, sync_support::not_found_body()))
+    }));
+    // The account refreshes on a tick between pulls. A message ends a
+    // pull's wait, and a pause longer than a tick lets the tick come.
+    let started = Instant::now();
+    let screen = loop {
+        let screen = AccountBackend::screen(&account);
+        if matches!(&screen.phase, AccountPhase::SignedIn(view) if view.plan.is_none()) {
+            break screen;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(45),
+            "the plan never went: {screen:?}"
+        );
+        app_core::folder_sync::FolderSyncBackend::act(
+            &account,
+            app_core::folder_sync::FolderSyncAction::DismissRestore,
+        );
+        std::thread::sleep(Duration::from_secs(3));
+    };
+    assert_eq!(screen.problem, None);
+    assert!(
+        matches!(&screen.phase, AccountPhase::SignedIn(view) if !view.devices.is_empty()),
+        "the rest of the account still shows: {screen:?}"
+    );
+    let logged = log.text();
+    assert!(
+        !logged.contains("not_found") && !logged.contains("/v2/account"),
+        "{logged}"
+    );
+    drop(account);
+    drop(app);
+    drop(runtime);
+}
+
 /// A member resets and nobody asked this device to accept it yet: the
 /// account screens show the changed devices with the new fingerprint.
 #[test]

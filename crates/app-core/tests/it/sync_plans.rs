@@ -43,6 +43,52 @@ async fn set_over_plan<B: Backend>(pair: &Pair<B>, over: bool) {
         .expect("set");
 }
 
+/// A server older than plans, or one with billing off, sets no largest
+/// file and puts no workspace over plan, so files sync as before. The
+/// older server here sits behind a reverse proxy that answers
+/// `GET /v2/account` with a bare 404, and the app logs nothing about it
+/// above debug.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_without_plans_syncs_as_before() {
+    let log = crate::support::logs::Capture::of(
+        "app_core=info"
+            .parse::<tracing_subscriber::filter::Targets>()
+            .expect("targets"),
+    );
+    for older in [false, true] {
+        let mut pair = pair_on(Server::start().await).await;
+        if older {
+            pair.proxy.forge(Box::new(|method, path| {
+                (method == "GET" && path == "/v2/account")
+                    .then(|| (404, b"<html>Not Found</html>".to_vec()))
+            }));
+        }
+        pair.sync_a.set_checkpoint_wait(Duration::ZERO);
+        pair.sync_b.set_checkpoint_wait(Duration::ZERO);
+        let film = noise(6_000_000);
+        pair.a.write("Film.mov", &film);
+        pair.a.write("Note.md", b"# Beside it\n");
+        both_rounds(&mut pair).await;
+        both_rounds(&mut pair).await;
+        let status = pair.sync_a.status();
+        assert_eq!(status.max_file, None, "older: {older}");
+        assert!(!status.over_plan, "older: {older}");
+        assert!(status.skipped.is_empty(), "{:?}", status.skipped);
+        assert_eq!(status.pending, 0, "older: {older}");
+        assert!(pair.b.path("Note.md").exists(), "older: {older}");
+        assert_eq!(
+            pair.b.files().get("Film.mov").map(Vec::len),
+            Some(film.len()),
+            "older: {older}"
+        );
+    }
+    let logged = log.text();
+    assert!(
+        !logged.contains("/v2/account") && !logged.contains("Not Found"),
+        "{logged}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_past_the_plans_largest_file_stays_on_this_device() {
     let mut pair = pair_on(Server::start_with_billing().await).await;
