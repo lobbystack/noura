@@ -110,8 +110,8 @@ Only addresses in `NOURA_ALLOWED_EMAILS` can create an account, and an empty lis
 Your server sells no plans by default. Every account then gets the limits you set with the variables above, which are unlimited unless you set them. To sell the plans of [§20 of the sync protocol](workspace-format/sync-v2.md#plans), connect a [Polar](https://polar.sh) organization. Polar acts as the merchant of record: it runs checkout, collects tax, sends invoices, processes refunds and hosts the customer portal.
 
 1. In Polar, create one product for each plan you sell, with a recurring price.
-2. Create an organization access token with the scopes `checkouts:write` and `customer_sessions:write`.
-3. Add a webhook endpoint at `https://sync.example.com/billing/polar/webhook` in the Raw format, on API version 2026-10, for the events `subscription.created`, `subscription.active`, `subscription.updated`, `subscription.canceled`, `subscription.uncanceled`, `subscription.past_due`, `subscription.revoked`, `subscription.paused` and `subscription.resumed`.
+2. Create an organization access token with the scopes `checkouts:write`, `customer_sessions:write`, `subscriptions:write` and `refunds:write`.
+3. Add a webhook endpoint at `https://sync.example.com/billing/polar/webhook` in the Raw format, on API version 2026-10, for the events `order.paid`, `subscription.created`, `subscription.active`, `subscription.updated`, `subscription.canceled`, `subscription.uncanceled`, `subscription.past_due`, `subscription.revoked`, `subscription.paused` and `subscription.resumed`.
 4. Set the four `NOURA_POLAR_*` variables and the four `NOURA_MERCHANT_*` variables, and restart the server.
 
 `NOURA_POLAR_PRODUCTS` maps your plan IDs to Polar's product IDs:
@@ -122,7 +122,17 @@ NOURA_POLAR_PRODUCTS=standard_year=your_product_id_here,standard_month=your_prod
 
 The plan IDs are `standard_year`, `standard_month`, `plus_year`, `plus_month`, `plus_100gb_year` and `plus_100gb_month`. You can leave out plans you don't sell. The server checks the mapping at start and refuses an unknown plan ID, or a token without its webhook secret.
 
-Once billing is on, an account without a paid subscription gets the `free` plan, and the account page shows its plan, usage, **Upgrade** and **Manage billing**. The account pages about plans, and the mail about plans, come in English and in French: the browser's language picks one, and a link at the bottom of the page switches. Link to `https://sync.example.com/account/upgrade?plan=plus_year` from your website: the page signs the visitor in first, then opens Polar's checkout. The server reads the secrets only from the environment and never logs them, nor the portal links it creates.
+Once billing is on, an account without a paid subscription gets the `free` plan, and the account page shows its plan, usage, **Upgrade** and **Manage billing**. A paying account also gets **Cancel plan**, **Refund last payment** within 14 days of a payment, and **Withdraw from contract here** for a customer in the EU or the UK within 14 days of subscribing. The server mails each subscriber a contract after the first payment, a confirmation of each cancellation and refund, and reminders before each renewal, as [§26](workspace-format/sync-v2.md#billing) lists. The account pages about plans, and the mail about plans, come in English and in French: the browser's language picks one, and a link at the bottom of the page switches. Link to `https://sync.example.com/account/upgrade?plan=plus_year` from your website: the page signs the visitor in first, then opens Polar's checkout. The server reads the secrets only from the environment and never logs them, nor the portal links it creates.
+
+To change a plan's price, announce it at least 30 days ahead. The server mails each subscriber to the plan a notice with the old and new clauses, and a reminder in the last 30 days:
+
+```sh
+sync-server billing announce-price --plan plus_year --effective 2027-03-01 \
+  --old-en "USD 96 a year" --new-en "USD 108 a year" \
+  --old-fr "96 $ US par année" --new-fr "108 $ US par année"
+```
+
+The command only sends the notices, so change the price in Polar yourself.
 
 With billing on, sign-up also refuses addresses at known disposable email domains, and counts new accounts per client IP and UTC day under `NOURA_SIGN_UPS_PER_DAY`. To block more domains, mount a file and point `NOURA_BLOCKED_EMAIL_DOMAINS` at it.
 

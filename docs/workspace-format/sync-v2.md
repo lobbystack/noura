@@ -1205,7 +1205,7 @@ The server records the day a workspace went over plan, and closes it 90 days lat
 
 ### Inactive accounts
 
-A server that sells plans keeps the month each account last sent an authenticated request, and nothing finer. An account on `free` whose own month and those of every member of the workspaces it owns lie 11 months back gets a first warning email, and at 12 months a second. At 13 months the server closes every workspace the account owns. Any request from the account or one of those members before then makes it active again and clears the warnings. Accounts on a paid plan, and servers that sell no plans, keep their workspaces whatever the activity.
+A server that sells plans keeps the month each account last sent an authenticated request, and nothing finer. An account on `free` whose own month and those of every member of the workspaces it owns lie 10 months back gets a first warning email, and at 11 months a second. At 13 months the server closes every workspace the account owns, from the first day of that month, which is at least 60 days after the first warning, since a warning goes out only in its own month. Any request from the account or one of those members before then, a sign-in on the account pages included, makes it active again and clears the warnings. Accounts on a paid plan, and servers that sell no plans, keep their workspaces whatever the activity.
 
 ## 21. Attachments
 
@@ -1625,11 +1625,29 @@ A server sells plans when its operator configures a payment provider; the provid
 
 | Route | Purpose |
 |---|---|
-| `GET /account/upgrade?plan={plan}` | signs the visitor in first if needed, then sends them to the provider's checkout for that plan ID; an account whose subscription is active or past due goes to the portal instead, where plan changes happen |
+| `GET /account/upgrade?plan={plan}` | signs the visitor in first if needed, then shows the plan's renewal terms and asks for consent; an account whose subscription is active or past due goes to the portal instead, where plan changes happen |
+| `POST /account/upgrade` | records the consent, then sends the account to the provider's checkout for that plan ID |
 | `GET /account/billing` | sends the signed-in account to the provider's customer portal |
+| `GET`, `POST /account/cancel` | asks, then cancels the subscription |
+| `GET`, `POST /account/withdraw` | asks, then withdraws from the contract, for a customer in the EU or the UK within 14 days of the subscription's start |
+| `GET`, `POST /account/refund` | asks, then refunds the latest payment in full, within 14 days of it |
 | `POST /billing/polar/webhook` | Polar's webhook deliveries, signed under the Standard Webhooks scheme |
 
 A server that sells plans also names who sells them, with a street address, an email and a phone number, on the account pages and in the mail about plans, which come in English and in French. The server names the account to the provider by its ID in base64url, as the external customer ID, so a webhook ties a subscription back to an account without an email. It verifies each webhook's signature over the raw body, refuses a timestamp more than 5 minutes from its clock, and stores each event ID it applied, so a retried delivery changes nothing. Providers don't guarantee order, so the server keeps the time of the provider's last change to each subscription and ignores an event that reports an older one. An event that names an account the server doesn't hold, or a product no plan maps to, changes nothing.
+
+Each `POST` route takes the web session and refuses a request whose `Origin` isn't the server's own. The pages and the mail about plans follow the account's language: the language switch on the account pages, or else the browser's first preference, recorded each time the account opens a page. A customer whose billing address is in Québec gets each message in French, with the English after it.
+
+**Consent.** Before the checkout, the upgrade page shows the price, the billing period, that the plan renews at the price in effect until the account cancels, and how to cancel. It asks for two checked boxes: agreement to the renewal, and a request that the service start right away, during the 14-day withdrawal period, with the understanding that a withdrawal within 14 days refunds everything. The server stores each consent with its time, the plan, and the version of the text, and deletes it after 3 years.
+
+**Contract email.** When the provider reports the first paid order of a subscription, the server mails the account its contract: the customer's name and billing address as the provider reports them, the date, the plan, the price before tax, the tax and the total, the currency, the billing period, the renewal and cancellation terms with the steps to cancel, the refund policy, the consent with its time, the merchant's name, address, email and phone, and the link to the terms in the account's language. For a customer in Québec it also gives the monthly rate and the date the period ends, and puts the French terms first.
+
+**Cancellation.** A customer in Québec chooses between ending the plan today, which refunds the unused part of the period in proportion to the time left, with no fee, and ending it when the period ends. Elsewhere the plan ends when the period ends. The provider's subscription stops renewing either way, and the server mails a confirmation. Polar renews a yearly subscription every year until it's canceled, which gives Québec's yearly plans their term without a fixed end after the first year.
+
+**Refunds and withdrawal.** The refund button refunds the latest payment in full, the first or a renewal, when it's at most 14 days old. The withdraw button, for a customer in the EU or the UK within 14 days of the subscription's start, does the same for the first payment, and the server mails an acknowledgment. Every refund the server issues, a Québec cancellation's included, also ends the paid period: the server revokes the subscription at the provider and moves the account to `free` at once, so its workspaces beyond the plan go over plan. The server records the refund and the revocation it owes before it calls the provider, and retries each one that failed on every maintenance pass until the provider accepts it. Polar refunds an amount before tax and refunds the tax in the same proportion.
+
+**Reminders and price changes.** The server mails a yearly subscriber twice before each renewal, once between 90 and 60 days before and once between 45 and 15 days before, and a monthly subscriber once a year. Each reminder gives the renewal date, the amount and how to cancel. The operator announces a price change with `sync-server billing announce-price`, at least 30 days before it takes effect, with the old and new clauses in English and in French. The server mails each subscriber to that plan a notice with both clauses, the date, and the right to refuse the change by cancelling at no cost, and a second notice between 30 and 7 days before the date.
+
+**Mail about plans.** The server queues each message about plans in the same transaction as the change it reports, and the maintenance pass sends the queue and deletes each message once it's sent, so a crash between the change and the send loses nothing.
 
 ## 27. Limits
 
@@ -1661,7 +1679,7 @@ A server that sells plans also names who sells them, with a street address, an e
 | Workspaces | 1,000 per account, 100 of them owned, or fewer as the owner's plan sets ([§20](#plans)) |
 | Plan limits | storage per account, owned workspaces, largest file, members per owned workspace and daily transfer, from the table in [§20](#plans) on a server that sells plans |
 | Over plan | 90 days, then the server closes the workspace |
-| Inactive `free` accounts | warnings at 11 and 12 months, the account's workspaces closed at 13 |
+| Inactive `free` accounts | warnings at 10 and 11 months, the account's workspaces closed at 13 |
 | Card indices; load numbers | 16,777,215 per workspace over its life; 1 to 536,870,911 per device and workspace |
 | Pending approval requests | 32 per account, 100 per workspace |
 | Cursors per `POST /v2/accounts/chains` | 256 |
@@ -1738,9 +1756,13 @@ At the default bootstrap allowance of 512 MiB a minute ([§26](#rate-limits)), t
 | Pending approvals | approval requests with their commitments, offers and reveals until they expire | that a device is waiting for approval |
 | Server | the restore generation, the secret's key check, and the stamp `backup` writes into a copy; outside the database, the server secret | when the server was last restored, since the generation is a Unix time |
 | Workspaces | workspace ID, owner account, per-domain usage and history, the order the server created it in among all workspaces, whether its owner chose to keep it active, and while it's over plan the day it went over and how many notices went out; a closed workspace keeps its row after the reclaim | that the workspace exists, how much data it holds, which of an owner's workspaces is older, and when one went over plan |
-| Plans and billing | for an account that ever started a checkout: the payment provider's name, its customer and subscription IDs, the plan ID, the subscription's status and period end, and the time of the provider's last change to it; the provider holds the name, address and payment details | that you pay, for which plan, and until when |
+| Plans and billing | for an account that ever started a checkout: the payment provider's name, its customer and subscription IDs, the plan ID, the subscription's status, start, current period, price, currency and billing period, whether it's set to end, the country and region of the billing address, the time of the provider's last change to it, and which renewal reminders went out; the provider's ID, amount, currency and time of the subscription's latest paid order; the provider holds the name, address and payment details | that you pay, for which plan, how much, in which country, and until when |
+| Consents | the time, plan, text version and the two answers of each consent given before a checkout, for 3 years | when you subscribed |
+| Price changes | each announced change with its plan, date and clauses, and how many notices each subscriber got | that you were told |
+| Refunds owed | the order, amount and subscription of each refund or revocation the server owes the provider, until the provider accepts it | that you asked for a refund |
+| Mail about plans | each queued message, with its recipient and text, until it's sent | what the server is about to tell you |
 | Billing events | the ID of each webhook event the server applied, with the day it arrived, for 100 days | the days your subscription changed |
-| Account activity | on a server that sells plans, the month each account last sent an authenticated request, and how many inactivity warnings it got | roughly when you last synced, to the month |
+| Account activity | on a server that sells plans, the month each account last sent an authenticated request, how many inactivity warnings it got, and the language it reads the account pages in | roughly when you last synced, to the month |
 | Policy changes | full signed records with the account heads each records, also as entries in every domain's log | members, roles, the head of each member's account chain the workspace follows, restricted domains and their grants, in order |
 | Domains | domain ID, kind (workspace or restricted), marker `rid`, current epoch, rotation state, history floors, the highest published retention floor | how many domains exist and who reads each |
 | Chain heads | per device and domain: counter, digest, sequence | the last position each device wrote |
