@@ -18,12 +18,18 @@ use genai::{
     resolver::{AuthData, Endpoint, ServiceTargetResolver},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 use ts_rs::TS;
 
 use crate::{CoreError, ErrorCategory, Result};
 use crate::{CredentialStore, SystemCredentials};
 
+pub mod chatgpt;
+#[cfg(any(test, feature = "test-hooks"))]
+pub mod chatgpt_fake;
+mod chatgpt_stream;
+pub mod failures;
 mod genai_streamer;
 mod operations;
 mod providers;
@@ -34,7 +40,7 @@ use providers::*;
 use validation::*;
 
 pub use genai_streamer::GenAiStreamer;
-pub use providers::AI_PROVIDER_KINDS;
+pub use providers::{AI_PROVIDER_KINDS, RETIRED_MODELS, replacement_model};
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export)]
@@ -87,6 +93,32 @@ pub enum AiContentPart {
         #[ts(optional)]
         name: Option<String>,
         content: String,
+    },
+    /// What the model reasoned before an answer that asked for tools, as
+    /// its provider returned it, to send back unchanged with the tool
+    /// results. Anthropic requires its thinking blocks within a tool-use
+    /// turn, and Gemini 3 a call's thought signature. Only a provider of
+    /// `kind` gets it; any other drops it.
+    Thought {
+        /// The provider kind that wrote it, such as `anthropic`.
+        kind: String,
+        /// The provider's signature over the reasoning.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        signature: Option<String>,
+        /// The reasoning text, empty when the provider omits it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        text: Option<String>,
+        /// A whole block to send back as is, such as Anthropic's
+        /// `redacted_thinking`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, type = "unknown")]
+        block: Option<serde_json::Value>,
+        /// The tool call the signature belongs to, for Gemini.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        call_id: Option<String>,
     },
 }
 
@@ -189,12 +221,27 @@ pub struct AiStreamSummary {
 #[ts(export)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum AiStreamEvent {
-    Started { model: AiModelRef },
-    TextDelta { text: String },
-    ToolCall { call: AiToolCall },
-    Completed { summary: AiStreamSummary },
+    Started {
+        model: AiModelRef,
+    },
+    TextDelta {
+        text: String,
+    },
+    /// The reasoning the answer's tool calls need sent back, as
+    /// [`AiContentPart::Thought`] parts. It comes before the calls.
+    Thoughts {
+        parts: Vec<AiContentPart>,
+    },
+    ToolCall {
+        call: AiToolCall,
+    },
+    Completed {
+        summary: AiStreamSummary,
+    },
     Cancelled,
-    Error { error: CoreError },
+    Error {
+        error: CoreError,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -216,6 +263,7 @@ pub struct AiCancelOutcome {
     pub cancelled: bool,
 }
 
+#[derive(Clone)]
 pub struct ResolvedAiStreamRequest {
     /// The provider, with the model the request asks in its `model`.
     pub provider: AiProviderConfig,
@@ -230,6 +278,8 @@ pub type AiProviderEventStream = Pin<Box<dyn Stream<Item = Result<AiProviderStre
 #[derive(Debug, Clone)]
 pub enum AiProviderStreamEvent {
     TextDelta(String),
+    /// [`AiContentPart::Thought`] parts, just before `Completed`.
+    Thoughts(Vec<AiContentPart>),
     Completed {
         usage: Option<AiUsage>,
         stop_reason: Option<AiStopReason>,
@@ -254,6 +304,7 @@ pub struct AiFoundation {
     credentials: Arc<dyn CredentialStore>,
     stream_gate: Mutex<()>,
     operations: Arc<AiOperationRegistry>,
+    chatgpt: Mutex<Arc<PlanSessions>>,
 }
 
 impl AiFoundation {
@@ -284,15 +335,159 @@ impl AiFoundation {
             Vec::new()
         };
         validate_provider_configs(&providers, "ai_provider_load")?;
+        let mut providers = providers;
+        let today = jiff::Zoned::now().date();
+        if retire_models(&mut providers, today)
+            && let Err(error) = write_json(&config_path, &providers)
+        {
+            // The move happens again at the next start; requests use the
+            // replacement now.
+            tracing::warn!(code = %error.code, "a retired model's replacement wasn't saved");
+        }
         Ok(Self {
             config_path,
             providers: Mutex::new(providers),
+            chatgpt: Mutex::new(Arc::new(PlanSessions {
+                endpoints: chatgpt::ChatGptEndpoints::default(),
+                credentials: credentials.clone(),
+                locks: Mutex::new(HashMap::new()),
+            })),
             credentials,
             stream_gate: Mutex::new(()),
             operations: Arc::new(AiOperationRegistry {
                 operations: Mutex::new(HashMap::new()),
             }),
         })
+    }
+
+    /// Sign in with ChatGPT at `endpoints` in place of OpenAI's, as tests
+    /// do with a server on this computer.
+    pub fn with_chatgpt_endpoints(self, endpoints: chatgpt::ChatGptEndpoints) -> Self {
+        self.set_chatgpt_endpoints(endpoints);
+        self
+    }
+
+    /// [`Self::with_chatgpt_endpoints`] on settings already open.
+    pub fn set_chatgpt_endpoints(&self, endpoints: chatgpt::ChatGptEndpoints) {
+        let sessions = Arc::new(PlanSessions {
+            endpoints,
+            credentials: self.credentials.clone(),
+            locks: Mutex::new(HashMap::new()),
+        });
+        *self
+            .chatgpt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sessions;
+    }
+
+    fn plan(&self) -> Arc<PlanSessions> {
+        self.chatgpt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Where Sign in with ChatGPT goes.
+    pub fn chatgpt_endpoints(&self) -> chatgpt::ChatGptEndpoints {
+        self.plan().endpoints.clone()
+    }
+
+    fn registration_path(&self) -> PathBuf {
+        self.config_path.with_file_name("chatgpt.json")
+    }
+
+    /// The client this device registered with ChatGPT, if one, and its
+    /// host ID, which Noura chooses and keeps before the first sign-in.
+    pub fn chatgpt_registration(&self) -> Result<chatgpt::ChatGptRegistration> {
+        let path = self.registration_path();
+        let saved = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<chatgpt::ChatGptRegistration>(&bytes).ok())
+            .filter(|registration| !registration.ext_agent_host_id.is_empty());
+        match saved {
+            Some(registration) => Ok(registration),
+            None => {
+                let registration = chatgpt::ChatGptRegistration::new();
+                write_json(&path, &registration)?;
+                Ok(registration)
+            }
+        }
+    }
+
+    /// Keep `registration` for the next sign-in.
+    pub fn save_chatgpt_registration(
+        &self,
+        registration: &chatgpt::ChatGptRegistration,
+    ) -> Result<()> {
+        write_json(&self.registration_path(), registration)
+    }
+
+    /// Keep a finished ChatGPT sign-in: its tokens go to the credential
+    /// store as the ChatGPT provider's credential, and the settings keep
+    /// the provider, which answers with `model`, and the account's email.
+    /// A provider you had keeps its model. Returns its ID.
+    pub fn save_chatgpt(
+        &self,
+        credential: &chatgpt::ChatGptCredential,
+        model: &str,
+    ) -> Result<String> {
+        let id = chatgpt::CHATGPT_PROVIDER;
+        let existing = self.configured_provider(id)?;
+        let provider = AiProviderConfig {
+            id: id.to_owned(),
+            kind: chatgpt::CHATGPT_KIND.to_owned(),
+            display_name: "ChatGPT".to_owned(),
+            model: existing
+                .as_ref()
+                .map_or_else(|| model.to_owned(), |provider| provider.model.clone()),
+            endpoint: None,
+            credential_ref: existing
+                .as_ref()
+                .and_then(|provider| provider.credential_ref.clone()),
+            enabled: true,
+            context_window: existing.and_then(|provider| provider.context_window),
+        };
+        self.save_provider(provider)?;
+        self.set_credential(id, &credential.to_secret()?)?;
+        let mut registration = self.chatgpt_registration()?;
+        registration.client_id = Some(credential.client_id.clone());
+        registration.email.clone_from(&credential.email);
+        self.save_chatgpt_registration(&registration)?;
+        Ok(id.to_owned())
+    }
+
+    /// A fresh access token for the ChatGPT provider, to list its models.
+    pub async fn chatgpt_access_token(&self) -> Result<String> {
+        let reference = self
+            .provider(chatgpt::CHATGPT_PROVIDER, "chatgpt_token")?
+            .credential_ref
+            .ok_or_else(|| {
+                failures::failure_error(failures::PROVIDER_SIGNED_OUT, "chatgpt_token")
+            })?;
+        self.plan().access_token(&reference, false).await
+    }
+
+    /// The models your ChatGPT plan offers, as `(slug, name)`.
+    pub async fn chatgpt_models(&self, access_token: &str) -> Result<Vec<(String, String)>> {
+        chatgpt::models(&self.plan().endpoints, access_token).await
+    }
+
+    /// Sign out of ChatGPT: end the renewable session at OpenAI, then
+    /// forget the provider and its tokens. The registration stays for the
+    /// next sign-in. Returns whether OpenAI confirmed the sign-out.
+    pub async fn sign_out_chatgpt(&self) -> Result<bool> {
+        let id = chatgpt::CHATGPT_PROVIDER;
+        let credential = self
+            .configured_provider(id)?
+            .and_then(|provider| provider.credential_ref)
+            .and_then(|reference| self.credentials.get(&reference).ok())
+            .and_then(|secret| chatgpt::ChatGptCredential::from_secret(&secret).ok());
+        let confirmed = match &credential {
+            Some(credential) => chatgpt::revoke(&self.plan().endpoints, credential).await,
+            None => true,
+        };
+        self.remove_provider(id)?;
+        Ok(confirmed)
     }
 
     pub fn list_providers(&self) -> Result<Vec<AiProviderConfig>> {
@@ -451,29 +646,45 @@ impl AiFoundation {
             validate_model(&input.model.model, "ai_stream")?;
             provider.model.clone_from(&input.model.model);
         }
-        let credential = provider
-            .credential_ref
-            .as_ref()
-            .map(|reference| self.credentials.get(reference))
-            .transpose()?;
+        // A ChatGPT plan's access token comes fresh from its sign-in as
+        // the request starts; any other provider's key is read now.
+        let plan = provider.kind == chatgpt::CHATGPT_KIND;
+        let credential = if plan {
+            None
+        } else {
+            provider
+                .credential_ref
+                .as_ref()
+                .map(|reference| self.credentials.get(reference))
+                .transpose()?
+        };
+        let reference = provider.credential_ref.clone();
+        let sessions = self.plan();
+        if plan {
+            provider.endpoint = Some(sessions.endpoints.api.clone());
+        }
         let operation = self
             .operations
             .start(input.operation_id.clone(), provider.id.clone())?;
         let (sender, receiver) = mpsc::channel(STREAM_BUFFER_CAPACITY);
         let model = input.model;
-        tokio::spawn(run_stream(
-            operation,
-            sender,
-            model,
-            ResolvedAiStreamRequest {
-                provider,
-                credential,
-                messages: input.messages,
-                tools: input.tools.unwrap_or_default(),
-                reasoning: input.reasoning,
-            },
-            streamer,
-        ));
+        let request = ResolvedAiStreamRequest {
+            provider,
+            credential,
+            messages: input.messages,
+            tools: input.tools.unwrap_or_default(),
+            reasoning: input.reasoning,
+        };
+        if plan {
+            let streamer = Arc::new(PlanStreamer {
+                inner: streamer,
+                sessions,
+                reference,
+            });
+            tokio::spawn(run_stream(operation, sender, model, request, streamer));
+        } else {
+            tokio::spawn(run_stream(operation, sender, model, request, streamer));
+        }
         Ok(AiStreamOperation { receiver })
     }
 
@@ -502,6 +713,73 @@ impl AiFoundation {
             .list_providers()?
             .into_iter()
             .find(|value| value.id == provider_id))
+    }
+}
+
+/// The ChatGPT sign-ins' tokens: where to refresh them, and one lock per
+/// credential so two requests never race a rotating refresh token.
+struct PlanSessions {
+    endpoints: chatgpt::ChatGptEndpoints,
+    credentials: Arc<dyn CredentialStore>,
+    locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+}
+
+impl PlanSessions {
+    /// The access token under `reference`, refreshed first when it expires
+    /// soon or when `force` says the provider refused it.
+    async fn access_token(&self, reference: &str, force: bool) -> Result<String> {
+        let lock = self
+            .locks
+            .lock()
+            .map_err(|_| credential_error("chatgpt_token"))?
+            .entry(reference.to_owned())
+            .or_default()
+            .clone();
+        let _held = lock.lock().await;
+        let credential =
+            chatgpt::ChatGptCredential::from_secret(&self.credentials.get(reference)?)?;
+        if !force && !credential.expires_soon(chatgpt::now()) {
+            return Ok(credential.access_token);
+        }
+        let next = chatgpt::refresh(&self.endpoints, &credential).await?;
+        // The access token, its expiry, the scopes and the rotated refresh
+        // token replace the old ones together.
+        self.credentials.set(reference, &next.to_secret()?)?;
+        Ok(next.access_token)
+    }
+}
+
+/// Requests to a ChatGPT plan: a fresh access token goes in as the
+/// credential, and a refused one is refreshed and tried once more.
+struct PlanStreamer<S: ?Sized> {
+    inner: Arc<S>,
+    sessions: Arc<PlanSessions>,
+    reference: Option<String>,
+}
+
+impl<S: AiStreamer + ?Sized> AiStreamer for PlanStreamer<S> {
+    fn stream(
+        &self,
+        mut request: ResolvedAiStreamRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<AiProviderEventStream>> + Send + '_>> {
+        Box::pin(async move {
+            let signed_out = || failures::failure_error(failures::PROVIDER_SIGNED_OUT, "ai_stream");
+            let reference = self.reference.as_deref().ok_or_else(signed_out)?;
+            request.credential = Some(self.sessions.access_token(reference, false).await?);
+            let mut again = request.clone();
+            match self.inner.stream(request).await {
+                Err(error) if error.code == failures::PROVIDER_AUTH_FAILED => {
+                    again.credential = Some(self.sessions.access_token(reference, true).await?);
+                    match self.inner.stream(again).await {
+                        Err(error) if error.code == failures::PROVIDER_AUTH_FAILED => {
+                            Err(signed_out())
+                        }
+                        other => other,
+                    }
+                }
+                other => other,
+            }
+        })
     }
 }
 
@@ -756,6 +1034,28 @@ mod tests {
         };
         assert_eq!(error.code, "provider_stream_incomplete");
         assert!(error.retryable);
+    }
+
+    #[test]
+    fn opening_the_settings_moves_a_retired_model_to_its_replacement_on_disk() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("providers.json");
+        let saved = vec![AiProviderConfig {
+            id: "deepseek".into(),
+            kind: "deepseek".into(),
+            display_name: "DeepSeek".into(),
+            model: "deepseek-chat".into(),
+            endpoint: None,
+            credential_ref: None,
+            enabled: true,
+            context_window: None,
+        }];
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let ai = AiFoundation::open(&path).unwrap();
+        assert_eq!(ai.list_providers().unwrap()[0].model, "deepseek-flash");
+        let on_disk: Vec<AiProviderConfig> =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(on_disk[0].model, "deepseek-flash");
     }
 
     #[test]

@@ -36,6 +36,7 @@ pub(crate) fn settings(ui: &mut Ui, app: &mut App, view: &mut WebSettingsView) {
     let mut changed = None;
     ui.scope_builder(builder, |ui| {
         boxed(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
             ui.label(RichText::new("Brave Search key").strong());
             description(ui, if row.has_key { "Saved" } else { "No key" });
             let label = if row.has_key { "New key" } else { "Key" };

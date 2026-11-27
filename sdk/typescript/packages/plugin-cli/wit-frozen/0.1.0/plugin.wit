@@ -245,7 +245,9 @@ interface navigation {
   enum settings-section {
     // Plugins, where you turn plugins on and off.
     plugins,
-    // AI, where you add AI providers and choose what they may read.
+    // The AI providers and their keys, on the AI plugin's page in
+    // Plugins, or on the page of another plugin that uses them while the
+    // AI plugin isn't installed.
     ai,
     // Sync and devices.
     sync,

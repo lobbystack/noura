@@ -157,6 +157,17 @@ pub struct PluginRow {
     pub update_check: Option<UpdateCheck>,
 }
 
+impl PluginRow {
+    /// Whether it declares the `ai` capability, so it asks the AI
+    /// providers and its page in Plugins holds their settings.
+    pub fn uses_ai(&self) -> bool {
+        self.approved
+            .iter()
+            .chain(&self.revoked)
+            .any(|line| line.name == "ai")
+    }
+}
+
 /// Where checking GitHub for a newer release of a plugin stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateCheck {

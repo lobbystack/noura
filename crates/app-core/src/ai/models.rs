@@ -42,8 +42,9 @@ pub(crate) struct Efforts {
     /// How Off reaches the provider: no reasoning, or the least it allows.
     off: AiReasoning,
     /// The model reasons only when a request asks it to. A request that
-    /// answers its tool calls then asks for no reasoning, because Noura
-    /// keeps no reasoning blocks to send back with the calls.
+    /// answers its tool calls then asks for no reasoning: Noura keeps an
+    /// answer's reasoning blocks only in memory, so a run resumed after a
+    /// quit would send its tool results without them.
     asked: bool,
 }
 
@@ -132,7 +133,7 @@ pub(crate) fn reasoning(
 pub(crate) fn efforts_of(kind: &str, model: &str) -> Option<Efforts> {
     match kind {
         "anthropic" => anthropic(model),
-        "openai" | "openai_resp" => openai(model, kind == "openai_resp"),
+        "openai" | "openai_resp" | "chatgpt" => openai(model, kind != "openai"),
         "gemini" => gemini(model),
         "xai" if model.starts_with("grok-3-mini") => {
             Some(efforts(LOW_OR_HIGH, Some(AiEffort::Low)))

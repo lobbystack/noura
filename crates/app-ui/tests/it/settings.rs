@@ -148,7 +148,6 @@ fn the_rail_s_settings_button_opens_settings_with_its_sections_by_group() {
                 vec![
                     "Location".to_owned(),
                     "Plugins".to_owned(),
-                    "AI".to_owned(),
                     "Sync and devices".to_owned(),
                     "People".to_owned(),
                     "Ignored files".to_owned()
@@ -214,7 +213,6 @@ fn every_section_and_control_carries_a_label() {
         "General",
         "Editor",
         "Keyboard shortcuts",
-        "AI",
         "Location",
         "Plugins",
         "Ignored files",

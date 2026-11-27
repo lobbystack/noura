@@ -24,6 +24,8 @@ Plugin calendar grids name weekdays and months and write times in your locale wi
 
 Orbs find the times of their schedule triggers with `croner` (MIT), a dependency, not copied donor code, whose license text the generated license file carries. Their file conventions follow OpenClaw (MIT) and their scheduler follows designs from IronClaw and ZeroClaw (MIT OR Apache-2.0); noura copied none of their code. See `docs/provenance/orbs-design.md`.
 
+Continue with ChatGPT checks the ID token OpenAI returns with `ring` (Apache-2.0 and ISC), a dependency, not copied donor code. The flow follows OpenAI's Sign in with ChatGPT documentation, and OpenCode (MIT) served as a reference; noura copied none of its code. See `docs/provenance/chatgpt-sign-in.md`.
+
 When the AI reads a web page, `local-core` decodes it with `encoding_rs` ((Apache-2.0 OR MIT) AND BSD-3-Clause), parses its HTML with `html5ever` and `markup5ever` (MIT/Apache-2.0), and turns it into text with `html2text` (MIT). These are dependencies, not copied donor implementations, and the generated license file carries their license texts.
 
 ## atomicwrites 0.4.4 (Windows device settings)

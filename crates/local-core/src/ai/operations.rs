@@ -154,6 +154,11 @@ pub(super) async fn run_stream<S: AiStreamer + ?Sized>(
                         return;
                     }
                 }
+                Some(Ok(AiProviderStreamEvent::Thoughts(parts))) => {
+                    if !parts.is_empty() && !send_stream_frame(&sender, &mut operation.cancellation, &operation.operation_id, &mut sequence, AiStreamEvent::Thoughts { parts }).await {
+                        return;
+                    }
+                }
                 Some(Ok(AiProviderStreamEvent::Completed { usage, stop_reason, tool_calls })) => {
                     for call in tool_calls {
                         if !send_stream_frame(&sender, &mut operation.cancellation, &operation.operation_id, &mut sequence, AiStreamEvent::ToolCall { call }).await {

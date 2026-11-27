@@ -6,7 +6,7 @@ Noura keeps the providers and their keys on this device, and no call returns a k
 
 ## Functions
 
-- `providers()`: the providers you set up and turned on in Settings > AI providers. Each has an `id`, a `name`, a `kind`, such as `openai` or `ollama`, and the `model` it answers with.
+- `providers()`: the providers you set up and turned on in the AI settings, on the AI plugin's page in Settings > Plugins. Each has an `id`, a `name`, a `kind`, such as `openai` or `ollama`, and the `model` it answers with.
 - `chats()`: the workspace's chats, the one changed last first. Each has a `title`, the `revision` of its `chat.md` and a `retention`: `permanent` until you delete it, or `ephemeral`, which Noura moves to the trash 30 days after the chat started.
 - `readChat(id)`: a chat and its messages, oldest first. A message has a `kind`, a `status` and its `content`: Markdown, or JSON text for a tool call or a tool result. `readChat` also reopens as `interrupted` any message that a crash or a quit left in progress, unless one of this session's runs still works in the chat.
 - `createChat()`: a new chat titled `New chat`. Noura writes its files when its first message goes out, and `chats` lists it from then on. A chat whose first message never goes out leaves no file.
@@ -141,7 +141,7 @@ export const view: ViewExports = {
 				node('root', { tag: 'panel', val: 'Ask' }, [1]),
 				node(
 					'none',
-					text('Set up a provider in Settings > AI providers, then ask here.'),
+					text('Set up a provider in Settings > Plugins > AI, then ask here.'),
 				),
 			];
 		}

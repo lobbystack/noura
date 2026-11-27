@@ -101,7 +101,9 @@ impl Ai {
                         break Err(failure("cancelled", "The request stopped."));
                     }
                     AiStreamEvent::Error { error } => break Err(failure_of(&error)),
-                    AiStreamEvent::Started { .. } | AiStreamEvent::ToolCall { .. } => {}
+                    AiStreamEvent::Started { .. }
+                    | AiStreamEvent::Thoughts { .. }
+                    | AiStreamEvent::ToolCall { .. } => {}
                 }
             }
         });

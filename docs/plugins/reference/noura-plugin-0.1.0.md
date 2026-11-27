@@ -683,7 +683,9 @@ A section of Settings a plugin may open.
   <p>Plugins, where you turn plugins on and off.
 
 - <a id="settings_section.ai"></a>`ai`
-  <p>AI, where you add AI providers and choose what they may read.
+  <p>The AI providers and their keys, on the AI plugin's page in
+  Plugins, or on the page of another plugin that uses them while the
+  AI plugin isn't installed.
 
 - <a id="settings_section.sync"></a>`sync`
   <p>Sync and devices.

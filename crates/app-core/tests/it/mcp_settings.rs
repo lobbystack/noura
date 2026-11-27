@@ -83,7 +83,6 @@ fn the_section_shows_a_configuration_with_the_binary_and_the_workspace_folder_an
         [
             "Location",
             "Plugins",
-            "AI",
             "External tools",
             "Sync and devices",
             "People",

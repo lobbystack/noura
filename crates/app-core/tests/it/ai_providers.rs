@@ -210,7 +210,7 @@ fn a_listed_provider_connects_with_only_its_key_and_gets_its_default_model() {
         .unwrap();
     assert_eq!(
         (row.kind.as_str(), row.model.as_str(), row.name.as_str()),
-        ("anthropic", "claude-sonnet-4-5", "Anthropic")
+        ("anthropic", "claude-sonnet-5-5", "Anthropic")
     );
     assert!(row.enabled && row.has_key && row.endpoint.is_none());
     assert_eq!(system.credentials.secrets(), [KEY.to_owned()]);

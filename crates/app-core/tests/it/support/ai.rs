@@ -52,6 +52,10 @@ enum Say {
     Text(String),
     Done(Vec<AiToolCall>),
     Fail,
+    /// A failure with this code, as the provider client classifies one.
+    FailWith(&'static str),
+    /// The reasoning the answer's tool calls need sent back.
+    Thoughts(Vec<AiContentPart>),
 }
 
 /// One request's stream, open until the test ends it or Noura drops it.
@@ -104,6 +108,12 @@ impl FakeProvider {
         self.send(index, Say::Done(Vec::new()));
     }
 
+    /// Send the reasoning of request `index`'s answer, which its tool
+    /// calls need sent back.
+    pub fn think(&self, index: usize, parts: Vec<AiContentPart>) {
+        self.send(index, Say::Thoughts(parts));
+    }
+
     /// End request `index`'s answer with calls to these tools.
     pub fn call_tools(&self, index: usize, calls: Vec<AiToolCall>) {
         self.send(index, Say::Done(calls));
@@ -112,6 +122,12 @@ impl FakeProvider {
     /// Fail request `index` as a provider that answered with an error.
     pub fn fail(&self, index: usize) {
         self.send(index, Say::Fail);
+    }
+
+    /// End request `index`'s stream with a failure the provider client
+    /// classified as `code`.
+    pub fn fail_with(&self, index: usize, code: &'static str) {
+        self.send(index, Say::FailWith(code));
     }
 
     /// Whether Noura dropped request `index`'s stream before it ended.
@@ -201,6 +217,16 @@ impl AiStreamer for FakeProvider {
                             error.details = Some(serde_json::json!({ "body": RAW_FAILURE }));
                             Err(error)
                         }
+                        Say::Thoughts(parts) => Ok(AiProviderStreamEvent::Thoughts(parts)),
+                        Say::FailWith(code) => {
+                            guard.ended = true;
+                            Err(CoreError::new(
+                                code,
+                                ErrorCategory::Provider,
+                                "The AI provider request failed",
+                                "ai_stream",
+                            ))
+                        }
                     };
                     Some((event, (receiver, guard)))
                 },
@@ -225,6 +251,12 @@ pub fn message_line(message: &AiTransportMessage) -> String {
             AiContentPart::ToolResult {
                 call_id, content, ..
             } => format!("result {call_id} {content}"),
+            AiContentPart::Thought {
+                kind, signature, ..
+            } => format!(
+                "thought {kind} {}",
+                signature.as_deref().unwrap_or_default()
+            ),
         })
         .collect();
     format!("{}: {}", message.role, parts.join(" | "))
