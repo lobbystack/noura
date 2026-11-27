@@ -186,7 +186,7 @@ jobs:
         if: runner.os != 'Linux'
         with:
           shared-key: extras
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'ci/faster-pipeline' }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
