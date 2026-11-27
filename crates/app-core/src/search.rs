@@ -416,12 +416,38 @@ fn hit(result: SearchResult) -> SearchHit {
         .rsplit('/')
         .next()
         .unwrap_or(&result.relative_path);
+    // The index's title: the file's name, or a chat's own title for the
+    // chat and its messages.
+    let title = if result.title.trim().is_empty() {
+        shown_name(file_name, EntryKind::File)
+    } else {
+        result.title
+    };
     SearchHit {
-        title: shown_name(file_name, EntryKind::File),
-        folder: parent_of(&result.relative_path).unwrap_or("").to_owned(),
+        title,
+        folder: shown_folder(&result.relative_path, result.object_type.as_deref()).to_owned(),
         object_type: result.object_type,
         snippet: result.snippet,
         relative_path: result.relative_path,
+    }
+}
+
+/// The folder a hit shows: the one that holds the file, or for a chat and
+/// its messages the one that holds the chat's own folder, whose name
+/// repeats the chat's title.
+fn shown_folder<'a>(relative_path: &'a str, object_type: Option<&str>) -> &'a str {
+    let folder = parent_of(relative_path).unwrap_or("");
+    let chat_folder = match object_type {
+        Some("chat") => Some(folder),
+        // Messages sit in the chat's folder under `messages/<date>/`.
+        Some("chat-message") => parent_of(folder)
+            .and_then(|messages| messages.strip_suffix("/messages"))
+            .filter(|chat| !chat.is_empty()),
+        _ => None,
+    };
+    match chat_folder {
+        Some(chat) => parent_of(chat).unwrap_or(""),
+        None => folder,
     }
 }
 

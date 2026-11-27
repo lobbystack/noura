@@ -164,6 +164,7 @@ fn kind(kind: &ViewKind) -> Value {
             value,
             style,
             focus,
+            icon,
         } => tagged(
             "editable",
             json!({
@@ -176,6 +177,7 @@ fn kind(kind: &ViewKind) -> Value {
                     EditableStyle::Line => "line",
                 },
                 "focus": focus,
+                "icon": icon.map(icon_name),
             }),
         ),
         ViewKind::DatePicker { label, value } => {
@@ -261,6 +263,7 @@ fn icon_name(icon: PluginIcon) -> &'static str {
         PluginIcon::Folder => "folder",
         PluginIcon::Note => "note",
         PluginIcon::Tasks => "tasks",
+        PluginIcon::Person => "person",
     }
 }
 

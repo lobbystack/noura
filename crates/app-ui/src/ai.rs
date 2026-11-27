@@ -9,7 +9,7 @@ use egui::{Frame, Id, Margin, RichText, Stroke, TextEdit, Ui, UiBuilder, accessk
 use zeroize::Zeroizing;
 
 use crate::{
-    common::{Btn, Size, Variant, badge, description},
+    common::{Btn, Size, Variant, badge},
     theme::{Palette, radius},
 };
 
@@ -492,10 +492,9 @@ pub(crate) fn tool_prompt(ui: &mut Ui, app: &mut App, view: &mut ToolPromptView)
             ui.set_width(440.0);
             crate::common::dialog_title(ui, title);
             ui.add_space(4.0);
+            // The call's name as the chat shows it. The tool's description
+            // is written for the model, not for you.
             ui.label(format!("{} from {}", prompt.tool, prompt.plugin_name));
-            if !prompt.description.trim().is_empty() {
-                description(ui, &prompt.description);
-            }
             ui.add_space(8.0);
             ui.label("Input");
             // A long input scrolls, so Deny and Allow once stay in view.

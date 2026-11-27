@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { asset, resolve } from '$app/paths';
+	import { resolve } from '$app/paths';
 	import Icon from './Icon.svelte';
 	import { siteConfig } from '$lib/site-config';
 </script>
@@ -8,17 +8,14 @@
 
 <header class="site-header">
 	<div class="header-inner">
-		<a class="brand" href={resolve('/')} aria-label="noura home">
-			<img src={asset('/logo.png')} alt="" width="30" height="30" />
-			<span>noura</span>
-		</a>
+		<a class="brand" href={resolve('/')} aria-label="noura home">noura</a>
 		<nav aria-label="Primary navigation">
 			<a
 				class="nav-icon"
 				href={siteConfig.githubUrl}
 				aria-label="noura on GitHub"
 			>
-				<Icon name="github" size={20} />
+				<Icon name="github" size={22} />
 			</a>
 			<a class="download" href={resolve('/#download')}>Download</a>
 		</nav>
@@ -58,30 +55,30 @@
 		padding: 0 32px;
 	}
 	.brand {
-		display: flex;
-		align-items: center;
-		gap: 9px;
 		text-decoration: none;
-		font-size: 17px;
-		font-weight: 760;
-		letter-spacing: -0.03em;
-	}
-	.brand img {
-		display: block;
-		width: 30px;
-		height: 30px;
+		font-size: 22px;
+		font-weight: 780;
+		line-height: 1;
+		letter-spacing: -0.045em;
 	}
 	nav {
 		display: flex;
 		align-items: center;
-		gap: 22px;
+		gap: 12px;
 	}
 	.nav-icon {
 		display: grid;
+		width: 40px;
+		height: 40px;
 		place-items: center;
+		border-radius: 999px;
 		color: #3c3b41;
+		transition:
+			color 180ms ease,
+			background 180ms ease;
 	}
 	.nav-icon:hover {
+		background: rgba(15, 15, 16, 0.06);
 		color: var(--ink);
 	}
 	.download {

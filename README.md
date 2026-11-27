@@ -6,6 +6,8 @@ noura is an open-source, local-first desktop workspace for notes, tasks, project
 
 [![Status: Local Alpha](https://img.shields.io/badge/status-Local%20Alpha-8b5cf6)](#try-noura) [![Continuous integration](https://github.com/lobbystack/noura/actions/workflows/ci.yml/badge.svg)](https://github.com/lobbystack/noura/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+![noura with a project note open in the editor, beside the folders of a design studio's workspace](apps/website/static/screens/files.webp)
+
 [Try noura](#try-noura) · [Documentation](#documentation) · [Contribute](#contributing)
 
 ## A workspace built from plugins

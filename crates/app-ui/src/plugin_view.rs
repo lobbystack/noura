@@ -625,7 +625,8 @@ fn node(ui: &mut Ui, node: &ViewNode, kit: &mut Kit) {
             value,
             style,
             focus,
-        } => edit::editable(ui, node, (label, value, *style, *focus), kit),
+            icon,
+        } => edit::editable(ui, node, (label, value, *style, *focus, *icon), kit),
         ViewKind::DatePicker { label, value } => {
             edit::date_picker(ui, node, label, value.as_deref(), kit);
         }

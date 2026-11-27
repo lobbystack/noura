@@ -59,6 +59,14 @@ pub(crate) fn is_apple(ctx: &egui::Context) -> bool {
     matches!(ctx.os(), OperatingSystem::Mac | OperatingSystem::IOS)
 }
 
+impl crate::MdRender {
+    /// Whether this editor's shortcuts read as macOS's: as the app set
+    /// them, or as egui's operating system has them.
+    pub(crate) fn mac_keys(&self) -> bool {
+        self.mac_keys.unwrap_or_else(|| is_apple(&self.ctx))
+    }
+}
+
 /// The editor command a key press runs. The key the press types comes
 /// first; the key at its place on the keyboard stands in when the typed
 /// one isn't a shortcut key, as for Shift-8, which types `*`.
@@ -123,7 +131,7 @@ impl<'ast> MdEdit {
             ..
         } = event
             && let Some(command) =
-                command_for_key(key, physical_key, modifiers, is_apple(&self.renderer.ctx))
+                command_for_key(key, physical_key, modifiers, self.renderer.mac_keys())
         {
             return self.shortcut_event(command);
         }

@@ -24,7 +24,7 @@ type Ui = Harness<'static, app_ui::NouraUi>;
 const PROGRAM: &str = "/Applications/Noura.app/Contents/MacOS/noura";
 
 /// A probe that answers as told, after a moment.
-struct FakeProbe(Result<String, String>);
+pub(crate) struct FakeProbe(pub(crate) Result<String, String>);
 
 impl McpProbe for FakeProbe {
     fn test(&self, _: &Path, _: &[OsString], _: Duration) -> Result<String, String> {

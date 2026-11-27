@@ -113,7 +113,7 @@ fn opened() -> Option<Opened> {
 }
 
 /// Set up the provider Local in the app data, before the harness starts.
-fn set_up_provider(app_data: &std::path::Path) {
+pub(crate) fn set_up_provider(app_data: &std::path::Path) {
     let mut app = App::launch(app_data);
     let deadline = Instant::now() + Duration::from_secs(20);
     while app.is_busy() || app.workspace().is_none() {
@@ -677,11 +677,17 @@ fn noura_s_tool_prompt_names_the_tool_its_plugin_and_input_and_escape_denies() {
     let harness = &mut tooled.harness;
     let dialog = harness.get_by_role_and_label(Role::AlertDialog, TOOL_PROMPT);
     assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
+    // The prompt names the call as the chat does, and shows its input.
+    // The tool's description, written for the model, stays out of it.
     let shown = texts(dialog.query_all(By::new().role(Role::Label)));
-    assert!(shown.contains(&"create from Tasks".to_owned()), "{shown:?}");
-    assert!(
-        shown.contains(&"{\n  \"title\": \"Water the tomatoes\"\n}".to_owned()),
-        "{shown:?}"
+    assert_eq!(
+        shown,
+        [
+            TOOL_PROMPT,
+            "create from Tasks",
+            "Input",
+            "{\n  \"title\": \"Water the tomatoes\"\n}",
+        ],
     );
     dialog.get_by_role_and_label(Role::Button, "Deny");
     dialog.get_by_role_and_label(Role::Button, "Allow once");

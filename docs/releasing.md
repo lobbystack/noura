@@ -69,6 +69,10 @@ The workflow in `.github/workflows/release.yml` runs these jobs in order:
 
 The website links to `releases/latest/download/<file>`, so its buttons serve the newest release without a site change.
 
+## Update the website's screenshots
+
+When a change alters how the interface looks, run `scripts/website-screens.sh` and commit the images it writes. The script renders the Files, Tasks, Calendar and AI screens from the app itself into `apps/website/static/screens/`, crops the feature cards' pieces of the interface into `apps/website/static/parts/`, and builds the social card `apps/website/static/og.png` from the Files screen. It needs a GPU, `cwebp` and ImageMagick, which you can install with `brew install webp imagemagick`.
+
 ## Build the packages on your computer
 
 Install the packaging tools once:

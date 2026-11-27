@@ -2,9 +2,10 @@
 //! picker and a picker, as a task's title, notes, due date, status and
 //! priority use.
 //!
-//! Editable text reads as plain text until you click or tab into it. A
-//! title, a line or a body sends its text when you leave it, a title and a
-//! line also on Return, and an add field sends on Return, then empties
+//! Editable text reads as plain text until you click or tab into it, a
+//! line after its icon, as a chip shows its mark. A title, a line or a
+//! body sends its text when you leave it, a title and a line also on
+//! Return, and an add field sends on Return, then empties
 //! itself and keeps the keyboard. Escape puts back what the plugin drew. What you type
 //! stays until the plugin draws another value, so a plugin that ignores a
 //! change doesn't wipe your typing.
@@ -14,7 +15,7 @@
 //! of the options with a check by the chosen one. A pick sends `changed`.
 
 use app_core::{
-    EditableStyle, Field, InputValue, PickerOption, PluginColor, PluginEvent, ViewNode,
+    EditableStyle, Field, InputValue, PickerOption, PluginColor, PluginEvent, PluginIcon, ViewNode,
 };
 use egui::{
     Align2, Color32, FontId, Frame, Key, Margin, Popup, PopupCloseBehavior, PopupKind, Rect,
@@ -44,13 +45,16 @@ struct Draft {
     focus: bool,
 }
 
-/// Text you edit in place, drawn as `style` says.
+/// Text you edit in place, drawn as `style` says, a line after `icon`.
 pub(super) fn editable(
     ui: &mut Ui,
     node: &ViewNode,
-    (label, value, style, focus): (&str, &str, EditableStyle, bool),
+    (label, value, style, focus, icon): (&str, &str, EditableStyle, bool, Option<PluginIcon>),
     kit: &mut Kit,
 ) {
+    let icon = icon
+        .filter(|_| style == EditableStyle::Line)
+        .map(super::heading::icon);
     let id = kit.id(&node.id);
     let held: Option<Draft> = ui.data(|data| data.get_temp(id));
     let take_focus = focus && !held.as_ref().is_some_and(|draft| draft.focus);
@@ -77,7 +81,14 @@ pub(super) fn editable(
         ),
         EditableStyle::Line => (
             TextEdit::singleline(&mut draft.text).font(FontId::proportional(BODY_SIZE)),
-            Margin::symmetric(6, 4),
+            // Its icon sits where a chip's mark does, and its text where a
+            // chip's text starts.
+            Margin {
+                left: if icon.is_some() { 28 } else { 6 },
+                right: 6,
+                top: 4,
+                bottom: 4,
+            },
         ),
         EditableStyle::Body => (
             TextEdit::multiline(&mut draft.text)
@@ -131,6 +142,20 @@ pub(super) fn editable(
             palette.muted_foreground,
             false,
         );
+    }
+    if let Some(icon) = icon {
+        // Muted while the line is empty, as a chip's mark is without a
+        // value.
+        let color = if draft.text.is_empty() {
+            palette.muted_foreground
+        } else {
+            palette.foreground
+        };
+        // Beside the text's row, which sits at the top of the field.
+        let row = ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(BODY_SIZE)));
+        let middle = rect.top() + f32::from(margin.top) + row / 2.0;
+        let square = Rect::from_center_size(pos2(rect.left() + 15.0, middle), Vec2::splat(14.0));
+        icons::paint(ui.painter(), icon, square, color, false);
     }
     let escaped = ui.input(|input| input.key_pressed(Key::Escape));
     if response.lost_focus() {

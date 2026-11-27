@@ -1091,6 +1091,31 @@ fn more_button(
     response.clicked().then(|| button.left_bottom())
 }
 
+/// The space between a row's label and its detail.
+const DETAIL_GAP: f32 = 16.0;
+
+/// The least room a row's detail shows in, cut short; with less, the row
+/// shows none.
+const MIN_DETAIL: f32 = 48.0;
+
+/// How wide a row's label and its detail draw in `room`, from the widths
+/// they want. The label keeps its width while it fits, and the detail
+/// takes what's left after the gap between them, cut short, or none when
+/// that's under [`MIN_DETAIL`] and less than it wants.
+fn label_and_detail(room: f32, label: f32, detail: Option<f32>) -> (f32, Option<f32>) {
+    let Some(detail) = detail else {
+        return (room, None);
+    };
+    let left = room - label.min(room) - DETAIL_GAP;
+    if left >= detail {
+        (room - detail - DETAIL_GAP, Some(detail))
+    } else if left >= MIN_DETAIL {
+        (label, Some(left))
+    } else {
+        (room, None)
+    }
+}
+
 /// A row's background, focus ring and, for a list, its label and detail,
 /// unless a name field shows in the item's place.
 /// Paint a row's fill and its text. `(selected, sidebar)` says whether
@@ -1180,11 +1205,6 @@ fn paint_row(
     if row.name_field.is_some() {
         return;
     }
-    let detail = row
-        .detail
-        .as_deref()
-        .map(|detail| text(ui, detail, inner.width() * 0.4, SUPPORTING_SIZE));
-    let detail_width = detail.as_ref().map_or(0.0, |galley| galley.size().x + 16.0);
     let warning = row
         .warning
         .as_deref()
@@ -1192,12 +1212,22 @@ fn paint_row(
     let warning_width = warning.as_ref().map_or(0.0, |galley| galley.size().x + 8.0)
         + if row.status.is_some() { 16.0 } else { 0.0 };
     let start = if row.leads() { 32.0 } else { 8.0 };
-    let label = text(
-        ui,
-        &row.label,
-        inner.width() - start - 8.0 - detail_width - warning_width,
-        BODY_SIZE,
+    // The label comes first: the detail takes the room it leaves.
+    let room = inner.width() - start - 8.0 - warning_width;
+    let wants = |words: &str, size: f32| text(ui, words, f32::INFINITY, size).size().x;
+    let (label_width, detail_width) = label_and_detail(
+        room,
+        wants(&row.label, BODY_SIZE),
+        row.detail
+            .as_deref()
+            .map(|detail| wants(detail, SUPPORTING_SIZE)),
     );
+    let detail = row
+        .detail
+        .as_deref()
+        .zip(detail_width)
+        .map(|(detail, width)| text(ui, detail, width, SUPPORTING_SIZE));
+    let label = text(ui, &row.label, label_width, BODY_SIZE);
     let at =
         Align2::LEFT_CENTER.anchor_size(pos2(inner.left() + start, rect.center().y), label.size());
     // A colored checkbox shows or hides something, as a calendar's does,
@@ -1241,10 +1271,35 @@ fn paint_row(
 mod tests {
     use egui::{Rect, pos2};
 
-    use super::{ROW_HEIGHT, row_label, visible_rows};
+    use super::{DETAIL_GAP, ROW_HEIGHT, label_and_detail, row_label, visible_rows};
 
     fn band(top: f32, bottom: f32) -> Rect {
         Rect::from_min_max(pos2(0.0, top), pos2(400.0, bottom))
+    }
+
+    #[test]
+    fn a_rows_label_keeps_its_width_and_its_detail_gives_way() {
+        // Both fit, the label taking the room the detail leaves.
+        assert_eq!(
+            label_and_detail(300.0, 100.0, Some(80.0)),
+            (300.0 - 80.0 - DETAIL_GAP, Some(80.0))
+        );
+        // The detail is cut short to what the label leaves.
+        assert_eq!(
+            label_and_detail(300.0, 200.0, Some(150.0)),
+            (200.0, Some(300.0 - 200.0 - DETAIL_GAP))
+        );
+        // Less than the least room shows no detail, and the label takes it
+        // all.
+        assert_eq!(label_and_detail(300.0, 260.0, Some(150.0)), (300.0, None));
+        // A short detail still shows whole in less than the least room.
+        assert_eq!(
+            label_and_detail(300.0, 260.0, Some(20.0)),
+            (300.0 - 20.0 - DETAIL_GAP, Some(20.0))
+        );
+        // A label longer than the row is cut short and shows alone.
+        assert_eq!(label_and_detail(300.0, 500.0, Some(20.0)), (300.0, None));
+        assert_eq!(label_and_detail(300.0, 120.0, None), (300.0, None));
     }
 
     #[test]

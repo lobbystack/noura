@@ -208,6 +208,34 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Octicons GitHub mark (marketing site)
+
+The marketing site draws the GitHub logo with the `mark-github-24` path from Primer Octicons v19.33.0, copied unchanged into `apps/website/src/lib/components/Icon.svelte`. See [`docs/provenance/octicons-mark-github.md`](docs/provenance/octicons-mark-github.md).
+
+```text
+MIT License
+
+Copyright (c) 2026 GitHub Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## comrak 0.50.0 (Markdown parser)
 
 The editor parses Markdown with `comrak`, a dependency pinned in Cargo.lock. Noura copies no comrak source. Its distributed `COPYING` file carries the notices below for the code the editor ships: comrak under the BSD 2-Clause License, the cmark-gfm code it derives from under the same license, and the houdini, buffer and utf8proc code it adapts under the MIT License. The CommonMark spec and test files that `COPYING` also covers stay out of the build.

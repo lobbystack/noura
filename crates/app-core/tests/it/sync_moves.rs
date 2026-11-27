@@ -859,9 +859,11 @@ async fn bootstrap_with_side_checkpoint(serve_it: bool) -> Option<&'static str> 
     let server = Server::start_with_interval(6).await;
     let mut team = team(&server).await;
     let domain = team.restrict(Level::Write).await;
-    team.sync.set_checkpoint_wait(Duration::from_secs(3_600));
-    team.grantee_sync
-        .set_checkpoint_wait(Duration::from_secs(3_600));
+    // The wait is drawn at random below this, so an hour could still let a
+    // device sign before the side checkpoint, on a slow runner.
+    let never = Duration::from_secs(1 << 40);
+    team.sync.set_checkpoint_wait(never);
+    team.grantee_sync.set_checkpoint_wait(never);
     for i in 0..8 {
         team.folder.write(&format!("Pay/n{i}.md"), b"note\n");
     }

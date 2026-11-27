@@ -8,7 +8,7 @@
 //! so the file reads the same without Noura.
 
 use plugin_sdk::{
-    Color, EditableStyle, Error, Event, Value, View,
+    Color, Editable, EditableStyle, Error, Event, Icon, NodeKind, Value, View,
     navigation::{self, Placement},
     objects::{self, Changes, Object},
 };
@@ -168,14 +168,16 @@ pub(crate) fn render(
     );
 
     project_picker(view, pane, &task, projects);
-    view.editable(
-        pane,
-        &node("assignee"),
-        "Assignee",
-        task.assignee.as_deref().unwrap_or_default(),
-        EditableStyle::Line,
-        false,
-    );
+    // Who does the task, after a person as the due date sits after a
+    // calendar.
+    let assignee = Editable {
+        label: "Assignee".to_owned(),
+        value: task.assignee.clone().unwrap_or_default(),
+        style: EditableStyle::Line,
+        focus: false,
+        icon: Some(Icon::Person),
+    };
+    view.add(pane, &node("assignee"), NodeKind::Editable(assignee));
 
     if let Some(problem) = &object.problem {
         view.text(

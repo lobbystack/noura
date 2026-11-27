@@ -642,7 +642,9 @@ impl IndexStore {
     /// Files whose text holds every word of `input.query`, read as plain
     /// text. A match in the file name, which is the note's title, ranks
     /// above a match anywhere else, then the full-text rank decides. A
-    /// heading inside the file ranks as ordinary body text.
+    /// heading inside the file ranks as ordinary body text. A chat keeps
+    /// its title in its `title` property, so a chat and each of its
+    /// messages come back with that title.
     pub fn search(&self, input: &SearchInput) -> Result<Vec<SearchResult>> {
         self.search_page(input, 0)
     }
@@ -661,11 +663,17 @@ impl IndexStore {
         let mut statement = self
             .connection
             .prepare_cached(
-                "SELECT NULLIF(fts.stable_id,''),o.object_type,f.relative_path,fts.title,\
-                 snippet(object_fts,4,char(2),char(3),' … ',18),\
+                "SELECT NULLIF(fts.stable_id,''),o.object_type,f.relative_path,\
+                 COALESCE((SELECT json_extract(c.frontmatter_json,'$.title') FROM objects c \
+                   WHERE c.object_type='chat' AND c.stable_id=CASE o.object_type \
+                   WHEN 'chat' THEN o.stable_id \
+                   WHEN 'chat-message' THEN json_extract(o.frontmatter_json,'$.chat_id') END \
+                   AND json_type(c.frontmatter_json,'$.title')='text' \
+                   AND trim(json_extract(c.frontmatter_json,'$.title'))<>'' LIMIT 1),fts.title),\
+                 snippet(object_fts,4,char(2),char(3),' … ',?8),\
                  bm25(object_fts,0.0,2.0,8.0,1.0,1.0,3.0),f.hash,\
                  fts.rowid IN (SELECT rowid FROM object_fts WHERE object_fts MATCH ?5),\
-                 snippet(object_fts,3,char(2),char(3),' … ',18) \
+                 snippet(object_fts,3,char(2),char(3),' … ',?8) \
                  FROM object_fts fts JOIN files f ON f.id=fts.rowid \
                  LEFT JOIN objects o ON o.file_id=f.id \
                  WHERE object_fts MATCH ?1 AND (?2 IS NULL OR o.object_type=?2) \
@@ -684,7 +692,8 @@ impl IndexStore {
                     input.limit.unwrap_or(50),
                     query.any_word_in_file_name,
                     tag,
-                    offset
+                    offset,
+                    FRAGMENT_TOKENS
                 ],
                 |row| {
                     Ok(SearchResult {
@@ -1015,13 +1024,91 @@ fn tag_key(tag: &str) -> Option<String> {
 /// only the heading matches, since a heading is ordinary text. The index
 /// marks matched words with STX and ETX, which this removes.
 fn matching_text(body: String, heading: String) -> String {
-    const MARKS: [char; 2] = ['\u{2}', '\u{3}'];
-    let text = if !body.contains(MARKS[0]) && heading.contains(MARKS[0]) {
+    let text = if !body.contains(MATCH_START) && heading.contains(MATCH_START) {
         heading
     } else {
         body
     };
-    text.replace(MARKS, "")
+    around_match(&text)
+}
+
+/// Where FTS5 marks a match in a fragment it returns, and where it cut the
+/// fragment out of the text.
+const MATCH_START: char = '\u{2}';
+const MATCH_END: char = '\u{3}';
+const FTS_CUT: &str = " \u{2026} ";
+
+/// How many tokens of text around a match the index hands back, more than
+/// [`AROUND_MATCH`] keeps so it has words on both sides to choose from.
+const FRAGMENT_TOKENS: u32 = 40;
+
+/// How many words a hit's matching text keeps, the match among them.
+const AROUND_MATCH: usize = 13;
+
+/// The words around the first match in `fragment`, a fragment FTS5 cut
+/// with its matches marked: the match's own line, from which a list
+/// marker, a heading's hashes or a quote's mark is dropped, cut to
+/// [`AROUND_MATCH`] words with the match as near their middle as the line
+/// allows. An ellipsis stands for text cut on either side. A fragment
+/// without a match gives the start of its first line that holds text.
+fn around_match(fragment: &str) -> String {
+    let cut_before = fragment.starts_with(FTS_CUT);
+    let cut_after = fragment.ends_with(FTS_CUT);
+    let fragment = fragment.strip_prefix(FTS_CUT).unwrap_or(fragment);
+    let fragment = fragment.strip_suffix(FTS_CUT).unwrap_or(fragment);
+    let at = fragment
+        .find(MATCH_START)
+        .unwrap_or_else(|| fragment.len() - fragment.trim_start().len());
+    let start = fragment[..at].rfind('\n').map_or(0, |newline| newline + 1);
+    let end = fragment[at..]
+        .find('\n')
+        .map_or(fragment.len(), |newline| at + newline);
+    let opens_inside = start == 0 && cut_before;
+    let mut line = &fragment[start..end];
+    if !opens_inside {
+        line = without_block_marker(line);
+    }
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let found = words
+        .iter()
+        .position(|word| word.contains(MATCH_START))
+        .unwrap_or(0);
+    let first = found
+        .saturating_sub(AROUND_MATCH / 2)
+        .min(words.len().saturating_sub(AROUND_MATCH));
+    let last = (first + AROUND_MATCH).min(words.len());
+    let mut text = words[first..last].join(" ");
+    if first > 0 || (opens_inside && !text.is_empty()) {
+        text.insert(0, '\u{2026}');
+    }
+    if last < words.len() || (end == fragment.len() && cut_after && !text.is_empty()) {
+        text.push('\u{2026}');
+    }
+    text.replace([MATCH_START, MATCH_END], "")
+}
+
+/// `line` without the Markdown that opens it: a heading's hashes, a
+/// quote's marks, a list's bullet or number, and a task's checkbox.
+fn without_block_marker(line: &str) -> &str {
+    let mut rest = line.trim_start();
+    loop {
+        let before = rest;
+        rest = rest.trim_start_matches(['#', '>']).trim_start();
+        for bullet in ["- ", "* ", "+ ", "[ ] ", "[x] ", "[X] "] {
+            rest = rest.strip_prefix(bullet).unwrap_or(rest).trim_start();
+        }
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0
+            && let Some(after) = rest[digits..]
+                .strip_prefix(". ")
+                .or_else(|| rest[digits..].strip_prefix(") "))
+        {
+            rest = after.trim_start();
+        }
+        if rest == before {
+            return rest;
+        }
+    }
 }
 
 /// A search typed by a person, turned into full-text expressions that
@@ -1407,6 +1494,61 @@ mod tests {
         parse_markdown, serialize_object,
     };
     use std::collections::BTreeMap;
+
+    /// `text` with `word` marked as FTS5 marks a match.
+    fn marked(text: &str, word: &str) -> String {
+        text.replace(word, &format!("{MATCH_START}{word}{MATCH_END}"))
+    }
+
+    #[test]
+    fn matching_text_is_the_matchs_line_with_the_match_in_the_middle() {
+        // The match sits on the line after the one the fragment opens on.
+        let fragment = format!(
+            "{FTS_CUT}second on a phone over 4G\n{}{FTS_CUT}",
+            marked("- Move the journal off the old CMS", "journal")
+        );
+        assert_eq!(
+            around_match(&fragment),
+            "Move the journal off the old CMS\u{2026}"
+        );
+
+        // A long line keeps as many words on each side of the match.
+        let line = "one two three four five six seven eight nine ten eleven twelve \
+                    thirteen fourteen fifteen sixteen seventeen eighteen";
+        assert_eq!(
+            around_match(&marked(line, "ten")),
+            "\u{2026}four five six seven eight nine ten eleven twelve thirteen fourteen \
+             fifteen sixteen\u{2026}"
+        );
+        // Near the line's start, the words after it fill the rest.
+        assert_eq!(
+            around_match(&marked(line, "two")),
+            "one two three four five six seven eight nine ten eleven twelve thirteen\u{2026}"
+        );
+
+        // A heading, a quote, a numbered item and a task lose their marks.
+        for (line, shown) in [
+            ("## Open journal", "Open journal"),
+            ("> journal entry", "journal entry"),
+            ("12. Read the journal", "Read the journal"),
+            ("- [x] Archive the journal", "Archive the journal"),
+        ] {
+            assert_eq!(around_match(&marked(line, "journal")), shown, "{line}");
+        }
+        // A line FTS5 cut into keeps what it starts with.
+        assert_eq!(
+            around_match(&format!("{FTS_CUT}- {} ends", marked("journal", "journal"))),
+            "\u{2026}- journal ends"
+        );
+
+        // Without a match, the first line that holds text.
+        assert_eq!(
+            around_match(&format!("\n\n# Plan\nThe rest{FTS_CUT}")),
+            "Plan"
+        );
+        assert_eq!(around_match(""), "");
+    }
+
     #[test]
     fn fts_and_rebuildable_index_work() {
         let mut index = IndexStore::in_memory().unwrap();

@@ -443,40 +443,50 @@ fn list(
     }
     let headings = groups.len() > 1;
     let mut clicked = None;
-    let output = ScrollArea::vertical()
-        .id_salt("palette-list")
-        .max_height(LIST_HEIGHT)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.y = 0.0;
-            for (group, members) in &groups {
-                let name = heading(*group);
-                if headings {
-                    let (rect, _) = ui.allocate_exact_size(
-                        vec2(ui.available_width(), HEADING_HEIGHT),
-                        Sense::hover(),
-                    );
-                    let galley = line(ui, name, SUPPORTING_SIZE, rect.width());
-                    paint_line(
-                        ui,
-                        galley,
-                        pos2(rect.left() + 8.0, rect.bottom() - 6.0),
-                        Align2::LEFT_BOTTOM,
-                        theme.muted_foreground,
-                    );
-                }
-                let builder = UiBuilder::new()
-                    .accessibility_role(Role::ListBox)
-                    .accessibility_label(name);
-                ui.scope_builder(builder, |ui| {
-                    for (index, row) in members {
-                        if let Some(index) = draw_row(ui, view, theme, *index, row, selected) {
-                            clicked = Some(index);
+    // Search's area lends its content last frame's size, which would hold
+    // the list at the height it first drew at and hide rows that arrive
+    // later. Room for the list's full height lets it grow, then scroll.
+    let output = ui
+        .scope(|ui| {
+            ui.set_max_height(LIST_HEIGHT);
+            ScrollArea::vertical()
+                .id_salt("palette-list")
+                .max_height(LIST_HEIGHT)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    for (group, members) in &groups {
+                        let name = heading(*group);
+                        if headings {
+                            let (rect, _) = ui.allocate_exact_size(
+                                vec2(ui.available_width(), HEADING_HEIGHT),
+                                Sense::hover(),
+                            );
+                            let galley = line(ui, name, SUPPORTING_SIZE, rect.width());
+                            paint_line(
+                                ui,
+                                galley,
+                                pos2(rect.left() + 8.0, rect.bottom() - 6.0),
+                                Align2::LEFT_BOTTOM,
+                                theme.muted_foreground,
+                            );
                         }
+                        let builder = UiBuilder::new()
+                            .accessibility_role(Role::ListBox)
+                            .accessibility_label(name);
+                        ui.scope_builder(builder, |ui| {
+                            for (index, row) in members {
+                                if let Some(index) =
+                                    draw_row(ui, view, theme, *index, row, selected)
+                                {
+                                    clicked = Some(index);
+                                }
+                            }
+                        });
                     }
-                });
-            }
-        });
+                })
+        })
+        .inner;
     let seen = output.state.clamped_offset().y + output.inner_rect.height();
     let near_end = seen >= output.content_size.y - MORE_AHEAD * ROW_HEIGHT;
     (clicked, near_end)

@@ -473,10 +473,11 @@ fn page() -> Vec<Node> {
 /// section's key.
 const LIST_PREFIX: &str = "tasks-";
 
-/// A task's quieter detail: its project unless the list is that
-/// project's, its due date unless it's overdue, its assignee, and its
-/// priority unless it is medium. An overdue task's due date comes second,
-/// to show as a warning.
+/// A task's quieter detail: its due date unless it's overdue, its
+/// assignee, its priority unless it is medium, and its project unless the
+/// list is that project's. A row short of room cuts its detail from the
+/// end, so the project gives way first. An overdue task's due date comes
+/// second, to show as a warning.
 fn detail(
     task: &Task,
     now: &Now,
@@ -484,14 +485,6 @@ fn detail(
     in_project: Option<&str>,
 ) -> (Option<String>, Option<String>) {
     let mut parts = Vec::new();
-    if let Some(project) = task
-        .project
-        .as_deref()
-        .filter(|project| Some(*project) != in_project)
-        && let Some((_, title)) = projects.iter().find(|(id, _)| id == project)
-    {
-        parts.push(title.clone());
-    }
     let overdue = !task.closed() && views::overdue(task, now);
     if let Some(due) = task.due
         && !overdue
@@ -503,6 +496,14 @@ fn detail(
     }
     if task.priority != "medium" {
         parts.push(label(&PRIORITIES, &task.priority));
+    }
+    if let Some(project) = task
+        .project
+        .as_deref()
+        .filter(|project| Some(*project) != in_project)
+        && let Some((_, title)) = projects.iter().find(|(id, _)| id == project)
+    {
+        parts.push(title.clone());
     }
     let detail = (!parts.is_empty()).then(|| parts.join(" \u{b7} "));
     let warning = task

@@ -109,6 +109,9 @@ pub struct MdRender {
     pub dark_mode: bool,
     pub ext: String,
     pub touch_mode: bool,
+    /// Whether shortcuts work and read as on macOS, with ⌘ and without
+    /// Ctrl-Y, or `None` to follow egui's operating system.
+    pub mac_keys: Option<bool>,
     /// Set only while painting the floating drag-reorder card, so chrome
     /// that shouldn't travel with it (the fold button) can opt out.
     pub painting_drag_float: bool,
@@ -317,6 +320,10 @@ pub struct MdConfig {
     pub toolbar: bool,
     /// What a screen reader calls the text.
     pub label: String,
+    /// Whether shortcuts work and read as on macOS, with ⌘ and without
+    /// Ctrl-Y, as the app's platform has them. `None` follows egui's
+    /// operating system.
+    pub mac_keys: Option<bool>,
 }
 
 impl Default for MdConfig {
@@ -326,6 +333,7 @@ impl Default for MdConfig {
             ext: "md".into(),
             toolbar: false,
             label: "Note text".into(),
+            mac_keys: None,
         }
     }
 }
@@ -437,6 +445,7 @@ impl MdRender {
             dark_mode,
             ext: ext.into(),
             touch_mode,
+            mac_keys: None,
             painting_drag_float: false,
             doc,
             fragments: Vec::new(),
@@ -574,9 +583,11 @@ impl Editor {
             ext,
             toolbar,
             label,
+            mac_keys,
         } = config;
         let mut renderer = MdRender::new(ctx.clone(), md, &ext, readonly);
         renderer.interactive = true;
+        renderer.mac_keys = mac_keys;
         let phone_mode = false;
         let id_salt = Id::unique("noura_editor");
 

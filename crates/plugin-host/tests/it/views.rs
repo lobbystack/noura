@@ -1046,7 +1046,7 @@ const UNKNOWN_KIND: &str = r#"
       (field "title" string) (field "start" string) (field "end" (option string))
       (field "color" (option $color))))
     (export $calendar-entry "calendar-entry" (type $calendar-entry'))
-    (type $icon' (enum "calendar" "done" "folder" "note" "tasks"))
+    (type $icon' (enum "calendar" "done" "folder" "note" "tasks" "person"))
     (export $icon "icon" (type $icon'))
     (type $heading-level' (enum "page" "section" "period"))
     (export $heading-level "heading-level" (type $heading-level'))
@@ -1061,7 +1061,7 @@ const UNKNOWN_KIND: &str = r#"
     (export $editable-style "editable-style" (type $editable-style'))
     (type $editable' (record
       (field "label" string) (field "value" string) (field "style" $editable-style)
-      (field "focus" bool)))
+      (field "focus" bool) (field "icon" (option $icon))))
     (export $editable "editable" (type $editable'))
     (type $date-picker' (record (field "label" string) (field "value" (option string))))
     (export $date-picker "date-picker" (type $date-picker'))
@@ -1450,6 +1450,7 @@ fn editable_text_date_pickers_and_pickers_become_their_view_kinds() {
                 value: "Buy seeds".into(),
                 style: EditableStyle::Title,
                 focus: true,
+                icon: None,
             }),
             vec![],
         ),
@@ -1489,6 +1490,7 @@ fn editable_text_date_pickers_and_pickers_become_their_view_kinds() {
                 value: "Buy seeds".into(),
                 style: EditableStyle::Title,
                 focus: true,
+                icon: None,
             },
             &ViewKind::DatePicker {
                 label: "Due date".into(),
@@ -1515,6 +1517,7 @@ fn unlabeled_or_malformed_editable_text_date_pickers_and_pickers_are_refused() {
             value: String::new(),
             style: EditableStyle::Add,
             focus: false,
+            icon: None,
         })),
         "The editable text leaf has no label."
     );

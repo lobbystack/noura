@@ -210,6 +210,8 @@ pub enum ViewKind {
         value: String,
         style: EditableStyle,
         focus: bool,
+        /// An icon before a line's text, such as a person before a name.
+        icon: Option<Icon>,
     },
     /// A button that shows `value`, a `YYYY-MM-DD` date, or `label`, and
     /// opens a date picker.
@@ -1186,6 +1188,7 @@ fn build(
             value: editable.value.clone(),
             style: editable.style,
             focus: editable.focus,
+            icon: editable.icon,
         },
         NodeKind::DatePicker(picker) => ViewKind::DatePicker {
             label: picker.label.clone(),

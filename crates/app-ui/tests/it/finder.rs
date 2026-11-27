@@ -517,6 +517,46 @@ fn a_word_inside_a_file_finds_it_with_the_matching_text() {
 }
 
 #[test]
+fn search_grows_to_fit_results_that_arrive_after_it_opens() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let folder = parent.path().join("Garden");
+    let notes: Vec<(String, String)> = (0..4)
+        .map(|index| {
+            (
+                format!("Note {index}.md"),
+                "Add the saffron last".to_owned(),
+            )
+        })
+        .collect();
+    let notes: Vec<(&str, &str)> = notes
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect();
+    let mut harness = opened(app_data.path(), &folder, &notes);
+
+    // Search draws its first frames before the contents answer.
+    shortcut(&mut harness, Modifiers::COMMAND, Key::K);
+    type_text(&mut harness, "saffron");
+    wait_until(&mut harness, |harness| options(harness).len() == 4);
+    // The last row shows, so the pointer reaches it.
+    let last = options(&harness).pop().unwrap();
+    let row = harness
+        .get_by_role_and_label(Role::ListBoxOption, &last)
+        .rect();
+    harness.hover_at(row.center());
+    run(&mut harness);
+    harness.drag_at(row.center());
+    harness.drop_at(row.center());
+    run(&mut harness);
+    assert!(
+        dialog(&harness, "Search").is_none(),
+        "{last} is out of sight"
+    );
+    assert_eq!(open_file(&harness), preview(&last));
+}
+
+#[test]
 fn commands_still_show_with_their_shortcuts_after_the_files() {
     let app_data = tempfile::tempdir().unwrap();
     let parent = tempfile::tempdir().unwrap();

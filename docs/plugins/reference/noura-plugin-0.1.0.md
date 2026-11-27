@@ -2491,6 +2491,11 @@ the same line. A board's card shows the detail under the label.
 
 - <a id="item.label"></a>`label`: `string`
 - <a id="item.detail"></a>`detail`: option<`string`>
+  <p>Quieter text at the end of the line, such as a due date. When the
+  line is short of room, the label keeps its width and the detail is
+  cut short from its end, or left out, so put what matters most
+  first.
+
 - <a id="item.checked"></a>`checked`: option<`bool`>
   <p>A checkbox before the label, checked or not, which you check or
   uncheck by click or the space bar. Each change sends `checked`, and
@@ -2759,7 +2764,8 @@ covers, in this device's time zone.
 
 #### <a id="icon"></a>`enum icon`
 
-An icon Noura draws beside a heading or in an empty state.
+An icon Noura draws beside a heading, in an empty state or before
+editable text.
 
 ##### Enum Cases
 
@@ -2768,6 +2774,9 @@ An icon Noura draws beside a heading or in an empty state.
 - <a id="icon.folder"></a>`folder`
 - <a id="icon.note"></a>`note`
 - <a id="icon.tasks"></a>`tasks`
+- <a id="icon.person"></a>`person`
+  <p>A person, such as before the name of whom a task is assigned to.
+
 
 #### <a id="heading_level"></a>`enum heading-level`
 
@@ -2857,6 +2866,11 @@ Escape puts back the value drawn and lets go of the keyboard.
 - <a id="editable.focus"></a>`focus`: `bool`
   <p>Whether it takes the keyboard: when it appears holding true, or
   when the plugin draws it with true after drawing it with false.
+
+- <a id="editable.icon"></a>`icon`: option<[`icon`](#icon)>
+  <p>An icon before a line's text that says what it holds, as the date
+  picker's calendar does, such as a person before a name. Other
+  styles draw none.
 
 
 #### <a id="date_picker"></a>`record date-picker`
