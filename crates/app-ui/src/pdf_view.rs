@@ -17,7 +17,8 @@ use egui::{
     Align, Button, Color32, ColorImage, EventFilter, Frame, Id, Key, Layout, Margin, Modifiers,
     Panel, Pos2, Rect, RichText, ScrollArea, Sense, Spinner, Stroke, StrokeKind, TextEdit,
     TextureHandle, TextureOptions, Ui, UiBuilder, Vec2, WidgetInfo, accesskit::Role,
-    emath::GuiRounding, load::SizedTexture, pos2, text_edit::TextEditState, vec2,
+    emath::GuiRounding, load::SizedTexture, pos2, text_edit::TextEditState,
+    text_selection::CCursorRange, vec2,
 };
 use zeroize::Zeroize;
 
@@ -54,6 +55,9 @@ const PASSWORD_ROOM: usize = PASSWORD_CHARS * 4;
 struct PdfTab {
     /// What the search field holds.
     search: String,
+    /// Mod-F asked for the search field, which takes the keyboard and
+    /// selects what it holds when it next draws.
+    find: bool,
     /// What the password field holds, until you unlock. It's wiped when
     /// the tab closes.
     password: String,
@@ -148,7 +152,10 @@ pub(crate) fn show(
             });
         }
         PdfState::Ready => {
-            toolbar(ui, pdf, view, &mut actions);
+            if find_key(ui, search_id(window, tab)) {
+                view.find = true;
+            }
+            toolbar(ui, pdf, view, search_id(window, tab), &mut actions);
             ui.add_space(8.0);
             if pdf.thumbnails_shown() {
                 thumbnails(ui, pdf, view, tab, &mut actions);
@@ -206,6 +213,18 @@ fn apply(ui: &Ui, app: &mut App, view: &mut PdfTab, window: Id, tab: TabId, acti
 
 fn password_id(window: Id, tab: TabId) -> Id {
     window.with(("pdf-password", tab))
+}
+
+fn search_id(window: Id, tab: TabId) -> Id {
+    window.with(("pdf-search", tab))
+}
+
+/// Whether Mod-F was pressed for the search field `field`, which takes
+/// it unless another text field has the keyboard, as in a note.
+fn find_key(ui: &Ui, field: Id) -> bool {
+    let ctx = ui.ctx();
+    let elsewhere = ctx.text_edit_focused() && !ctx.memory(|memory| memory.has_focus(field));
+    !elsewhere && ctx.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::F))
 }
 
 /// Ask for the password of a locked PDF. Enter or Unlock tries it. The
@@ -297,7 +316,7 @@ fn chevron_button(ui: &mut Ui, up: bool, label: &str, enabled: bool) -> egui::Re
 }
 
 /// Zoom and search the PDF.
-fn toolbar(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, actions: &mut Vec<Action>) {
+fn toolbar(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, field: Id, actions: &mut Vec<Action>) {
     let builder = UiBuilder::new()
         .accessibility_role(Role::Toolbar)
         .accessibility_label("PDF navigation");
@@ -322,22 +341,32 @@ fn toolbar(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, actions: &mut Vec<Acti
                     actions.push(Action::FitWidth);
                 }
             });
-            ui.horizontal(|ui| search(ui, pdf, view, actions));
+            ui.horizontal(|ui| search(ui, pdf, view, field, actions));
         });
     });
 }
 
-/// The search field, the buttons that move between matches and how many
-/// there are. Enter goes to the next match, Shift-Enter to the one before.
-fn search(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, actions: &mut Vec<Action>) {
+/// The search field `field`, the buttons that move between matches and
+/// how many there are. Enter goes to the next match, Shift-Enter to the
+/// one before. Mod-F gives the field the keyboard and selects its text.
+fn search(ui: &mut Ui, pdf: &PdfView, view: &mut PdfTab, field: Id, actions: &mut Vec<Action>) {
     let search = pdf.search();
     let response = ui
         .add(
             TextEdit::singleline(&mut view.search)
+                .id(field)
                 .hint_text("Find in PDF")
                 .desired_width(110.0),
         )
         .accessible_name("Search PDF");
+    if std::mem::take(&mut view.find) {
+        response.request_focus();
+        let mut state = TextEditState::load(ui.ctx(), field).unwrap_or_default();
+        state
+            .cursor
+            .set_char_range(Some(CCursorRange::select_all_str(&view.search)));
+        state.store(ui.ctx(), field);
+    }
     let query = view.search.trim();
     let entered = response.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
     if response.changed() || (entered && query != search.query) {

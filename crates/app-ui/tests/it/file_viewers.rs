@@ -396,6 +396,159 @@ fn a_search_from_the_field_scrolls_between_matches() {
     });
 }
 
+/// Mod on `platform`: ⌘ on macOS, Ctrl elsewhere.
+fn command_on(platform: Platform) -> Modifiers {
+    match platform {
+        Platform::MacOs => Modifiers::MAC_CMD | Modifiers::COMMAND,
+        Platform::Windows | Platform::Linux => Modifiers::CTRL | Modifiers::COMMAND,
+    }
+}
+
+fn search_field(harness: &Ui) -> egui_kittest::Node<'_> {
+    harness.get_by_role_and_label(Role::TextInput, "Search PDF")
+}
+
+/// Run frames until the search's status says `status`.
+fn wait_for_status(harness: &mut Ui, status: &str) {
+    wait_until(harness, &format!("the search says {status}"), |harness| {
+        harness.query_by_label(status).is_some()
+    });
+}
+
+#[test]
+fn mod_f_gives_the_search_field_the_keyboard_and_selects_what_it_holds() {
+    for platform in [Platform::MacOs, Platform::Linux, Platform::Windows] {
+        let app_data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let mut harness = workspace_on(
+            app_data.path(),
+            &parent.path().join("Garden"),
+            &[("text.pdf", &pdf("text.pdf"))],
+            FakeSystem::new(platform),
+        );
+        open(&mut harness, "text.pdf");
+        wait_until(&mut harness, "the PDF opens", |harness| {
+            shows_page(harness, "Page 1 of 3")
+        });
+        let command = command_on(platform);
+
+        // From the pages, Mod-F moves the keyboard to the field.
+        harness
+            .get_by_role_and_label(Role::ScrollView, "Pages")
+            .click();
+        harness.run_steps(2);
+        assert!(!search_field(&harness).is_focused(), "{platform:?}");
+        harness.key_press_modifiers(command, Key::F);
+        harness.run_steps(2);
+        assert!(search_field(&harness).is_focused(), "{platform:?}");
+        harness.event(Event::Text("apple".to_owned()));
+        wait_for_status(&mut harness, "1 of 3");
+
+        // With the field holding a search, Mod-F selects it, so what you
+        // type next replaces it.
+        harness
+            .get_by_role_and_label(Role::ScrollView, "Pages")
+            .click();
+        harness.run_steps(2);
+        assert!(!search_field(&harness).is_focused(), "{platform:?}");
+        harness.key_press_modifiers(command, Key::F);
+        harness.run_steps(2);
+        assert!(search_field(&harness).is_focused(), "{platform:?}");
+        harness.event(Event::Text("third".to_owned()));
+        harness.run_steps(2);
+        assert_eq!(
+            search_field(&harness).value().as_deref(),
+            Some("third"),
+            "{platform:?}"
+        );
+        wait_for_status(&mut harness, "1 of 1");
+
+        // Mod-F in the field selects its text too.
+        harness.key_press_modifiers(command, Key::F);
+        harness.run_steps(2);
+        harness.event(Event::Text("apple".to_owned()));
+        harness.run_steps(2);
+        assert_eq!(search_field(&harness).value().as_deref(), Some("apple"));
+        wait_for_status(&mut harness, "1 of 3");
+    }
+}
+
+#[test]
+fn mod_f_leaves_the_keyboard_with_another_text_field() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let platform = Platform::current();
+    let mut harness = workspace_on(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[("text.pdf", &pdf("text.pdf"))],
+        FakeSystem::new(platform),
+    );
+    open(&mut harness, "text.pdf");
+    wait_until(&mut harness, "the PDF opens", |harness| {
+        shows_page(harness, "Page 1 of 3")
+    });
+
+    // F2 on the file's row renames it, in a field of the tree's own.
+    harness
+        .get_by_role_and_label(Role::TreeItem, "text.pdf")
+        .focus();
+    harness.run_steps(2);
+    press(&mut harness, Key::F2);
+    let renaming = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::TextInput, "New name for text.pdf")
+            .is_focused()
+    };
+    assert!(renaming(&harness));
+    harness.key_press_modifiers(command_on(platform), Key::F);
+    harness.run_steps(2);
+    assert!(renaming(&harness));
+    assert!(!search_field(&harness).is_focused());
+}
+
+#[test]
+fn mod_f_leaves_a_locked_pdfs_password_field_the_keyboard() {
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let platform = Platform::current();
+    let mut harness = workspace_on(
+        app_data.path(),
+        &parent.path().join("Garden"),
+        &[("locked.pdf", &pdf("locked.pdf"))],
+        FakeSystem::new(platform),
+    );
+    open(&mut harness, "locked.pdf");
+    wait_until(&mut harness, "the PDF asks for its password", |harness| {
+        harness
+            .query_by_role_and_label(Role::PasswordInput, "PDF password")
+            .is_some()
+    });
+    harness.run_steps(2);
+    let password = |harness: &Ui| {
+        harness
+            .get_by_role_and_label(Role::PasswordInput, "PDF password")
+            .is_focused()
+    };
+    assert!(password(&harness));
+
+    harness.key_press_modifiers(command_on(platform), Key::F);
+    harness.run_steps(2);
+    assert!(password(&harness));
+    assert!(
+        harness
+            .query_by_role_and_label(Role::TextInput, "Search PDF")
+            .is_none()
+    );
+    // What you type still lands in the password field.
+    harness.event(Event::Text("open sesame".to_owned()));
+    harness.key_press(Key::Enter);
+    let tab = active(&harness);
+    wait_until(&mut harness, "the PDF opens", |harness| {
+        harness.state().app().pdf(tab).unwrap().state() == &PdfState::Ready
+    });
+}
+
 #[test]
 fn the_thumbnails_panel_lists_one_button_per_page_and_scrolls_to_the_page_you_pick() {
     let app_data = tempfile::tempdir().unwrap();
