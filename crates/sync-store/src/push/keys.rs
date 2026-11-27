@@ -44,7 +44,11 @@ pub(crate) struct PushState {
     /// digest, whose history floor the push sets (§9).
     floors: Vec<(Id, Id, sync_protocol::types::Digest)>,
     interval: CheckpointInterval,
-    quota: Option<u64>,
+    quota: crate::retention::Quota,
+    /// Whether the workspace is over its owner's plan (§20, Over plan).
+    pub(crate) over_plan: bool,
+    /// The limits of the owner's plan.
+    pub(crate) limits: crate::PlanLimits,
     /// The store clock's time, in Unix seconds.
     pub(crate) now: u64,
 }
@@ -53,7 +57,7 @@ impl PushState {
     pub(crate) fn new(
         policy: Arc<PolicyChain>,
         interval: CheckpointInterval,
-        quota: Option<u64>,
+        quota: crate::retention::Quota,
         now: u64,
     ) -> Self {
         Self {
@@ -63,6 +67,8 @@ impl PushState {
             floors: Vec::new(),
             interval,
             quota,
+            over_plan: false,
+            limits: crate::PlanLimits::OPERATOR,
             now,
         }
     }
@@ -121,6 +127,9 @@ pub(crate) async fn apply_change(
         .check(change, &chains)
         .map_err(|e| refuse(e.server_code(), e.to_string()))?;
     let raises = adds_someone(change, prev, &next);
+    if raises && state.over_plan {
+        return Err(crate::plans::over_plan());
+    }
     crate::reset::check_accept_reset(txn, &current, workspace, change, state.now).await?;
     if let PolicyKind::AddMember {
         account,
@@ -128,6 +137,12 @@ pub(crate) async fn apply_change(
         invitation,
     } = &change.body.kind
     {
+        if let Some(limit) = state.limits.members
+            && !prev.members.contains_key(account)
+            && prev.members.len() as u64 >= limit
+        {
+            return Err(crate::plans::member_limit());
+        }
         if !prev.members.contains_key(account)
             && txn.memberships(*account).await?.len() >= crate::create::MAX_MEMBERSHIPS
         {

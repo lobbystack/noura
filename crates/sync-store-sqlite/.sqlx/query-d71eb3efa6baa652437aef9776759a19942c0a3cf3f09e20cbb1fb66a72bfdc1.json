@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO price_changes (plan, effective_day, old_en, new_en, old_fr, new_fr)\n               VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING change AS \"change!: i64\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "change!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "price_changes",
+            "name": "change"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d71eb3efa6baa652437aef9776759a19942c0a3cf3f09e20cbb1fb66a72bfdc1"
+}

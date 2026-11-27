@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT subscription, order_id, net, currency, paid_at\n             FROM latest_orders WHERE account = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "subscription",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "subscription"
+          }
+        }
+      },
+      {
+        "name": "order_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "order_id"
+          }
+        }
+      },
+      {
+        "name": "net",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "net"
+          }
+        }
+      },
+      {
+        "name": "currency",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "currency"
+          }
+        }
+      },
+      {
+        "name": "paid_at",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "paid_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9d8e68e273ea78eb4242e3d51e538e726f7eec5a3bc093fb0832029e9ce7e718"
+}

@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block lang %}{{ lang }}{% endblock %}
+{% block head %}<meta http-equiv="refresh" content="0; url=/account/upgrade?plan={{ plan }}&amp;continue=1">{% endblock %}
+{% block title %}{{ heading }}{% endblock %}
+{% block content %}
+<h1>{{ heading }}</h1>
+<p><a class="button" href="/account/upgrade?plan={{ plan }}&amp;continue=1">{{ button }}</a></p>
+{% endblock %}

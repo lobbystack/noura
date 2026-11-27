@@ -148,6 +148,9 @@ pub struct FolderSyncScreen {
     pub usage: Option<String>,
     /// Whether usage stands above the quota, so changes wait.
     pub over_quota: bool,
+    /// What the app says when the workspace is over its owner's plan, so
+    /// changes wait on this computer (§20).
+    pub over_plan: Option<String>,
     /// Changes the server refused for lack of space, which stay on this
     /// computer until space frees up (§20).
     pub waiting_for_space: usize,
@@ -197,6 +200,9 @@ impl FolderSyncScreen {
                 .usage
                 .is_some_and(|u| u.quota.is_some_and(|quota| u.used >= quota)),
             waiting_for_space: status.waiting_for_space,
+            over_plan: status
+                .over_plan
+                .then(|| over_plan_line(status.owner).to_owned()),
             deleted_away: Vec::new(),
             restore: restore_notice(status),
             can_set_up_again: status.owner,
@@ -205,6 +211,16 @@ impl FolderSyncScreen {
             last_success: status.last_success.map(local_time),
             busy: false,
         }
+    }
+}
+
+/// The line for a workspace over its owner's plan: an owner can upgrade
+/// or keep this one synced, and a member waits for the owner.
+pub fn over_plan_line(owner: bool) -> &'static str {
+    if owner {
+        "This workspace is over your plan. Your changes wait here until you upgrade or keep it synced in Account."
+    } else {
+        "This workspace is over its owner's plan. Your changes wait on this computer."
     }
 }
 
@@ -349,6 +365,7 @@ pub fn skipped_line(skipped: &crate::sync::workspace::Skipped) -> String {
         SkipWhy::NotDownloaded => "it isn't downloaded from the cloud yet",
         SkipWhy::IdentityConflict => "another file has the same ID",
         SkipWhy::TooLarge => "it's above the limit of 2 GiB for one file",
+        SkipWhy::AbovePlan => "it's larger than this workspace's plan allows for one file",
         SkipWhy::HeldRoot => "it waits until you confirm who may see this folder",
         SkipWhy::CrossesRoot => "it moved into or out of a restricted folder",
         SkipWhy::CantWrite => "your role can't edit here, so your change stays on this computer",

@@ -1,0 +1,28 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT CAST(COALESCE(SUM(d.usage_bytes), 0) AS BIGINT) AS \"usage!: i64\",\n                      CAST(COALESCE(SUM(d.history_bytes), 0) AS BIGINT) AS \"history!: i64\"\n               FROM domains d JOIN workspaces w ON w.workspace = d.workspace\n               WHERE w.owner = ?1 AND w.closed = 0 AND d.deleted = 0",
+  "describe": {
+    "columns": [
+      {
+        "name": "usage!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "history!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c05daadf3feb927963164c8a98437b76dbae61394267d60c02c4bb86da76f810"
+}

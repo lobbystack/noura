@@ -558,3 +558,25 @@ fn a_held_folder_offers_its_marker_back_when_this_computer_can_write_it() {
         vec![FolderSyncAction::RestoreMarker(Id([4; 16]))]
     );
 }
+
+#[test]
+fn a_workspace_over_plan_says_where_changes_wait() {
+    let app_data = tempfile::tempdir().unwrap();
+    let sync = Arc::new(FakeSync::default());
+    sync.show(FolderSyncScreen {
+        phase: FolderSyncPhase::On,
+        over_plan: Some(app_core::folder_sync::over_plan_line(false).to_owned()),
+        skipped: vec![app_core::folder_sync::skipped_line(
+            &app_core::sync::workspace::Skipped {
+                path: "Film.mov".into(),
+                why: app_core::sync::workspace::SkipWhy::AbovePlan,
+            },
+        )],
+        ..FolderSyncScreen::default()
+    });
+    let harness = harness(app_data.path(), sync);
+    harness.get_by_label(
+        "This workspace is over its owner's plan. Your changes wait on this computer.",
+    );
+    harness.get_by_label("Film.mov: it's larger than this workspace's plan allows for one file");
+}

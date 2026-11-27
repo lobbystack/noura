@@ -138,6 +138,7 @@ pub(crate) async fn commit(
     txn: &mut impl WriteTxn,
     cache: &PolicyCache,
     interval: CheckpointInterval,
+    billing: bool,
     session: Session,
     creation: Creation,
     request_digest: Digest,
@@ -181,10 +182,21 @@ pub(crate) async fn commit(
     // workspaces one at a time. Only a chain append, which takes no other
     // lock, also locks that row, so no lock cycle forms (§15).
     txn.lock_account(session.account).await?;
-    if txn.owned_workspaces(session.account).await? >= MAX_OWNED_WORKSPACES {
+    let owned = txn.owned_workspaces(session.account).await?;
+    if owned >= MAX_OWNED_WORKSPACES {
         return Err(refuse(
             "workspace_limit",
             "the account already owns 100 workspaces",
+        ));
+    }
+    if owned
+        >= crate::retention::plan_of(txn, session.account, billing)
+            .await?
+            .owned_workspaces
+    {
+        return Err(refuse(
+            "workspace_limit",
+            "the account already owns as many workspaces as its plan allows",
         ));
     }
     if txn.memberships(session.account).await?.len() >= MAX_MEMBERSHIPS {
@@ -406,6 +418,7 @@ pub(crate) async fn commit(
             creation_response: response.clone(),
             policy_revision: 1,
             policy_head: genesis_digest,
+            over_plan: false,
         },
     )
     .await?;

@@ -6,6 +6,7 @@ mod support;
 
 mod accounts;
 mod api;
+mod billing;
 mod blob_store;
 mod blobs;
 mod chains;
@@ -16,6 +17,7 @@ mod devices;
 mod invitations;
 mod logs;
 mod notices;
+mod plan_jobs;
 mod postgres;
 mod rate_limits;
 mod realtime;

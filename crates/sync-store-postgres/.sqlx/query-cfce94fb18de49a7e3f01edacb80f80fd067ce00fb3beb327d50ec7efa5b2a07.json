@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT CAST(COALESCE(SUM(d.usage_bytes), 0) AS BIGINT) AS \"usage!: i64\",\n                      CAST(COALESCE(SUM(d.history_bytes), 0) AS BIGINT) AS \"history!: i64\"\n               FROM domains d JOIN workspaces w ON w.workspace = d.workspace\n               WHERE w.owner = $1 AND w.closed = 0 AND d.deleted = FALSE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "usage!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "history!: i64",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "cfce94fb18de49a7e3f01edacb80f80fd067ce00fb3beb327d50ec7efa5b2a07"
+}

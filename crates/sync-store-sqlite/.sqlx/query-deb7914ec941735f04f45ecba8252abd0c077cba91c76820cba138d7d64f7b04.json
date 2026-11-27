@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE workspaces SET over_plan_since = ?1, over_plan_notices = ?2 WHERE workspace = ?3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "deb7914ec941735f04f45ecba8252abd0c077cba91c76820cba138d7d64f7b04"
+}

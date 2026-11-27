@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT used FROM rate_counters WHERE key = $1 AND window_ms = $2 AND window_ends = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "used",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rate_counters",
+            "name": "used"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "04be6eee816c2beb3ed9a6a5cb23c8e0423479b835131e19d48222824908d5d5"
+}

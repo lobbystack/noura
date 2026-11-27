@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO account_plans\n               (account, provider, customer, subscription, plan, state, period_end, changed_at,\n                period_start, started_at, amount, currency, billing_interval, canceling,\n                country, region, reminded_for, reminders, reminded_day)\n             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)\n             ON CONFLICT (account) DO UPDATE SET\n               provider = excluded.provider, customer = excluded.customer,\n               subscription = excluded.subscription, plan = excluded.plan,\n               state = excluded.state, period_end = excluded.period_end,\n               changed_at = excluded.changed_at, period_start = excluded.period_start,\n               started_at = excluded.started_at, amount = excluded.amount,\n               currency = excluded.currency, billing_interval = excluded.billing_interval,\n               canceling = excluded.canceling, country = excluded.country,\n               region = excluded.region, reminded_for = excluded.reminded_for,\n               reminders = excluded.reminders, reminded_day = excluded.reminded_day",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int2",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Bool",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e5005c964bf10338b18b9e0e2d9e6f8c5b153225a93af768d919e47f9d334db2"
+}

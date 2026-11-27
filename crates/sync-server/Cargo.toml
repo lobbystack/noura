@@ -15,6 +15,9 @@ base64.workspace = true
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
+# Checks Polar's webhook signatures, HMAC-SHA256 under the Standard Webhooks
+# scheme.
+hmac.workspace = true
 # The accept loop: hyper's HTTP/1 connections, which take the header timeout
 # that `axum::serve` doesn't expose.
 http-body.workspace = true
@@ -28,6 +31,7 @@ openssl = { workspace = true, features = ["vendored"] }
 # Sends sign-in mail through Resend's HTTPS API.
 reqwest.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 sync-protocol = { version = "0.2.0", path = "../sync-protocol" }
 sync-store = { version = "0.3.3", path = "../sync-store" }
 sync-store-postgres = { version = "0.3.3", path = "../sync-store-postgres" }

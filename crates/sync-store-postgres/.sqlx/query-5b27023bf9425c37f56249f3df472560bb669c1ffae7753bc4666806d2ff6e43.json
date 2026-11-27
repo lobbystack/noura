@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE workspaces SET kept = $1 WHERE workspace = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5b27023bf9425c37f56249f3df472560bb669c1ffae7753bc4666806d2ff6e43"
+}

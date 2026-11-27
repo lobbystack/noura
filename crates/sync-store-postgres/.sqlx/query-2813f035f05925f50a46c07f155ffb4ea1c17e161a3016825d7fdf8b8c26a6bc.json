@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE account_activity SET warnings = $1 WHERE account = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2813f035f05925f50a46c07f155ffb4ea1c17e161a3016825d7fdf8b8c26a6bc"
+}

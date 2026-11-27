@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE account_activity SET warnings = ?1 WHERE account = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "0b543269300e9565b45a7f6224b92b10b1c8c43568833cd7dcd3630bb7ff2fd3"
+}

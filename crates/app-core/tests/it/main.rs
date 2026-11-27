@@ -114,6 +114,7 @@ mod sync_following;
 mod sync_invitations;
 mod sync_members;
 mod sync_moves;
+mod sync_plans;
 mod sync_profile;
 mod sync_rate_limits;
 mod sync_realtime;

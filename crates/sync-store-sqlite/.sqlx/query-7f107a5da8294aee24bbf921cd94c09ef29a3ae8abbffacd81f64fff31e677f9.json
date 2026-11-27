@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO workspaces\n               (workspace, owner, creation_digest, creation_response, policy_revision, policy_head,\n                ordinal)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6,\n                     (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM workspaces))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "7f107a5da8294aee24bbf921cd94c09ef29a3ae8abbffacd81f64fff31e677f9"
+}

@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT month, warnings FROM account_activity WHERE account = ?1",
+  "describe": {
+    "columns": [
+      {
+        "name": "month",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_activity",
+            "name": "month"
+          }
+        }
+      },
+      {
+        "name": "warnings",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "account_activity",
+            "name": "warnings"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "265989be092a7ae57e49d565951ba2ed7b20cce99018a7216ce7699f34530168"
+}

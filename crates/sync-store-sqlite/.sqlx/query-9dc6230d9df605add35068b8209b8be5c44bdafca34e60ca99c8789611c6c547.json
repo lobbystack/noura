@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace, ordinal, kept, over_plan_since, over_plan_notices\n             FROM workspaces WHERE owner = ?1 AND closed = 0\n             ORDER BY ordinal, workspace",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "ordinal",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "ordinal"
+          }
+        }
+      },
+      {
+        "name": "kept",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "kept"
+          }
+        }
+      },
+      {
+        "name": "over_plan_since",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "over_plan_since"
+          }
+        }
+      },
+      {
+        "name": "over_plan_notices",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "over_plan_notices"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "9dc6230d9df605add35068b8209b8be5c44bdafca34e60ca99c8789611c6c547"
+}

@@ -86,8 +86,22 @@ impl<B: Backend> Store<B> {
     /// `not_found` from then on, and maintenance reclaims its domains in
     /// batches.
     pub async fn close_workspace(&self, session: Session, workspace: Id) -> Result<()> {
+        self.close(workspace, Some(session)).await
+    }
+
+    /// Closes a workspace on the server's own account, as the plan jobs
+    /// do (§20): one over plan for 90 days, or an inactive `free` owner's.
+    pub async fn close_workspace_for_plan(&self, workspace: Id) -> Result<()> {
+        self.close(workspace, None).await
+    }
+
+    /// Marks every domain deleted and closes the workspace, checking that
+    /// `session` may close it when one asks, then brings the owner's other
+    /// workspaces back within the plan (§20, Over plan).
+    async fn close(&self, workspace: Id, session: Option<Session>) -> Result<()> {
         let cache = self.policies.clone();
-        self.backend
+        let owner = self
+            .backend
             .write(Box::new(move |txn: &mut B::Write| {
                 Box::pin(async move {
                     txn.lock(&LockPlan {
@@ -98,11 +112,13 @@ impl<B: Backend> Store<B> {
                         blobs: Vec::new(),
                     })
                     .await?;
-                    let (_, policy) = policy::load(txn, &cache, workspace)
+                    let (row, policy) = policy::load(txn, &cache, workspace)
                         .await?
                         .ok_or_else(|| refuse("not_found", "no such workspace"))?;
                     let snapshot = policy.head_snapshot();
-                    if !may_close(txn, snapshot, session).await? {
+                    if let Some(session) = session
+                        && !may_close(txn, snapshot, session).await?
+                    {
                         return Err(refuse(
                             "forbidden",
                             "only an active device of the owner account closes a workspace",
@@ -112,10 +128,12 @@ impl<B: Backend> Store<B> {
                     for domain in domains {
                         txn.mark_domain_deleted(workspace, domain).await?;
                     }
-                    txn.close_workspace(workspace).await
+                    txn.close_workspace(workspace).await?;
+                    Ok(row.owner)
                 })
             }))
-            .await
+            .await?;
+        self.reconcile_plan(owner).await
     }
 }
 

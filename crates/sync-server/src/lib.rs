@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod accounts;
+pub mod billing;
 pub mod blobs;
 pub mod data;
 pub mod http;
@@ -88,6 +89,17 @@ pub struct Config {
     pub trusted_proxy_header: Option<String>,
     /// What one connection can hold.
     pub connections: ConnectionLimits,
+    /// The payment provider that sells plans (§20, §26 Billing); without
+    /// one every account keeps the operator's settings.
+    pub billing: Option<billing::polar::PolarConfig>,
+    /// Who sells the plans, which the server needs to sell any.
+    pub merchant: Option<billing::Merchant>,
+    /// New accounts one client IP starts per UTC day while the server
+    /// sells plans; `None` takes the default.
+    pub sign_ups_per_day: Option<u64>,
+    /// Email domains that may not sign up, one a line, on top of the
+    /// built-in disposable ones, while the server sells plans.
+    pub blocked_email_domains: String,
 }
 
 /// Where `serve` keeps blob segments (§21).
@@ -142,6 +154,10 @@ impl Config {
             rate_limits: RateLimits::default(),
             trusted_proxy_header: None,
             connections: ConnectionLimits::default(),
+            billing: None,
+            merchant: None,
+            sign_ups_per_day: None,
+            blocked_email_domains: String::new(),
         }
     }
 }
@@ -191,13 +207,33 @@ pub fn accounts_for(config: &Config, origin: PublicOrigin) -> Result<Accounts, C
             endpoint.clone(),
         )),
     };
-    Ok(Accounts::new(
+    let accounts = Accounts::new(
         origin,
         Allowlist::parse(&config.allowed_emails),
         config.mail_from.clone(),
         mailer,
         config.account_web.clone(),
-    ))
+    );
+    Ok(match &config.billing {
+        Some(polar) => accounts
+            .with_billing(
+                Arc::new(billing::polar::Polar::new(polar.clone())),
+                config.merchant.clone().ok_or_else(|| {
+                    CommandError(
+                        "a server that sells plans needs the NOURA_MERCHANT_* settings".into(),
+                    )
+                })?,
+            )
+            .with_sign_up_guard(accounts::signups::SignUpGuard::new(
+                Some(
+                    config
+                        .sign_ups_per_day
+                        .unwrap_or(accounts::signups::DEFAULT_PER_DAY),
+                ),
+                &config.blocked_email_domains,
+            )),
+        None => accounts,
+    })
 }
 
 /// Serves `state` on `listener` until `shutdown` resolves.
@@ -288,13 +324,17 @@ async fn shutdown_signal() {
 pub async fn serve(config: Config) -> Result<(), CommandError> {
     match &config.postgres {
         None => {
-            let store = open_store(&config).await?.with_retention(config.retention);
+            let store = open_store(&config)
+                .await?
+                .with_retention(config.retention)
+                .with_billing(config.billing.is_some());
             run(Arc::new(store), &config).await
         }
         Some(database) => {
             let store = postgres::open_store(database)
                 .await?
-                .with_retention(config.retention);
+                .with_retention(config.retention)
+                .with_billing(config.billing.is_some());
             run(Arc::new(store), &config).await
         }
     }
@@ -348,10 +388,11 @@ pub async fn run<B: Backend>(store: Arc<Store<B>>, config: &Config) -> Result<()
     let lease = restore::spawn_lease(store.clone(), instance, restore::LEASE_PERIOD, moved);
     tracing::info!("serving");
     eprintln!("sync-server listening on {bound}");
-    let maintenance = maintenance::spawn(store.clone(), blobs.clone());
+    let accounts = Arc::new(accounts);
+    let maintenance = maintenance::spawn(store.clone(), blobs.clone(), accounts.clone());
     let state = AppState {
         store: store.clone(),
-        accounts: Arc::new(accounts),
+        accounts,
         blobs,
         rate: Arc::new(rate),
     };

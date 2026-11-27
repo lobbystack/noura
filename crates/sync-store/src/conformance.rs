@@ -27,21 +27,25 @@ use sync_protocol::types::{Digest, Id, Nonce, SecretKey};
 
 use crate::{Backend, Error, LockPlan, Refusal, Session, Store, WriteTxn};
 
+mod billing;
 mod blobs;
 mod checkpoints;
 mod devices;
 mod domains;
 mod invitations;
 mod keys;
+mod plans;
 mod resets;
 mod retention;
 mod shares;
+pub use billing::*;
 pub use blobs::*;
 pub use checkpoints::*;
 pub use devices::*;
 pub use domains::*;
 pub use invitations::*;
 pub use keys::*;
+pub use plans::*;
 pub use resets::*;
 pub use retention::*;
 pub use shares::*;
@@ -161,6 +165,17 @@ macro_rules! conformance_tests {
             a_listed_upload_returns_to_offset_zero,
             only_the_uploader_abandons_a_listed_blob,
             chain_reads_take_at_most_256_distinct_cursors,
+            a_server_without_billing_keeps_the_operator_settings,
+            the_plan_bounds_owned_workspaces,
+            owned_workspaces_share_the_allowance,
+            uploads_past_the_largest_file_are_too_large,
+            invitations_stop_at_the_member_limit,
+            a_downgrade_puts_the_newest_workspaces_over_plan,
+            billing_events_apply_once_and_in_order,
+            subscription_details_round_trip_and_keep_their_reminders,
+            orders_mail_and_consents_keep_to_their_rules,
+            ending_a_paid_period_moves_the_account_to_free_and_owes_the_refund,
+            price_notices_and_languages_record_once,
         );
     };
     (@cases $open:path; $($case:ident,)*) => {

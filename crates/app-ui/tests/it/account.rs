@@ -942,3 +942,98 @@ fn the_reset_screens_ask_for_the_code_and_show_what_comes_next() {
             .any(|action| matches!(action, AccountAction::AcceptReset(0)))
     );
 }
+
+/// The Plan group shows the plan, its storage, the workspaces over it with
+/// Keep synced, and Upgrade, which opens the browser (§20).
+#[test]
+fn the_plan_group_offers_upgrade_and_keeping_a_workspace_synced() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(signed_in(SignedInView {
+        account_fingerprint: ACCOUNT.into(),
+        devices: devices(),
+        plan: Some(app_core::account::PlanView {
+            name: "Free".into(),
+            usage: "12.3 MB of 100 MB used".into(),
+            past_due: false,
+            paid: false,
+            over_plan: vec![app_core::account::OverPlanEntry {
+                workspace: Id([9; 16]),
+                name: "Garden".into(),
+                closes: "February 26, 2027".into(),
+            }],
+        }),
+        ..SignedInView::default()
+    }));
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_role_and_label(Role::Group, "Plan");
+    harness.get_by_label("Free");
+    harness.get_by_label("12.3 MB of 100 MB used");
+    harness.get_by_label("Garden is read-only. Its synced copy closes February 26, 2027.");
+    assert!(harness.query_by_label("Manage billing").is_none());
+    harness
+        .get_by_role_and_label(Role::Button, "Keep synced")
+        .click();
+    harness.run();
+    harness
+        .get_by_role_and_label(Role::Button, "Upgrade")
+        .click();
+    harness.run();
+    let taken = account.taken();
+    assert!(matches!(
+        taken.as_slice(),
+        [AccountAction::KeepSynced(id), AccountAction::Upgrade] if *id == Id([9; 16])
+    ));
+}
+
+/// A paying account gets Manage billing, and a failed payment says so.
+#[test]
+fn a_paid_plan_offers_manage_billing() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(signed_in(SignedInView {
+        account_fingerprint: ACCOUNT.into(),
+        devices: devices(),
+        plan: Some(app_core::account::PlanView {
+            name: "Plus, yearly".into(),
+            usage: "2 GB of 10 GB used".into(),
+            past_due: true,
+            paid: true,
+            over_plan: Vec::new(),
+        }),
+        ..SignedInView::default()
+    }));
+    let mut harness = harness(app_data.path(), account.clone());
+    harness.get_by_label("Plus, yearly");
+    harness.get_by_role_and_label(
+        Role::Alert,
+        "Your last payment failed. Update your payment method in Manage billing.",
+    );
+    assert!(harness.query_by_label("Upgrade").is_none());
+    harness
+        .get_by_role_and_label(Role::Button, "Manage billing")
+        .click();
+    harness.run();
+    assert!(matches!(
+        account.taken().last(),
+        Some(AccountAction::ManageBilling)
+    ));
+}
+
+/// A server that sells no plans shows no Plan group.
+#[test]
+fn without_plans_the_section_shows_no_plan() {
+    let app_data = tempfile::tempdir().unwrap();
+    let account = Arc::new(FakeAccount::default());
+    account.show(signed_in(SignedInView {
+        account_fingerprint: ACCOUNT.into(),
+        devices: devices(),
+        ..SignedInView::default()
+    }));
+    let harness = harness(app_data.path(), account);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Plan")
+            .is_none()
+    );
+}

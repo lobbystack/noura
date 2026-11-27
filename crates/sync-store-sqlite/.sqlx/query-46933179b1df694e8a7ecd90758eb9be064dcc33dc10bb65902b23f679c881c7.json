@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE account_activity SET lang = ?1 WHERE account = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "46933179b1df694e8a7ecd90758eb9be064dcc33dc10bb65902b23f679c881c7"
+}

@@ -231,6 +231,7 @@ impl LiveAccount {
             unopened: BTreeSet::new(),
             reconnect: None,
             request_clock_ahead: Duration::ZERO,
+            plan: None,
             reset: None,
             retired: None,
             reset_waits: Vec::new(),
@@ -493,6 +494,8 @@ struct Driver {
     reconnect: Option<Reconnect>,
     /// How far tests moved the clock of waiting requests.
     request_clock_ahead: Duration,
+    /// The account's plan as the server last reported it (§20).
+    plan: Option<sync_protocol::messages::AccountResponse>,
 }
 
 /// What a failed action tells you.
@@ -1117,6 +1120,16 @@ impl Driver {
         let Some(service) = self.service.as_mut() else {
             return Ok(());
         };
+        // A server older than plans answers not_found, and shows no plan.
+        self.plan = service.client().account().await.ok();
+        let names: std::collections::BTreeMap<Id, String> = account_workspaces
+            .iter()
+            .map(|row| (row.workspace, row.name.clone()))
+            .collect();
+        let plan = self
+            .plan
+            .as_ref()
+            .and_then(|report| super::plan::view(report, &names));
         let attached = self.folder.sync_mut().map(|sync| sync.workspace());
         self.reset_requests = match attached {
             Some(workspace) => service.reset_requests(workspace).await.unwrap_or_default(),
@@ -1247,6 +1260,7 @@ impl Driver {
             view.devices = devices;
             view.alerts = alerts;
             view.workspaces = account_workspaces;
+            view.plan = plan;
             view.requests = requests;
             view.reset_requests = reset_requests;
             screen.phase = AccountPhase::SignedIn(view);
@@ -1749,8 +1763,24 @@ impl Driver {
                 });
             }
             AccountAction::CancelSignOut => self.signed_in(|view| view.sign_out = None),
+            AccountAction::Upgrade => self.open_account_page("/account")?,
+            AccountAction::ManageBilling => self.open_account_page("/account/billing")?,
+            AccountAction::KeepSynced(workspace) => {
+                let report = self.plan.as_ref().ok_or_else(not_signed_in)?;
+                let chosen = super::plan::keeping(report, workspace);
+                let service = self.service.as_mut().ok_or_else(not_signed_in)?;
+                service.client().set_active_workspaces(chosen).await?;
+                self.refresh().await?;
+            }
         }
         Ok(())
+    }
+
+    /// Opens a page of the sync server's account pages in the browser.
+    fn open_account_page(&self, path: &str) -> Result<(), SyncError> {
+        let url = format!("{}{path}", self.server.trim_end_matches('/'));
+        (self.open_browser)(&url)
+            .map_err(|_| SyncError::Invalid("Noura couldn't open your web browser.".into()))
     }
 
     /// Polls what waits: the device grant, the new device's approval, the

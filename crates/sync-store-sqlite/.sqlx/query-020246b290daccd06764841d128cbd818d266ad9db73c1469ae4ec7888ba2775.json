@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO billing_mail (recipient, subject, body) VALUES (?1, ?2, ?3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "020246b290daccd06764841d128cbd818d266ad9db73c1469ae4ec7888ba2775"
+}

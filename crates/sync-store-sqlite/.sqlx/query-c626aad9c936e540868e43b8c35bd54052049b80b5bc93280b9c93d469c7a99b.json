@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.account FROM account_activity a\n             WHERE a.month <= ?1\n               AND EXISTS (SELECT 1 FROM workspaces w WHERE w.owner = a.account AND w.closed = 0)\n             ORDER BY a.month, a.account LIMIT ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "account",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "account_activity",
+            "name": "account"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c626aad9c936e540868e43b8c35bd54052049b80b5bc93280b9c93d469c7a99b"
+}

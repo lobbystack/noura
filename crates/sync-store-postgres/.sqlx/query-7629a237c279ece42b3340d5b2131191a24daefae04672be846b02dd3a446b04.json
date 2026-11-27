@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT workspace, owner, over_plan_since AS \"since!\", over_plan_notices\n               FROM workspaces WHERE over_plan_since IS NOT NULL AND closed = 0\n               ORDER BY over_plan_since, workspace LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "workspace",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "owner",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "owner"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "since!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "over_plan_since"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "over_plan_notices",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "over_plan_notices"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "7629a237c279ece42b3340d5b2131191a24daefae04672be846b02dd3a446b04"
+}

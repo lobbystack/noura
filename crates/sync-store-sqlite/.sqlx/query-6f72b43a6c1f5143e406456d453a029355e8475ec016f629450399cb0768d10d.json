@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM consents WHERE accepted_at < ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6f72b43a6c1f5143e406456d453a029355e8475ec016f629450399cb0768d10d"
+}

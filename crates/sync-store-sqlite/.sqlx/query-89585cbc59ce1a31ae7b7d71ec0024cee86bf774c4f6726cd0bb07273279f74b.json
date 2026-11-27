@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO refunds_owed (account, provider, subscription, order_id, amount, revoke)\n               VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id AS \"id!: i64\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "89585cbc59ce1a31ae7b7d71ec0024cee86bf774c4f6726cd0bb07273279f74b"
+}

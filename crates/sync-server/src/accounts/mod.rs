@@ -18,8 +18,11 @@
 //! own origin.
 
 pub mod config;
+pub mod lang;
 pub mod mail;
 mod pages;
+pub mod plan;
+pub mod signups;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -119,6 +122,11 @@ pub struct Accounts {
     webauthn: Option<Webauthn>,
     assets: Option<PathBuf>,
     deliveries: Deliveries,
+    billing: Option<Arc<dyn crate::billing::BillingProvider>>,
+    merchant: Option<crate::billing::Merchant>,
+    sign_ups: Option<signups::SignUpGuard>,
+    /// The accounts noted active this month on this instance.
+    active: std::sync::Mutex<std::collections::HashMap<Id, u64>>,
 }
 
 impl Accounts {
@@ -143,7 +151,62 @@ impl Accounts {
             webauthn,
             assets,
             deliveries: Deliveries::default(),
+            billing: None,
+            merchant: None,
+            sign_ups: None,
+            active: Default::default(),
         }
+    }
+
+    /// Notes that `account` sent an authenticated request, once a month on
+    /// each instance, on a server that sells plans (§20, Inactive
+    /// accounts).
+    pub(crate) async fn note_activity<B: Backend>(&self, store: &Store<B>, account: Id) {
+        if !store.billing() {
+            return;
+        }
+        let month = crate::maintenance::month_of(store.clock().now());
+        if crate::maintenance::noted(&self.active, account, month) {
+            return;
+        }
+        if let Err(error) = store.note_activity(account, month).await {
+            tracing::warn!(cause = %error, "an account's activity couldn't be noted");
+        }
+    }
+
+    /// These account pages, checking each sign-up with `guard` (§20).
+    pub fn with_sign_up_guard(mut self, guard: signups::SignUpGuard) -> Self {
+        self.sign_ups = Some(guard);
+        self
+    }
+
+    /// Whether the sign-up checks refuse `email`'s domain.
+    fn blocks(&self, email: &str) -> bool {
+        self.sign_ups
+            .as_ref()
+            .is_some_and(|guard| guard.blocks(email))
+    }
+
+    /// These account pages, selling plans through `provider` (§26,
+    /// Billing). The store must give accounts their plans' limits too.
+    pub fn with_billing(
+        mut self,
+        provider: Arc<dyn crate::billing::BillingProvider>,
+        merchant: crate::billing::Merchant,
+    ) -> Self {
+        self.billing = Some(provider);
+        self.merchant = Some(merchant);
+        self
+    }
+
+    /// Who sells the plans, when the server sells them.
+    pub fn merchant(&self) -> Option<&crate::billing::Merchant> {
+        self.merchant.as_ref()
+    }
+
+    /// The payment provider, when the server sells plans.
+    pub fn billing(&self) -> Option<&dyn crate::billing::BillingProvider> {
+        self.billing.as_deref()
     }
 
     /// These account pages, counting their deliveries in `deliveries`.
@@ -181,7 +244,13 @@ impl Accounts {
         )
     }
 
-    async fn send(&self, to: &str, subject: &str, text: String) -> Result<(), MailError> {
+    /// Sends one message from the server's sender.
+    pub(crate) async fn send(
+        &self,
+        to: &str,
+        subject: &str,
+        text: String,
+    ) -> Result<(), MailError> {
         let mail = Mail {
             from: self.mail_from.clone(),
             to: to.to_owned(),
@@ -189,6 +258,38 @@ impl Accounts {
             text,
         };
         self.mailer.send(&mail).await
+    }
+}
+
+impl Accounts {
+    /// Sends the queued mail about plans, oldest first, and deletes each
+    /// message once it went out. Stops at the first failure, which the
+    /// next pass retries. Returns how many went out.
+    pub async fn send_billing_mail<B: Backend>(
+        &self,
+        store: &Store<B>,
+    ) -> Result<u64, sync_store::Error> {
+        let mut sent = 0;
+        for queued in store.billing_mail().await? {
+            let mail = queued.mail;
+            if let Err(error) = self.send(&mail.recipient, &mail.subject, mail.body).await {
+                tracing::error!(cause = %error, "mail about a plan failed to send");
+                break;
+            }
+            store.sent_billing_mail(queued.id).await?;
+            sent += 1;
+        }
+        Ok(sent)
+    }
+
+    /// Sends the queued mail about plans after the answer went out.
+    pub(crate) fn send_billing_mail_soon<B: Backend>(self: &Arc<Self>, store: &Arc<Store<B>>) {
+        let (accounts, store) = (self.clone(), store.clone());
+        self.deliveries.spawn(async move {
+            if let Err(error) = accounts.send_billing_mail(&store).await {
+                tracing::error!(cause = %error, "the queue of mail about plans can't be read");
+            }
+        });
     }
 }
 
@@ -254,6 +355,25 @@ pub fn routes<B: Backend>() -> Router<AppState<B>> {
         .route("/account/email-link/use", post(use_email_link::<B>))
         .route("/account/confirm", get(confirm_page).post(confirm::<B>))
         .route("/account/sign-out", post(sign_out::<B>))
+        .route("/account/language", get(lang::switch))
+        .route(
+            "/account/upgrade",
+            get(plan::upgrade::<B>).post(plan::checkout::<B>),
+        )
+        .route("/account/billing", get(plan::portal::<B>))
+        .route(
+            "/account/cancel",
+            get(plan::cancel_page::<B>).post(plan::cancel::<B>),
+        )
+        .route(
+            "/account/refund",
+            get(plan::refund_page::<B>).post(plan::refund::<B>),
+        )
+        .route(
+            "/account/withdraw",
+            get(plan::withdraw_page::<B>).post(plan::withdraw::<B>),
+        )
+        .route("/billing/{provider}/webhook", post(plan::webhook::<B>))
         .route("/account/passkeys/sign-up/start", post(sign_up_start::<B>))
         .route(
             "/account/passkeys/sign-up/finish",
@@ -642,16 +762,21 @@ fn with_cookie(mut response: Response, cookie: HeaderValue) -> Response {
     response
 }
 
-/// The web session token a request's cookie carries.
-fn cookie_token(headers: &HeaderMap) -> Option<SignInToken> {
+/// The value of the cookie `name` a request carries.
+fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.trim().split_once('='))
-        .find(|(name, _)| *name == SESSION_COOKIE)
-        .and_then(|(_, value)| from_base64url::<32>(value).ok())
+        .find(|(cookie, _)| *cookie == name)
+        .map(|(_, value)| value.to_owned())
+}
+
+/// The web session token a request's cookie carries.
+fn cookie_token(headers: &HeaderMap) -> Option<SignInToken> {
+    cookie_value(headers, SESSION_COOKIE).and_then(|value| from_base64url::<32>(&value).ok())
 }
 
 /// The account a request's web session belongs to.
@@ -738,11 +863,95 @@ async fn account_page<B: Backend>(
         Ok(passkeys) => passkeys.len(),
         Err(error) => return failure(error),
     };
+    let lang = lang::negotiate(&headers);
+    let provider = state.accounts.billing();
+    if let Some(provider) = provider
+        && let Some(plan) = plan::chosen_plan(&headers).filter(|plan| provider.sells(plan))
+    {
+        return plan::resume_upgrade(&state.accounts, &plan);
+    }
+    // A visit after a sign-in keeps an idle account's workspaces (§20,
+    // Inactive accounts), and the mail about plans follows the page's
+    // language.
+    state.accounts.note_activity(store, account).await;
+    if store.billing()
+        && let Err(error) = store.set_account_lang(account, lang.code()).await
+    {
+        return failure(error);
+    }
+    let signed_in_line = match lang {
+        lang::Lang::En => format!("You're signed in as {email}."),
+        lang::Lang::Fr => format!("Vous êtes connecté avec {email}."),
+    };
+    let passkeys_line = match (lang, passkeys) {
+        (lang::Lang::En, 1) => "You have 1 passkey.".to_owned(),
+        (lang::Lang::En, n) => format!("You have {n} passkeys."),
+        (lang::Lang::Fr, 0 | 1) => format!("Vous avez {passkeys} clé d\u{2019}accès."),
+        (lang::Lang::Fr, n) => format!("Vous avez {n} clés d\u{2019}accès."),
+    };
+    let section = match provider {
+        Some(provider) => {
+            let report = match store.account_report(account).await {
+                Ok(report) => report,
+                Err(error) => return failure(error),
+            };
+            let (ends, choices) = match plan::account_choices(store, account).await {
+                Ok(Some((row, choices))) => (row.period_end.filter(|_| row.canceling), choices),
+                Ok(None) => (None, crate::billing::Choices::default()),
+                Err(error) => return failure(error),
+            };
+            Some(plan::section(provider, &report, lang, &choices, ends))
+        }
+        None => None,
+    };
+    let contact = state
+        .accounts
+        .merchant()
+        .map(crate::billing::Merchant::contact)
+        .unwrap_or_default();
+    let empty = plan::Section {
+        plan_id: String::new(),
+        plan_name: "",
+        usage: String::new(),
+        notice: String::new(),
+        over_plan: String::new(),
+        offers: Vec::new(),
+        manage: false,
+        cancel: false,
+        withdraw: false,
+        refund: false,
+    };
+    let shown = section.as_ref().unwrap_or(&empty);
     html(
         StatusCode::OK,
         &pages::Account {
-            email: &email,
+            lang: lang.code(),
+            title: lang.pick("Your account", "Votre compte"),
+            signed_in: &signed_in_line,
             passkeys,
+            passkeys_line: &passkeys_line,
+            add_passkey: lang.pick("Add a passkey", "Ajouter une clé d\u{2019}accès"),
+            device_link: lang.pick("Sign in a device", "Connecter un appareil"),
+            sign_out: lang.pick("Sign out", "Se déconnecter"),
+            switch_to: lang.other().code(),
+            switch_label: lang.switch_label(),
+            billing: section.is_some(),
+            plan_heading: lang.pick("Plan", "Forfait"),
+            plan_id: &shown.plan_id,
+            plan_name: shown.plan_name,
+            usage: &shown.usage,
+            notice: &shown.notice,
+            over_plan: &shown.over_plan,
+            offers: &shown.offers,
+            manage: shown.manage,
+            manage_label: lang.pick("Manage billing", "Gérer la facturation"),
+            cancel: shown.cancel,
+            cancel_label: lang.pick("Cancel plan", "Résilier le forfait"),
+            withdraw: shown.withdraw,
+            withdraw_label: lang.pick("Withdraw from contract here", "Se rétracter du contrat ici"),
+            refund: shown.refund,
+            refund_label: lang.pick("Refund last payment", "Rembourser le dernier paiement"),
+            contact: &contact,
         },
     )
 }
@@ -751,6 +960,7 @@ async fn account_page<B: Backend>(
 /// answers every email the same way.
 async fn email_link<B: Backend>(
     State(state): State<AppState<B>>,
+    client: Option<axum::Extension<signups::ClientKey>>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
@@ -772,10 +982,17 @@ async fn email_link<B: Backend>(
             "Enter an email address, such as you@example.com.",
         );
     };
+    if accounts.blocks(&email) {
+        return refused_domain();
+    }
     if accounts.allowlist.admits(&email) {
         let (store, accounts) = (state.store.clone(), state.accounts.clone());
         let to = email.clone();
+        let client = client.map(|axum::Extension(key)| key);
         state.accounts.deliveries.spawn(async move {
+            if !sign_up_admitted(&store, &accounts, &to, client).await {
+                return;
+            }
             let text = |link: &str| {
                 format!(
                     "Use this link to sign in to Noura. It works once, within 10 minutes.\n\n{link}\n\nIf you didn't ask to sign in, ignore this email.\n"
@@ -785,6 +1002,47 @@ async fn email_link<B: Backend>(
         });
     }
     html(StatusCode::OK, &pages::CheckEmail { email: &email })
+}
+
+/// The answer for an address at a domain the sign-up checks refuse.
+fn refused_domain() -> Response {
+    message(
+        StatusCode::BAD_REQUEST,
+        "Use another address",
+        "Noura doesn't take addresses at disposable email services.",
+    )
+}
+
+/// Whether `email` may get a mail that signs it in: always when it holds an
+/// account, and otherwise while `client`'s day has room for a new one. A
+/// refusal sends nothing, and the answer already went out.
+async fn sign_up_admitted<B: Backend>(
+    store: &Store<B>,
+    accounts: &Accounts,
+    email: &str,
+    client: Option<signups::ClientKey>,
+) -> bool {
+    let Some(guard) = &accounts.sign_ups else {
+        return true;
+    };
+    let existing = match store.account_id(email) {
+        Ok(account) => store.account_email(account).await,
+        Err(error) => Err(error),
+    };
+    match existing {
+        Ok(Some(_)) => true,
+        Ok(None) => {
+            let admitted = guard.admit(store, client).await;
+            if !admitted {
+                tracing::warn!("a client passed its daily sign-ups");
+            }
+            admitted
+        }
+        Err(error) => {
+            tracing::error!(cause = %error, "a sign-up couldn't read its account");
+            false
+        }
+    }
 }
 
 /// Issues a magic link for `email` and mails it in the message `text`
@@ -1000,6 +1258,13 @@ async fn sign_up_start<B: Backend>(
         Ok(email) => email,
         Err(response) => return *response,
     };
+    if accounts.blocks(&email) {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "email_refused",
+            "Noura doesn't take addresses at disposable email services.",
+        );
+    }
     let (account, handle) = match state
         .store
         .account_id(&email)
@@ -1043,6 +1308,7 @@ async fn sign_up_start<B: Backend>(
 /// hold that email. Every email gets the same answer, before any mail.
 async fn sign_up_finish<B: Backend>(
     State(state): State<AppState<B>>,
+    client: Option<axum::Extension<signups::ClientKey>>,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
@@ -1079,7 +1345,11 @@ async fn sign_up_finish<B: Backend>(
         };
         let (store, accounts) = (state.store.clone(), state.accounts.clone());
         let credential_id = passkey.cred_id().to_vec();
+        let client = client.map(|axum::Extension(key)| key);
         state.accounts.deliveries.spawn(async move {
+            if !sign_up_admitted(&store, &accounts, &email, client).await {
+                return;
+            }
             mail_sign_up(&store, &accounts, &email, credential_id, bytes).await;
         });
     }

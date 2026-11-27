@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE refunds_owed SET amount = ?1, revoke = ?2 WHERE id = ?3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c1f6dce967ed336964014bbd772fbc8de82fd9422ecb3c8aa8ba3d0efcb454ea"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO account_activity (account, month, warnings) VALUES (?1, ?2, 0)\n             ON CONFLICT (account) DO UPDATE SET month = excluded.month, warnings = 0\n             WHERE account_activity.month < excluded.month",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6807371d5b6eab13faadbd5ace969a449a19d651e22a1ab5ac3c40ffff6fb1db"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT notices FROM price_notices WHERE change = ?1 AND account = ?2",
+  "describe": {
+    "columns": [
+      {
+        "name": "notices",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "price_notices",
+            "name": "notices"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e4b752024c0ac9fe31229410def689bcbacce81211e0129b97f2055a884409b7"
+}

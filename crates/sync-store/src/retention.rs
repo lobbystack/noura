@@ -94,21 +94,86 @@ fn signed(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-/// Refuses a change that raised usage when usage now stands above the
-/// quota. The sum may miss a concurrent push into another domain (§15).
+/// The quotas a write answers to (§20): the operator's quota of each
+/// workspace, and on a server that sells plans the owner's allowance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Quota {
+    /// The storage quota of each workspace.
+    pub(crate) workspace: Option<u64>,
+    /// Whether the owner's plan adds an allowance.
+    pub(crate) billing: bool,
+}
+
+impl Quota {
+    fn any(self) -> bool {
+        self.workspace.is_some() || self.billing
+    }
+}
+
+/// The limits of `account`'s plan, or the operator's when the server sells
+/// no plans.
+pub(crate) async fn plan_of(
+    txn: &mut impl ReadTxn,
+    account: Id,
+    billing: bool,
+) -> Result<crate::PlanLimits> {
+    if !billing {
+        return Ok(crate::PlanLimits::OPERATOR);
+    }
+    let row = txn.account_plan(account).await?;
+    Ok(crate::plans::effective(true, row.as_ref()).1)
+}
+
+/// The owner of `workspace` and the storage its plan allows, when the
+/// server sells plans and the plan sets one.
+async fn allowance(
+    txn: &mut impl ReadTxn,
+    workspace: Id,
+    quota: Quota,
+) -> Result<Option<(Id, u64)>> {
+    if !quota.billing {
+        return Ok(None);
+    }
+    let Some(row) = txn.workspace(workspace).await? else {
+        return Ok(None);
+    };
+    Ok(plan_of(txn, row.owner, true)
+        .await?
+        .storage_bytes
+        .map(|limit| (row.owner, limit)))
+}
+
+/// Whether the workspace's usage, or its owner's, stands above a quota
+/// right now.
+pub(crate) async fn over_quota(
+    txn: &mut impl ReadTxn,
+    workspace: Id,
+    quota: Quota,
+) -> Result<bool> {
+    if let Some(limit) = quota.workspace
+        && txn.workspace_usage(workspace).await?.usage > limit
+    {
+        return Ok(true);
+    }
+    if let Some((owner, limit)) = allowance(txn, workspace, quota).await? {
+        return Ok(txn.account_usage(owner).await?.0 > limit);
+    }
+    Ok(false)
+}
+
+/// Refuses a change that raised usage when usage now stands above a quota.
+/// The sums may miss a concurrent push into another domain, or into another
+/// workspace of the same owner (§15, §20).
 pub(crate) async fn check_quota(
     txn: &mut impl ReadTxn,
     workspace: Id,
-    quota: Option<u64>,
+    quota: Quota,
     raised: i64,
 ) -> Result<()> {
-    let Some(quota) = quota else {
-        return Ok(());
-    };
-    if raised <= 0 {
+    if raised <= 0 || !quota.any() {
         return Ok(());
     }
-    if txn.workspace_usage(workspace).await?.usage > quota {
+    if over_quota(txn, workspace, quota).await? {
         return Err(refuse(
             "quota_exceeded",
             "the workspace's usage would exceed its quota",
@@ -117,37 +182,43 @@ pub(crate) async fn check_quota(
     Ok(())
 }
 
-/// Whether the workspace's usage stands above the quota right now.
-pub(crate) async fn over_quota(
-    txn: &mut impl ReadTxn,
-    workspace: Id,
-    quota: Option<u64>,
-) -> Result<bool> {
-    let Some(quota) = quota else {
-        return Ok(false);
-    };
-    Ok(txn.workspace_usage(workspace).await?.usage > quota)
+/// Whether `total` stands above `limit`, and whether it stands below 90%
+/// of it.
+fn against(total: u128, limit: u64) -> (bool, bool) {
+    let limit = u128::from(limit);
+    (total > limit, total * 10 < limit * 9)
 }
 
 /// Follows the pressure trigger (§20): usage and history going from within
-/// the quota to above it count one crossing, and it re-arms only once they
-/// fall below 90% of the quota.
+/// a quota to above it count one crossing in the workspace, and it re-arms
+/// only once they fall below 90% of every quota.
 pub(crate) async fn note_pressure(
     txn: &mut impl WriteTxn,
     workspace: Id,
-    quota: Option<u64>,
+    quota: Quota,
 ) -> Result<()> {
-    let Some(quota) = quota else {
+    if !quota.any() {
         return Ok(());
-    };
+    }
     let usage = txn.workspace_usage(workspace).await?;
     let Some(pressure) = usage.quota_pressure else {
         return Ok(());
     };
-    let total = u128::from(usage.usage) + u128::from(usage.history);
-    if !pressure && total > u128::from(quota) {
+    let (mut above, mut below) = (false, true);
+    if let Some(limit) = quota.workspace {
+        let (over, under) = against(u128::from(usage.usage) + u128::from(usage.history), limit);
+        above |= over;
+        below &= under;
+    }
+    if let Some((owner, limit)) = allowance(txn, workspace, quota).await? {
+        let (used, history) = txn.account_usage(owner).await?;
+        let (over, under) = against(u128::from(used) + u128::from(history), limit);
+        above |= over;
+        below &= under;
+    }
+    if !pressure && above {
         txn.set_quota_pressure(workspace, true).await?;
-    } else if pressure && total * 10 < u128::from(quota) * 9 {
+    } else if pressure && below {
         txn.set_quota_pressure(workspace, false).await?;
     }
     Ok(())
@@ -210,7 +281,7 @@ pub(crate) fn record_usage(length: u64) -> i64 {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn note_operation(
     txn: &mut impl WriteTxn,
-    quota: Option<u64>,
+    quota: Quota,
     workspace: Id,
     domain: Id,
     length: u64,
@@ -377,6 +448,60 @@ async fn prune_batch(
     Ok((count, None))
 }
 
+/// Whether `total` and `usage` call for history to go: the total stands
+/// above the limit while usage alone fits.
+fn presses(usage: u64, history: u64, limit: Option<u64>) -> bool {
+    limit.is_some_and(|limit| {
+        usage <= limit && u128::from(usage) + u128::from(history) > u128::from(limit)
+    })
+}
+
+/// The next floor pressure raises for `workspace` (§20): the workspace,
+/// domain and checkpoint of the domain with the most history whose floor
+/// lies below its latest checkpoint, among the workspace's domains while
+/// its own quota presses, and among every open workspace of its owner
+/// while the owner's allowance does. `None` when neither presses or no
+/// floor can rise.
+async fn pressed_domains(
+    txn: &mut impl ReadTxn,
+    workspace: Id,
+    quota: Quota,
+) -> Result<Option<(Id, (Id, u64))>> {
+    let own = txn.workspace_usage(workspace).await?;
+    let mut candidates = Vec::new();
+    if presses(own.usage, own.history, quota.workspace) {
+        candidates.push(workspace);
+    } else if let Some((owner, limit)) = allowance(txn, workspace, quota).await? {
+        let (used, history) = txn.account_usage(owner).await?;
+        if presses(used, history, Some(limit)) {
+            for row in txn.owned_workspace_rows(owner).await? {
+                candidates.push(row.workspace);
+            }
+        }
+    }
+    let mut best: Option<(Id, crate::DomainHistory)> = None;
+    for candidate in candidates {
+        for domain in txn.domain_histories(candidate).await? {
+            if domain.retention_floor >= domain.checkpoint_seq {
+                continue;
+            }
+            if best
+                .as_ref()
+                .is_none_or(|(_, b)| domain.history_bytes > b.history_bytes)
+            {
+                best = Some((candidate, domain));
+            }
+        }
+    }
+    let Some((target, domain)) = best else {
+        return Ok(None);
+    };
+    Ok(txn
+        .checkpoint_above(target, domain.domain, domain.retention_floor)
+        .await?
+        .map(|floor| (target, (domain.domain, floor))))
+}
+
 impl<B: Backend> Store<B> {
     /// Persists `floor`, or the floor the `retained_bytes` rule gives, when
     /// that lies above the published one (§19). Returns the published
@@ -467,7 +592,8 @@ impl<B: Backend> Store<B> {
             let result = self.maintain_domain(domain, &mut report).await;
             report.note(result);
         }
-        if let Some(quota) = self.retention.quota_bytes {
+        let quota = self.quota();
+        if quota.any() {
             let pressured = self
                 .backend
                 .read(Box::new(move |txn: &mut B::Read| {
@@ -528,57 +654,34 @@ impl<B: Backend> Store<B> {
         Ok(())
     }
 
-    /// Raises the workspace's floors one checkpoint at a time, starting
-    /// with the domain that holds the most history, until usage and history
-    /// fit the quota or every floor reaches its latest checkpoint (§20).
-    /// When usage alone exceeds the quota, history can't bring it back, so
-    /// no floor moves beyond the `retained_bytes` rule.
-    async fn relieve(&self, workspace: Id, quota: u64, report: &mut Maintenance) -> Result<()> {
+    /// Raises floors one checkpoint at a time, starting with the domain
+    /// that holds the most history, until usage and history fit every
+    /// quota or every floor reaches its latest checkpoint (§20). The
+    /// workspace's own quota takes its own domains; the owner's allowance
+    /// takes the domains of every open workspace the owner holds. When
+    /// usage alone exceeds a quota, history can't bring it back, so no
+    /// floor moves beyond the `retained_bytes` rule for that quota.
+    async fn relieve(&self, workspace: Id, quota: Quota, report: &mut Maintenance) -> Result<()> {
         loop {
-            let (usage, history, domains) = self
+            let pressed = self
                 .backend
                 .read(Box::new(move |txn: &mut B::Read| {
-                    Box::pin(async move {
-                        let usage = txn.workspace_usage(workspace).await?;
-                        Ok((
-                            usage.usage,
-                            usage.history,
-                            txn.domain_histories(workspace).await?,
-                        ))
-                    })
+                    Box::pin(async move { pressed_domains(txn, workspace, quota).await })
                 }))
                 .await?;
-            let total = u128::from(usage) + u128::from(history);
-            if usage > quota || total <= u128::from(quota) {
+            let Some((target, floor)) = pressed else {
+                break;
+            };
+            let (_, raised) = self.persist_floor(target, floor.0, Some(floor.1)).await?;
+            report.raised += u64::from(raised);
+            report.pruned += self.prune_domain(target, floor.0).await?;
+            if !raised {
                 break;
             }
-            let Some(next) = domains
-                .into_iter()
-                .find(|d| d.retention_floor < d.checkpoint_seq)
-            else {
-                break;
-            };
-            let floor = self
-                .backend
-                .read(Box::new(move |txn: &mut B::Read| {
-                    Box::pin(async move {
-                        txn.checkpoint_above(workspace, next.domain, next.retention_floor)
-                            .await
-                    })
-                }))
-                .await?;
-            let Some(floor) = floor else {
-                break;
-            };
-            let (_, raised) = self
-                .persist_floor(workspace, next.domain, Some(floor))
-                .await?;
-            report.raised += u64::from(raised);
-            report.pruned += self.prune_domain(workspace, next.domain).await?;
         }
         self.backend
             .write(Box::new(move |txn: &mut B::Write| {
-                Box::pin(async move { note_pressure(txn, workspace, Some(quota)).await })
+                Box::pin(async move { note_pressure(txn, workspace, quota).await })
             }))
             .await
     }
