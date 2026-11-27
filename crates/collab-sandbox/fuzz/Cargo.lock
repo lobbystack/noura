@@ -3249,6 +3249,7 @@ dependencies = [
  "pbkdf2",
  "pulldown-cmark",
  "reqwest",
+ "ring",
  "rusqlite",
  "schemars 1.2.3",
  "security-framework",
