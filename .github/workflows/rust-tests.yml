@@ -169,6 +169,20 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
+      # Each SVG draw lists the system's fonts, which reads every file in
+      # the fonts folder. The single Windows job of before had read them by
+      # the time app-ui's tests ran; a fresh shard read them cold, behind
+      # Defender, and an SVG test passed its 20-second wait.
+      - name: Read the system fonts once
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $fonts = Get-ChildItem "$env:WINDIR\Fonts" -File
+          $bytes = 0
+          foreach ($font in $fonts) {
+            try { $bytes += [IO.File]::ReadAllBytes($font.FullName).Length } catch { }
+          }
+          "Read $($fonts.Count) font files, $([math]::Round($bytes / 1MB)) MB"
       # The PostgreSQL store's tests start throwaway clusters with the
       # runner's initdb and pg_ctl and fail when PostgreSQL is missing. The
       # Linux and Windows images ship PostgreSQL; Homebrew provides it on
