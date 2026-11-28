@@ -1,8 +1,9 @@
 name: Release
 
 # Push a tag such as v0.3.0 to build signed packages for macOS, Windows and
-# Linux with cargo-packager. The tag must point to a commit on main that
-# passed CI. The release stays a draft until every platform uploads, so
+# Linux with cargo-packager. The tag must point to a commit on main whose
+# tree passed CI, in its pull request or on main. The release stays a draft
+# until every platform uploads, so
 # installed apps never see a partial latest.json.
 #
 # The build job reads the updater key and the Apple credentials from the
@@ -46,12 +47,18 @@ jobs:
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-      - name: Wait for CI to pass on the tagged commit
+      - name: Check that CI passed on the tagged commit's tree
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # CI runs on every push to main. Wait up to 60 minutes for that run.
-          for attempt in $(seq 1 60); do
+          # A pull request's CI run that tested this exact tree counts, so a
+          # tag on a squash merge passes at once. Otherwise CI on main is
+          # testing the commit: wait up to 60 minutes for that run.
+          for _ in $(seq 1 60); do
+            if url="$(.github/scripts/ci-evidence.sh "$GITHUB_SHA")"; then
+              echo "CI passed on this tree: $url"
+              exit 0
+            fi
             run="$(gh run list -R "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
               --event push --commit "$GITHUB_SHA" --limit 1 \
               --json status,conclusion,url --jq '.[0] // empty')"
@@ -60,20 +67,16 @@ jobs:
               conclusion="$(jq -r .conclusion <<<"$run")"
               url="$(jq -r .url <<<"$run")"
               if [ "$status" = completed ]; then
-                if [ "$conclusion" = success ]; then
-                  echo "CI passed: $url"
-                  exit 0
-                fi
                 echo "::error::CI finished with '$conclusion' for $GITHUB_SHA: $url"
                 exit 1
               fi
               echo "CI is $status ($url). Checking again in 60 seconds."
             else
-              echo "No CI run for $GITHUB_SHA on main yet. Checking again in 60 seconds."
+              echo "No CI run passed on this tree yet. Checking again in 60 seconds."
             fi
             sleep 60
           done
-          echo "::error::CI did not finish on $GITHUB_SHA within 60 minutes."
+          echo "::error::CI did not pass on $GITHUB_SHA within 60 minutes."
           exit 1
 
   create-release:

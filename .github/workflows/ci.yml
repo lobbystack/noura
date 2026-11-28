@@ -1,9 +1,13 @@
 name: CI
 
+# Branch protection requires one check, `CI passed`, which fails when any
+# job fails and counts a skipped job as passing. `changes` decides what runs:
+# .github/scripts/ci-changes.sh and CONTRIBUTING.md describe the rules.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,6 +17,25 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      rust: ${{ steps.changes.outputs.rust }}
+      website: ${{ steps.changes.outputs.website }}
+      warm: ${{ steps.changes.outputs.warm }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: changes
+        run: .github/scripts/ci-changes.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:
@@ -27,6 +50,8 @@ jobs:
           GITLEAKS_VERSION: 8.30.1
 
   website:
+    needs: changes
+    if: needs.changes.outputs.website == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -43,25 +68,29 @@ jobs:
       - run: bun run check:website
       - run: bun run build:website
 
-  rust:
+  # Formatting and Clippy on each platform, since some code compiles on one
+  # platform only.
+  lint:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      # rustup reads the version and components from rust-toolchain.toml.
       - name: Install the Linux build libraries
         if: runner.os == 'Linux'
         run: scripts/install-linux-build-deps.sh
+      # rustup reads the version and components from rust-toolchain.toml.
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
       - run: rustc --version
       # rav1d, which decodes AVIF images in notes, assembles its x86 code
-      # with NASM.
+      # with NASM, and its build script runs under Clippy too.
       - name: Install NASM
         if: runner.os != 'macOS'
         shell: bash
@@ -72,68 +101,103 @@ jobs:
           else
             sudo apt-get update && sudo apt-get install -y nasm
           fi
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo fmt --all --check
+      - name: Keep Defender out of the build folders
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
+      - if: runner.os == 'Linux'
+        run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
-      - run: cargo build --workspace --locked
-      # Trial S7 loads a Rust and a TypeScript hello plugin in plugin-host's
-      # tests. jco needs Node and npm, which AGENTS.md allows only for
-      # sdk/typescript.
-      - name: Install the WebAssembly component target
-        run: rustup target add wasm32-wasip2
+
+  # Each platform builds the workspace and its tests once, then runs them
+  # in shards, in .github/workflows/rust-tests.yml. The account runs five
+  # macOS jobs at a time, so macOS gets two shards.
+  tests-linux:
+    name: tests (ubuntu-latest)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      os: ubuntu-latest
+      shards: '[1, 2, 3, 4]'
+      test: ${{ needs.changes.outputs.rust == 'true' }}
+
+  tests-windows:
+    name: tests (windows-latest)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      os: windows-latest
+      shards: '[1, 2, 3, 4, 5, 6]'
+      test: ${{ needs.changes.outputs.rust == 'true' }}
+
+  tests-macos:
+    name: tests (macos-latest)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
+    uses: ./.github/workflows/rust-tests.yml
+    with:
+      os: macos-latest
+      shards: '[1, 2]'
+      test: ${{ needs.changes.outputs.rust == 'true' }}
+
+  # The test runs that need a build of their own: the plugin host on
+  # Wasmtime's Pulley interpreter, the collaboration sandbox on both
+  # backends, the editor's large note in release mode, and the macOS
+  # reports.
+  extras:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.warm == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install the Linux build libraries
+        if: runner.os == 'Linux'
+        run: scripts/install-linux-build-deps.sh
+      - name: Install the pinned Rust toolchain and the WebAssembly targets
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-wasip2 wasm32-unknown-unknown
+      - run: rustc --version
+      - name: Install NASM
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            choco install nasm --no-progress -y
+            echo 'C:\Program Files\NASM' >> "$GITHUB_PATH"
+          else
+            sudo apt-get update && sudo apt-get install -y nasm
+          fi
+      - name: Keep Defender out of the build folders
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
+      # Linux's extras take about 12 minutes without a cache, so only macOS
+      # and Windows spend part of the repository's 10 GB of caches on them.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: runner.os != 'Linux'
+        with:
+          shared-key: extras
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: |
-            sdk/typescript/s7-hello/package-lock.json
-            sdk/typescript/package-lock.json
+          cache-dependency-path: sdk/typescript/s7-hello/package-lock.json
       - name: Build the trial S7 plugins
         shell: bash
         run: bash crates/plugin-host/trial/build-plugins.sh
-      # Seam 5: the TypeScript author kit under Node. Its tests create,
-      # build, rebuild in dev mode and package plugins, and run them in
-      # the real host, noura-kit-host, which `cargo build --workspace`
-      # built above, and in the mock host.
-      - name: Install the TypeScript author kit
-        working-directory: sdk/typescript
-        run: npm ci --no-audit --no-fund
-      - name: Build the TypeScript author kit
-        working-directory: sdk/typescript
-        run: npm run build
-      - name: Type-check the TypeScript author kit
-        working-directory: sdk/typescript
-        run: npm run check
-      - name: Test the TypeScript author kit against the mock and real hosts
-        working-directory: sdk/typescript
-        run: npm test
-        env:
-          NOURA_REQUIRE_KIT_HOST: '1'
-      # The hello plugin and plugin-host's test plugins, which the plugin
-      # tests in plugin-host, app-core and app-ui load.
       - name: Build the plugins
         shell: bash
         run: bash crates/plugin-sdk/build-plugins.sh
-      # The PostgreSQL store's tests start throwaway clusters with the
-      # runner's initdb and pg_ctl and fail when PostgreSQL is missing. The
-      # Linux and Windows images ship PostgreSQL; Homebrew provides it on
-      # macOS.
-      - name: Install PostgreSQL on macOS
-        if: runner.os == 'macOS'
-        run: |
-          brew list postgresql@16 > /dev/null 2>&1 || brew install postgresql@16
-          echo "NOURA_POSTGRES_BIN=$(brew --prefix postgresql@16)/bin" >> "$GITHUB_ENV"
-      # Nextest runs each test in a process of its own, with the limits in
-      # .config/nextest.toml, so the heavy tests that share a crate's `it`
-      # binary don't all compete in one process. It doesn't run doctests.
-      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
-        with: { tool: cargo-nextest@0.9.152 }
-      - run: cargo nextest run --workspace --locked --profile ci
-        timeout-minutes: 120
-        env:
-          NOURA_S7_REQUIRE_PLUGINS: '1'
-          NOURA_REQUIRE_PLUGINS: '1'
-      - run: cargo test --workspace --locked --doc
       # The plugin host's seam 3 suite again on Wasmtime's Pulley
       # interpreter, which a future mobile host runs instead of native code.
       - name: Run the plugin host's tests on the Pulley interpreter
@@ -141,6 +205,12 @@ jobs:
         env:
           NOURA_S7_REQUIRE_PLUGINS: '1'
           NOURA_REQUIRE_PLUGINS: '1'
+      # Linux runs this check in the collab-sandbox job, with the checks
+      # only Linux runs.
+      - name: Run the collaboration sandbox on Pulley and Cranelift
+        if: runner.os != 'Linux'
+        shell: bash
+        run: scripts/check-collab-sandbox.sh backends
       # The large note takes minutes through a debug build, so
       # `the_large_note_keeps_its_bytes` runs only in release mode.
       - name: Check that the editor keeps a large note's bytes
@@ -148,17 +218,17 @@ jobs:
       # A report, not a gate: each checkpoint enforces the budget on the
       # owner's Mac.
       - name: Report the file tree's frame times
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: 'cargo test -p app-ui --release --locked --test it tree_scale:: -- --ignored --nocapture'
       - name: Report a plugin's 10,000-row list's frame times
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: 'cargo test -p app-ui --release --locked --test it plugin_kit:: -- --ignored --nocapture'
         env:
           NOURA_REQUIRE_PLUGINS: '1'
       # Also a report: the 95th-percentile keystroke-to-frame time of typing
       # in the 1 MB note, against the 16 ms budget.
       - name: Report the editor's typing time on a 1 MB note
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: cargo bench -p editor-egui --locked --bench typing
 
   # Release checks: build each desktop package with cargo-packager, sign it
@@ -166,6 +236,8 @@ jobs:
   # its first window. Each package has to hold the plugins that ship with
   # Noura, built for wasm32-wasip2.
   packages:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -183,8 +255,6 @@ jobs:
         run: |
           rustup toolchain install
           rustup target add wasm32-wasip2
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { key: packages }
       # rav1d, which decodes AVIF images in notes, assembles its x86 code
       # with NASM.
       - name: Install NASM
@@ -197,6 +267,10 @@ jobs:
           else
             sudo apt-get update && sudo apt-get install -y nasm
           fi
+      - name: Keep Defender out of the build folders
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
         with: { tool: 'cargo-packager@0.11.8,cargo-about@0.9.2' }
       # libfuse2 runs AppImages, including the tools cargo-packager uses to
@@ -237,6 +311,8 @@ jobs:
           fi
 
   static-server:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -249,8 +325,6 @@ jobs:
       - run: rustc --version
       - name: Install the musl C compiler
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { key: musl }
       - run: cargo build -p sync-server --release --locked --target x86_64-unknown-linux-musl
       - name: Check that the server is one static binary that starts
         run: |
@@ -331,6 +405,8 @@ jobs:
   # main it also goes to GitHub's container registry, where sync.noura.app
   # pulls it, so the Dokploy host never compiles Rust.
   server-image:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -358,6 +434,8 @@ jobs:
   # builds need no database. This job rebuilds that data from the
   # migrations, PostgreSQL's in the service below, and fails when it changed.
   sqlx-offline-data:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -376,8 +454,6 @@ jobs:
       - run: rustc --version
       - name: Install the SQLite command-line tool
         run: sudo apt-get update && sudo apt-get install -y sqlite3
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { key: sqlx }
       - run: scripts/sqlx-prepare.sh --check
         env:
           SQLX_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
@@ -389,6 +465,8 @@ jobs:
   # builds dependencies optimized, the crypto crates among them, so its
   # debug tests stay quick on a shared runner.
   postgres:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -429,8 +507,6 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
       - run: rustc --version
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { key: postgres }
       - run: cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p sync-store-postgres -p sync-server
       - run: 'cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test it sync:: -- --skip workspace_sync::'
       # The 500 ms bar is for the server as it ships, so the soak builds
@@ -444,6 +520,8 @@ jobs:
   # waits by its rank for that object, so one writes it again and none gets
   # conflict_limit. The job builds dependencies optimized, as the soak does.
   restore-fleet:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -459,14 +537,14 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
       - run: rustc --version
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { key: restore-fleet }
       - name: Restore with 200 devices
         run: 'cargo test --locked --config "$DEV_DEPENDENCIES" --config "$TEST_DEPENDENCIES" -p app-core --test it sync_restore::many_devices_pick_one_writer_for_a_lost_object -- --nocapture'
         env:
           NOURA_RESTORE_DEVICES: '200'
 
   editor-dependencies:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -481,6 +559,8 @@ jobs:
       - run: scripts/check-editor-deps.sh
 
   sync-protocol:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -491,8 +571,6 @@ jobs:
           rustup toolchain install
           rustup target add wasm32-unknown-unknown
       - run: rustc --version
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { key: wasm }
       # sync-protocol holds no filesystem, socket or database crate and builds
       # for account-web's WebAssembly target (sync-v2.md §4). Its published
       # test vectors and fixtures run with the workspace tests.
@@ -501,17 +579,16 @@ jobs:
   # The collaboration sandbox (sync-v2.md §22). Every platform runs its
   # whole test suite twice, once on Cranelift and once on Pulley, and in
   # each run the verdict fixtures and the records at the verdict's limits
-  # must reach the same verdicts and fuel on both backends. Linux also
-  # rebuilds the guest module and requires the bytes the sandbox embeds,
-  # checks that the guest's yrs resolves without `small-client`, runs the
-  # guest's tests, checks that the scheduled fuzz job's targets build,
-  # and runs the previous release on the current fixture.
+  # must reach the same verdicts and fuel on both backends: macOS and
+  # Windows in the extras job, Linux here. Linux also rebuilds the guest
+  # module and requires the bytes the sandbox embeds, checks that the
+  # guest's yrs resolves without `small-client`, runs the guest's tests,
+  # checks that the scheduled fuzz job's targets build, and runs the
+  # previous release on the current fixture.
   collab-sandbox:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -523,17 +600,14 @@ jobs:
           rustup toolchain install
           rustup target add wasm32-unknown-unknown
       - run: rustc --version
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { key: collab-sandbox }
       - name: Run the sandbox on Pulley and Cranelift
-        shell: bash
         run: scripts/check-collab-sandbox.sh backends
       - name: Check the guest module, its yrs, the fuzz targets and the previous release
-        if: runner.os == 'Linux'
-        shell: bash
         run: scripts/check-collab-sandbox.sh module features guest fuzz release
 
   account-web:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -544,8 +618,6 @@ jobs:
           rustup toolchain install
           rustup target add wasm32-unknown-unknown
       - run: rustc --version
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with: { key: account-web }
       # The wasm-bindgen command-line tool at the version Cargo.lock pins.
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2.87.14
         with: { tool: wasm-bindgen@0.2.127 }
@@ -560,6 +632,8 @@ jobs:
           NOURA_CHROME: /usr/bin/google-chrome
 
   dependency-audit:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -583,6 +657,8 @@ jobs:
   # installed into a fresh project that checks, tests and packages the
   # template.
   typescript-kit-packages:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -612,6 +688,8 @@ jobs:
 
   # The plugin interface reference comes from the WIT's doc comments.
   plugin-reference:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -628,3 +706,61 @@ jobs:
           # the diff shows them too.
           git add --intent-to-add -- docs/plugins/reference
           git diff --exit-code -- docs/plugins/reference
+
+  # The one check branch protection requires. It fails when a job failed or
+  # was cancelled, and counts a job that `changes` skipped as passing. When
+  # it passes it records the tree this run tested as the artifact
+  # ci-tree-<tree>, which a push to main and the release workflow accept as
+  # proof that CI passed on that tree (.github/scripts/ci-evidence.sh).
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs:
+      - changes
+      - secret-scan
+      - website
+      - lint
+      - tests-linux
+      - tests-windows
+      - tests-macos
+      - extras
+      - packages
+      - static-server
+      - server-image
+      - sqlx-offline-data
+      - postgres
+      - restore-fleet
+      - editor-dependencies
+      - sync-protocol
+      - collab-sandbox
+      - account-web
+      - dependency-audit
+      - typescript-kit-packages
+      - plugin-reference
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that every job passed or was skipped
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed="$(jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key): \(.value.result)"' <<< "$NEEDS")"
+          if [ -n "$failed" ]; then
+            echo "::error::These jobs didn't pass: ${failed//$'\n'/, }"
+            exit 1
+          fi
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+      - name: Find the tested tree
+        id: tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tree="$(gh api "repos/$GITHUB_REPOSITORY/git/commits/$GITHUB_SHA" --jq .tree.sha)"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID tested $GITHUB_SHA, tree $tree" > ci-tree.txt
+          cat ci-tree.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-tree-${{ steps.tree.outputs.tree }}
+          path: ci-tree.txt
+          retention-days: 90
+          overwrite: true

@@ -1,6 +1,6 @@
 # How do I publish a Noura release?
 
-Push a version tag from `main`. The release workflow checks that CI passed on that commit, waits for a maintainer to approve signing, and builds signed packages with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager): a `.dmg` for macOS, an `.msi` for Windows, and a `.deb` and an AppImage for Linux. Installed copies of Noura then find the new version and update themselves. This guide covers the one-time setup, each release, local builds, and how anyone can verify a download.
+Push a version tag from `main`. The release workflow checks that CI passed on that commit's tree, waits for a maintainer to approve signing, and builds signed packages with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager): a `.dmg` for macOS, an `.msi` for Windows, and a `.deb` and an AppImage for Linux. Installed copies of Noura then find the new version and update themselves. This guide covers the one-time setup, each release, local builds, and how anyone can verify a download.
 
 ## Set up the release environment once
 
@@ -55,7 +55,7 @@ The updater key signs update bundles, not installers. Windows shows a SmartScree
 
 The workflow in `.github/workflows/release.yml` runs these jobs in order:
 
-- **verify**: fails unless the tag points to a commit on `main` and equals `v` plus the workspace version. It then waits up to 60 minutes for the CI run on that commit and fails unless CI passed.
+- **verify**: fails unless the tag points to a commit on `main` and equals `v` plus the workspace version. It then looks for a CI run that passed on the commit's tree, with `.github/scripts/ci-evidence.sh`. The pull request's run counts when the squash merge reproduced the tree it tested, so a tag pushed right after the merge passes at once. Otherwise **verify** waits up to 60 minutes for CI on `main` and fails unless it passes.
 - **create-release**: creates a draft release for the tag.
 - **build**: waits for approval, then runs `scripts/package-desktop.sh` on each platform with the signing keys and uploads the packages, their updater signatures, and the license list to the draft.
 - **publish**: writes the update feed `latest.json` with `scripts/write-update-feed.sh`, records build provenance for every file, adds the stable file names below, and publishes the release.
@@ -136,7 +136,7 @@ On Linux, only the AppImage updates itself. The `.deb` package runs without the 
 
 ## Release checks in CI
 
-The `packages` job in `.github/workflows/ci.yml` runs on every push and pull request. On macOS, Windows, and Ubuntu 22.04, it builds each package, signs it with a throwaway updater key, and runs `scripts/check-desktop-packages.sh`. The check fails unless each installed app draws its first window, finds its license list, starts every plugin that ships with Noura and runs the collaboration sandbox. It also checks that the `.dmg`, the `.msi` and the AppImage update themselves and the `.deb` doesn't. The macOS app in CI has the ad hoc signature and entitlements of a release without Apple secrets, so a signature that stops plugins from running fails CI before a release does.
+The `packages` job in `.github/workflows/ci.yml` runs on every pull request that changes more than the website or prose, and on `main` when CI hasn't passed on that tree yet. On macOS, Windows, and Ubuntu 22.04, it builds each package, signs it with a throwaway updater key, and runs `scripts/check-desktop-packages.sh`. The check fails unless each installed app draws its first window, finds its license list, starts every plugin that ships with Noura and runs the collaboration sandbox. It also checks that the `.dmg`, the `.msi` and the AppImage update themselves and the `.deb` doesn't. The macOS app in CI has the ad hoc signature and entitlements of a release without Apple secrets, so a signature that stops plugins from running fails CI before a release does.
 
 The desktop crate's tests run the real updater against a feed served on a local port. They check that it accepts a bundle signed with the expected key and rejects a changed bundle or another key's signature.
 
