@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO billing_events (provider, event, day) VALUES (?1, ?2, ?3)\n             ON CONFLICT (provider, event) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2228dc2caef49a10272f6aa3eceb6540651b237710defff17cea6b30821adbdf"
+}

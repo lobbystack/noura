@@ -290,9 +290,10 @@ async fn patch<B: Backend>(
             let len = bytes.len() as u64;
             Store::<B>::check_segment(&upload.row, offset, len)?;
             let limiter = state.store.backend().limiter();
+            let budget = state.rate.budget(&state.store, session.account).await?;
             state
                 .rate
-                .take_upload(&*limiter, session.device, len)
+                .take_upload(&*limiter, session.device, budget, len)
                 .await?;
             let hash = sync_protocol::crypto::hash(&bytes);
             let index = offset / SEGMENT;

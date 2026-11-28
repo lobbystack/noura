@@ -39,13 +39,14 @@ notify.workspace = true
 parking_lot.workspace = true
 pbkdf2.workspace = true
 pulldown-cmark.workspace = true
+ring.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 slug.workspace = true
-sync-key-envelope = { version = "0.3.3", path = "../sync-key-envelope" }
+sync-key-envelope = { version = "0.4.0", path = "../sync-key-envelope" }
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -53,7 +54,7 @@ ts-rs.workspace = true
 ulid = { workspace = true, features = ["std"] }
 uuid.workspace = true
 url.workspace = true
-workspace-format = { version = "0.3.3", path = "../workspace-format" }
+workspace-format = { version = "0.4.0", path = "../workspace-format" }
 x25519-dalek.workspace = true
 
 [dev-dependencies]

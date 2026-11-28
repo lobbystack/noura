@@ -19,21 +19,21 @@ use tokio::{
     task::JoinHandle,
 };
 
-const OPERATION: &str = "01890a5d-ac96-7000-8000-000000000001";
-const KEY: &str = "sk-local-test-key";
-const PATIENCE: Duration = Duration::from_secs(20);
+pub(crate) const OPERATION: &str = "01890a5d-ac96-7000-8000-000000000001";
+pub(crate) const KEY: &str = "sk-local-test-key";
+pub(crate) const PATIENCE: Duration = Duration::from_secs(20);
 
 /// What the provider heard.
-struct Heard {
+pub(crate) struct Heard {
     /// The request line, such as `POST /v1/chat/completions HTTP/1.1`.
-    request_line: String,
+    pub(crate) request_line: String,
     /// Header lines, with lowercase names.
-    headers: Vec<String>,
-    body: Value,
+    pub(crate) headers: Vec<String>,
+    pub(crate) body: Value,
 }
 
 impl Heard {
-    fn header(&self, name: &str) -> Option<&str> {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
         let prefix = format!("{name}: ");
         self.headers
             .iter()
@@ -42,7 +42,7 @@ impl Heard {
 }
 
 /// How the provider answers one request.
-enum Answer {
+pub(crate) enum Answer {
     /// A status line and a body, then the connection closes.
     Status(&'static str, &'static str),
     /// These server-sent events, then the connection closes.
@@ -53,13 +53,13 @@ enum Answer {
 }
 
 /// A provider on this computer that answers one request.
-struct LocalProvider {
-    endpoint: String,
+pub(crate) struct LocalProvider {
+    pub(crate) endpoint: String,
     answered: JoinHandle<(Heard, bool)>,
 }
 
 impl LocalProvider {
-    async fn start(answer: Answer) -> Self {
+    pub(crate) async fn start(answer: Answer) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}/v1/", listener.local_addr().unwrap());
         let answered = tokio::spawn(async move {
@@ -71,7 +71,7 @@ impl LocalProvider {
         Self { endpoint, answered }
     }
 
-    async fn heard(self) -> (Heard, bool) {
+    pub(crate) async fn heard(self) -> (Heard, bool) {
         tokio::time::timeout(PATIENCE, self.answered)
             .await
             .expect("the provider heard nothing")
@@ -79,7 +79,7 @@ impl LocalProvider {
     }
 }
 
-async fn read_request(socket: &mut TcpStream) -> Heard {
+pub(crate) async fn read_request(socket: &mut TcpStream) -> Heard {
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_end = loop {
@@ -163,12 +163,12 @@ async fn answer_request(socket: &mut TcpStream, answer: Answer) -> bool {
 
 /// Noura's AI settings with the provider at `endpoint` and its key in the
 /// credential store.
-struct Settings {
-    _folder: tempfile::TempDir,
-    ai: AiFoundation,
+pub(crate) struct Settings {
+    pub(crate) _folder: tempfile::TempDir,
+    pub(crate) ai: AiFoundation,
 }
 
-fn settings(kind: &str, endpoint: &str) -> Settings {
+pub(crate) fn settings(kind: &str, endpoint: &str) -> Settings {
     let folder = tempfile::tempdir().unwrap();
     let ai = AiFoundation::open_with(
         folder.path().join("providers.json"),
@@ -193,14 +193,14 @@ fn settings(kind: &str, endpoint: &str) -> Settings {
     }
 }
 
-fn text(role: &str, text: &str) -> AiTransportMessage {
+pub(crate) fn text(role: &str, text: &str) -> AiTransportMessage {
     AiTransportMessage {
         role: role.into(),
         content: vec![AiContentPart::Text { text: text.into() }],
     }
 }
 
-fn add_task() -> AiToolDefinition {
+pub(crate) fn add_task() -> AiToolDefinition {
     AiToolDefinition {
         name: "add_task".into(),
         description: Some("Add a task.".into()),
@@ -212,7 +212,7 @@ fn add_task() -> AiToolDefinition {
     }
 }
 
-fn stream(ai: &AiFoundation, messages: Vec<AiTransportMessage>) -> AiStreamOperation {
+pub(crate) fn stream(ai: &AiFoundation, messages: Vec<AiTransportMessage>) -> AiStreamOperation {
     ai.start_stream(AiStreamInput {
         operation_id: OPERATION.into(),
         model: AiModelRef {
@@ -228,7 +228,7 @@ fn stream(ai: &AiFoundation, messages: Vec<AiTransportMessage>) -> AiStreamOpera
 
 /// The next frame's event, after checking it carries the next sequence
 /// number.
-async fn next(operation: &mut AiStreamOperation, sequence: &mut u64) -> AiStreamEvent {
+pub(crate) async fn next(operation: &mut AiStreamOperation, sequence: &mut u64) -> AiStreamEvent {
     let frame = tokio::time::timeout(PATIENCE, operation.receiver.recv())
         .await
         .expect("no frame arrived")
@@ -239,7 +239,7 @@ async fn next(operation: &mut AiStreamOperation, sequence: &mut u64) -> AiStream
 }
 
 /// Every event until the stream ends.
-async fn events(mut operation: AiStreamOperation) -> Vec<AiStreamEvent> {
+pub(crate) async fn events(mut operation: AiStreamOperation) -> Vec<AiStreamEvent> {
     let mut sequence = 1;
     let mut events = Vec::new();
     loop {
@@ -257,7 +257,7 @@ async fn events(mut operation: AiStreamOperation) -> Vec<AiStreamEvent> {
     }
 }
 
-fn answer_text(events: &[AiStreamEvent]) -> String {
+pub(crate) fn answer_text(events: &[AiStreamEvent]) -> String {
     events
         .iter()
         .filter_map(|event| match event {
@@ -267,7 +267,7 @@ fn answer_text(events: &[AiStreamEvent]) -> String {
         .collect()
 }
 
-fn tool_calls(events: &[AiStreamEvent]) -> Vec<AiToolCall> {
+pub(crate) fn tool_calls(events: &[AiStreamEvent]) -> Vec<AiToolCall> {
     events
         .iter()
         .filter_map(|event| match event {
@@ -277,7 +277,7 @@ fn tool_calls(events: &[AiStreamEvent]) -> Vec<AiToolCall> {
         .collect()
 }
 
-fn openai_delta(delta: Value, finish_reason: Value) -> Value {
+pub(crate) fn openai_delta(delta: Value, finish_reason: Value) -> Value {
     json!({
         "id": "chatcmpl-1",
         "object": "chat.completion.chunk",
@@ -484,6 +484,110 @@ async fn an_anthropic_provider_streams_an_answer_and_a_tool_call() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_gemini_provider_streams_an_answer_and_a_tool_call() {
+    let chunk = |parts: Value, finish: Option<&str>| {
+        let mut candidate = json!({ "content": { "role": "model", "parts": parts }, "index": 0 });
+        if let Some(finish) = finish {
+            candidate["finishReason"] = json!(finish);
+        }
+        json!({ "candidates": [candidate], "modelVersion": "test-model" })
+    };
+    let mut last = chunk(
+        json!([{ "functionCall": { "name": "add_task", "args": { "title": "Plant" } } }]),
+        Some("STOP"),
+    );
+    last["usageMetadata"] =
+        json!({ "promptTokenCount": 11, "candidatesTokenCount": 7, "totalTokenCount": 18 });
+    let provider = LocalProvider::start(Answer::Events(vec![
+        chunk(json!([{ "text": "Adding " }]), None),
+        chunk(json!([{ "text": "it." }]), None),
+        last,
+    ]))
+    .await;
+    let settings = settings("gemini", &provider.endpoint);
+
+    let events = events(stream(
+        &settings.ai,
+        vec![
+            text("system", "Be brief."),
+            text("user", "Add a task to plant."),
+        ],
+    ))
+    .await;
+
+    assert_eq!(answer_text(&events), "Adding it.");
+    let calls = tool_calls(&events);
+    assert_eq!(calls.len(), 1, "{events:?}");
+    assert_eq!(calls[0].name, "add_task");
+    assert_eq!(calls[0].arguments, json!({ "title": "Plant" }));
+    assert!(matches!(
+        events.last(),
+        Some(AiStreamEvent::Completed { .. })
+    ));
+    let (heard, _) = provider.heard().await;
+    assert_eq!(
+        heard.request_line,
+        "POST /v1/models/test-model:streamGenerateContent?alt=sse HTTP/1.1"
+    );
+    assert_eq!(heard.header("x-goog-api-key"), Some(KEY));
+    let sent = heard.body.to_string();
+    assert!(sent.contains("Be brief."), "{sent}");
+    assert!(sent.contains("add_task"), "{sent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_openai_responses_provider_streams_an_answer_and_a_tool_call() {
+    let call = json!({
+        "type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "add_task",
+        "arguments": "{\"title\":\"Plant\"}", "status": "completed",
+    });
+    let provider = LocalProvider::start(Answer::Events(vec![
+        json!({ "type": "response.created", "response": { "id": "resp_1", "status": "in_progress", "model": "test-model", "output": [] } }),
+        json!({ "type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "Adding " }),
+        json!({ "type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "it." }),
+        json!({ "type": "response.output_item.done", "output_index": 1, "item": call }),
+        json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_1", "status": "completed", "model": "test-model",
+                "output": [
+                    { "type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
+                      "content": [{ "type": "output_text", "text": "Adding it.", "annotations": [] }] },
+                    call,
+                ],
+                "usage": { "input_tokens": 11, "output_tokens": 7, "total_tokens": 18 },
+            },
+        }),
+    ]))
+    .await;
+    let settings = settings("openai_resp", &provider.endpoint);
+
+    let events = events(stream(
+        &settings.ai,
+        vec![text("user", "Add a task to plant.")],
+    ))
+    .await;
+
+    assert_eq!(answer_text(&events), "Adding it.");
+    let calls = tool_calls(&events);
+    assert_eq!(calls.len(), 1, "{events:?}");
+    assert_eq!(calls[0].call_id, "call_1");
+    assert_eq!(calls[0].arguments, json!({ "title": "Plant" }));
+    assert!(matches!(
+        events.last(),
+        Some(AiStreamEvent::Completed { .. })
+    ));
+    let (heard, _) = provider.heard().await;
+    assert_eq!(heard.request_line, "POST /v1/responses HTTP/1.1");
+    assert_eq!(
+        heard.header("authorization"),
+        Some(format!("Bearer {KEY}").as_str())
+    );
+    assert_eq!(heard.body["store"], false);
+    assert_eq!(heard.body["stream"], true);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_next_request_carries_the_tool_call_and_its_result() {
     let provider = LocalProvider::start(Answer::Events(vec![
         openai_delta(
@@ -584,6 +688,7 @@ async fn a_refused_key_reaches_you_as_a_plain_error_without_the_providers_detail
     let Some(AiStreamEvent::Error { error }) = events.last() else {
         panic!("the stream didn't fail: {events:?}");
     };
+    assert_eq!(error.code, "provider_auth_failed");
     let shown = serde_json::to_string(error).unwrap();
     assert!(!shown.contains("support-internal-detail"), "{shown}");
     assert!(!shown.contains(KEY), "{shown}");
@@ -629,5 +734,8 @@ async fn a_connection_that_breaks_mid_answer_fails_the_stream_and_keeps_what_arr
     server.await.unwrap();
 
     let last = next(&mut operation, &mut sequence).await;
-    assert!(matches!(last, AiStreamEvent::Error { .. }), "{last:?}");
+    let AiStreamEvent::Error { error } = last else {
+        panic!("the stream didn't fail: {last:?}");
+    };
+    assert_eq!(error.code, "provider_connection_lost");
 }

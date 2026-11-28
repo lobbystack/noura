@@ -83,7 +83,6 @@ struct RenameField {
 
 /// A choice from a row's menu.
 enum Command {
-    Open(String),
     OpenInNewTab(String),
     NewNote(String),
     NewFolder(String),
@@ -327,7 +326,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
 
     let open_path = app.document().map(|file| file.relative_path.clone());
     let can_open_terminal = app.can_open_terminal();
-    let reveal_label = app.platform().reveal_label();
+    let platform = app.platform();
     let problem = app.renaming().and_then(|rename| rename.problem.clone());
     let Some(tree) = app.tree() else {
         return;
@@ -437,7 +436,7 @@ pub(crate) fn show(ui: &mut Ui, app: &mut App, view: &mut TreeView) {
             .as_ref()
             .filter(|menu| menu.relative_path == row.relative_path)
         {
-            let shown = row_menu(&response, row, menu, can_open_terminal, reveal_label);
+            let shown = row_menu(&response, row, menu, can_open_terminal, platform);
             match shown {
                 MenuOutcome::Open => {}
                 MenuOutcome::Closed => menu_closed = true,
@@ -787,7 +786,6 @@ fn drag(ui: &mut Ui, app: &mut App, started: Option<usize>, rects: &[(usize, Rec
 
 fn run(app: &mut App, command: Command) {
     match command {
-        Command::Open(path) => app.open_file(&path, OpenAs::Preview),
         Command::OpenInNewTab(path) => app.open_file(&path, OpenAs::Kept),
         Command::NewNote(folder) => app.new_note(Some(&folder)),
         Command::NewFolder(folder) => app.new_folder(Some(&folder)),
@@ -822,14 +820,9 @@ pub(crate) fn item_menu(
         focus_first: false,
     };
     let can_open_terminal = app.can_open_terminal();
-    let reveal_label = app.platform().reveal_label();
-    match row_menu(response, row, &menu, can_open_terminal, reveal_label) {
+    match row_menu(response, row, &menu, can_open_terminal, app.platform()) {
         MenuOutcome::Open => true,
         MenuOutcome::Closed => false,
-        MenuOutcome::Chose(Command::Open(path)) => {
-            app.open_from_files(&path, OpenAs::Preview);
-            false
-        }
         MenuOutcome::Chose(Command::OpenInNewTab(path)) => {
             app.open_from_files(&path, OpenAs::Kept);
             false
@@ -847,8 +840,16 @@ fn row_menu(
     row: &TreeRow,
     menu: &RowMenu,
     can_open_terminal: bool,
-    reveal_label: &str,
+    platform: Platform,
 ) -> MenuOutcome {
+    let reveal_label = platform.reveal_label();
+    // The keys as the platform writes them, as in ⌘⌫ on macOS.
+    let keys = |key: TreeKey| {
+        key.menu_shortcut(platform)
+            .map(|shortcut| crate::keys::shortcut_text(&shortcut, platform))
+    };
+    let rename_keys = keys(TreeKey::Rename);
+    let trash_keys = keys(TreeKey::Trash);
     let mut open = true;
     let mut chosen = None;
     let at = menu
@@ -884,10 +885,9 @@ fn row_menu(
                 first = false;
                 response.clicked()
             };
+            // A click on the row already opens it, so the menu offers only
+            // a tab of its own.
             if row.kind == EntryKind::File {
-                if item(ui, "Open", None) {
-                    chosen = Some(Command::Open(path.clone()));
-                }
                 if item(ui, "Open in new tab", None) {
                     chosen = Some(Command::OpenInNewTab(path.clone()));
                 }
@@ -902,7 +902,7 @@ fn row_menu(
                 }
                 crate::common::menu_separator(ui);
             }
-            if item(ui, "Rename\u{2026}", Some("F2")) {
+            if item(ui, "Rename\u{2026}", rename_keys.as_deref()) {
                 chosen = Some(Command::Rename(path.clone()));
             }
             // A file that isn't downloaded has nothing on this device to copy.
@@ -920,12 +920,7 @@ fn row_menu(
                 chosen = Some(Command::Terminal(path.clone()));
             }
             crate::common::menu_separator(ui);
-            let trash_key = if cfg!(target_os = "macos") {
-                "Cmd+Backspace"
-            } else {
-                "Delete"
-            };
-            if item(ui, "Move to Trash", Some(trash_key)) {
+            if item(ui, "Move to Trash", trash_keys.as_deref()) {
                 chosen = Some(Command::Trash(path.clone()));
             }
         });

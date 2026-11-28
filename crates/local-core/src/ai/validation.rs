@@ -38,6 +38,21 @@ pub(super) fn validate_transport_messages(
                         return Err(invalid_message_content(operation));
                     }
                 }
+                AiContentPart::Thought {
+                    kind,
+                    signature,
+                    text,
+                    block,
+                    call_id,
+                } if message.role == "assistant" => {
+                    validate_tool_identifier(kind, "thought kinds", operation)?;
+                    if signature.is_none() && text.is_none() && block.is_none() {
+                        return Err(invalid_message_content(operation));
+                    }
+                    if let Some(call_id) = call_id {
+                        validate_tool_identifier(call_id, "tool call IDs", operation)?;
+                    }
+                }
                 AiContentPart::ToolCall { call_id, name, .. } if message.role == "assistant" => {
                     validate_tool_identifier(call_id, "tool call IDs", operation)?;
                     validate_tool_identifier(name, "tool names", operation)?;

@@ -218,6 +218,26 @@ impl SyncClient {
             .await
     }
 
+    /// `GET /v2/account`: the account's plan, limits and usage (§20).
+    pub async fn account(&mut self) -> Result<sync_protocol::messages::AccountResponse, SyncError> {
+        self.call(reqwest::Method::GET, "/v2/account", None).await
+    }
+
+    /// `POST /v2/account/active-workspaces`: the owned workspaces that stay
+    /// active when the plan allows fewer than the account owns (§20).
+    pub async fn set_active_workspaces(&mut self, workspaces: Vec<Id>) -> Result<(), SyncError> {
+        let body = sync_protocol::messages::ActiveWorkspacesRequest {
+            workspaces: sync_protocol::codec::List(workspaces),
+        }
+        .to_bytes();
+        self.call_empty(
+            reqwest::Method::POST,
+            "/v2/account/active-workspaces",
+            Some(body),
+        )
+        .await
+    }
+
     /// `GET /v2/workspaces`.
     pub async fn workspaces(&mut self) -> Result<WorkspacesResponse, SyncError> {
         self.call(reqwest::Method::GET, "/v2/workspaces", None)

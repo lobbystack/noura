@@ -50,6 +50,8 @@ pub struct SpeechShell {
     /// hotkey itself.
     registered: BTreeMap<u32, (String, String, HotKey)>,
     shortcuts: Vec<GlobalShortcut>,
+    /// Whether the shortcuts step aside while Settings records keys.
+    paused: bool,
     tray: Option<TrayIcon>,
     /// The plugin entries the tray shows, by item ID.
     entries: BTreeMap<String, (String, String)>,
@@ -117,6 +119,7 @@ impl SpeechShell {
             hotkeys,
             registered: BTreeMap::new(),
             shortcuts: Vec::new(),
+            paused: false,
             tray: None,
             entries: BTreeMap::new(),
             menus: Vec::new(),
@@ -183,6 +186,25 @@ impl SpeechShell {
 
     fn register(&mut self, app: &mut App) {
         let wanted = app.global_shortcuts();
+        // While Settings records new keys, the system's shortcuts step
+        // aside so the keys reach Settings, then come back.
+        #[cfg(target_os = "linux")]
+        let paused = !portal() && app.global_shortcuts_paused();
+        #[cfg(not(target_os = "linux"))]
+        let paused = app.global_shortcuts_paused();
+        if paused != self.paused {
+            self.paused = paused;
+            if let Some(manager) = &self.hotkeys {
+                for (_, (_, _, hotkey)) in std::mem::take(&mut self.registered) {
+                    let _ = manager.unregister(hotkey);
+                }
+            }
+            // Registers again once the pause ends.
+            self.shortcuts.clear();
+        }
+        if paused {
+            return;
+        }
         if wanted == self.shortcuts {
             return;
         }
@@ -238,7 +260,8 @@ impl SpeechShell {
             return;
         }
         let menus = app.tray_menu();
-        let wanted = !menus.is_empty() || !self.shortcuts.is_empty();
+        // The plugins' shortcuts count while they step aside.
+        let wanted = !menus.is_empty() || !app.global_shortcuts().is_empty();
         if !wanted {
             self.tray = None;
             self.menus.clear();

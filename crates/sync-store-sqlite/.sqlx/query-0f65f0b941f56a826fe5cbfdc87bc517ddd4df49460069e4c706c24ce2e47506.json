@@ -1,11 +1,22 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head\n             FROM workspaces WHERE workspace = ?1 AND closed = 0",
+  "query": "SELECT workspace, owner, over_plan_since AS \"since!: i64\", over_plan_notices\n               FROM workspaces WHERE over_plan_since IS NOT NULL AND closed = 0\n               ORDER BY over_plan_since, workspace LIMIT ?1",
   "describe": {
     "columns": [
       {
-        "name": "owner",
+        "name": "workspace",
         "ordinal": 0,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "workspaces",
+            "name": "workspace"
+          }
+        }
+      },
+      {
+        "name": "owner",
+        "ordinal": 1,
         "type_info": "Blob",
         "origin": {
           "Table": {
@@ -15,46 +26,24 @@
         }
       },
       {
-        "name": "creation_digest",
-        "ordinal": 1,
-        "type_info": "Blob",
-        "origin": {
-          "Table": {
-            "table": "workspaces",
-            "name": "creation_digest"
-          }
-        }
-      },
-      {
-        "name": "creation_response",
+        "name": "since!: i64",
         "ordinal": 2,
-        "type_info": "Blob",
+        "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "creation_response"
+            "name": "over_plan_since"
           }
         }
       },
       {
-        "name": "policy_revision",
+        "name": "over_plan_notices",
         "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "policy_revision"
-          }
-        }
-      },
-      {
-        "name": "policy_head",
-        "ordinal": 4,
-        "type_info": "Blob",
-        "origin": {
-          "Table": {
-            "table": "workspaces",
-            "name": "policy_head"
+            "name": "over_plan_notices"
           }
         }
       }
@@ -65,10 +54,9 @@
     "nullable": [
       false,
       false,
-      false,
-      false,
+      true,
       false
     ]
   },
-  "hash": "1f6897875f2c6710b46f9f901ffea16fadfdec0aa983c6c8983b80219df8f3a7"
+  "hash": "0f65f0b941f56a826fe5cbfdc87bc517ddd4df49460069e4c706c24ce2e47506"
 }

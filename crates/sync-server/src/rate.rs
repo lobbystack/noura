@@ -9,20 +9,24 @@
 //! holds what limits the channels themselves: how many one device opens and
 //! how long a silent one stays.
 //!
+//! On a server that sells plans, each account also has a daily budget in
+//! each direction from its own plan (§26, Transfer budgets): push and
+//! upload bodies count up, the responses of reads count down.
+//!
 //! Counters go through the store's [`Limiter`], so in PostgreSQL mode every
 //! instance counts against one allowance.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::{ConnectInfo, MatchedPath, Request, State};
 use axum::http::{HeaderMap, HeaderName, Method};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use sync_protocol::types::Id;
-use sync_store::{Backend, Error, Limit, Limiter, Refusal, Taken};
+use sync_store::{Backend, Error, Limit, Limiter, PlanLimits, Refusal, Store, Taken};
 
 use crate::http::{ApiError, AppState};
 
@@ -31,6 +35,45 @@ const MIB: u64 = 1024 * 1024;
 /// What a read or upload costs at least, in bytes, so a stream of empty
 /// answers can't run forever.
 pub const MIN_CHARGE: u64 = 1024;
+
+/// The length of a transfer budget's window: one UTC day, since windows
+/// start at multiples of their length from the Unix epoch.
+pub const DAY: Duration = Duration::from_secs(86_400);
+
+/// How long the gate keeps an account's plan before it reads it again.
+const PLAN_TTL: Duration = Duration::from_secs(60);
+
+/// Accounts whose plans the gate keeps before it forgets them all.
+const PLAN_CACHE: usize = 65_536;
+
+const fn per_day(allowance: u64) -> Limit {
+    Limit {
+        allowance,
+        window: DAY,
+    }
+}
+
+/// What one account may transfer each UTC day (§26, Transfer budgets).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DailyBudget {
+    /// The account.
+    pub account: Id,
+    /// Bytes it may push and upload.
+    pub up: Option<u64>,
+    /// Bytes it may read.
+    pub down: Option<u64>,
+}
+
+impl DailyBudget {
+    /// The budget `limits` give `account`.
+    pub fn of(account: Id, limits: &PlanLimits) -> Self {
+        Self {
+            account,
+            up: limits.upload_per_day,
+            down: limits.download_per_day,
+        }
+    }
+}
 
 const fn per_minute(allowance: u64) -> Limit {
     Limit {
@@ -159,21 +202,25 @@ fn parse_address(text: &str) -> Option<IpAddr> {
         .or_else(|| text.parse::<SocketAddr>().ok().map(|a| a.ip()))
 }
 
-/// What a read's response owes its allowance once its size is known. The
+/// What a read's response owes its allowances once its size is known: the
+/// device's and, on a server that sells plans, the account's day. The
 /// session extractors fill it; the layer around the route settles it.
 #[derive(Clone, Default)]
-pub(crate) struct Meter(Arc<Mutex<Option<Owed>>>);
+pub(crate) struct Meter(Arc<Mutex<Vec<Owed>>>);
 
 /// A counter's key and its limit.
 type Owed = (Vec<u8>, Limit);
 
 impl Meter {
-    fn set(&self, key: Vec<u8>, limit: Limit) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some((key, limit));
+    fn add(&self, key: Vec<u8>, limit: Limit) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((key, limit));
     }
 
-    fn settle(&self) -> Option<Owed> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    fn settle(&self) -> Vec<Owed> {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
@@ -218,6 +265,9 @@ impl Drop for ChannelSlot {
     }
 }
 
+/// The plans the gate read lately, by account, with when it read each.
+type PlanCache = Arc<Mutex<HashMap<Id, (PlanLimits, Instant)>>>;
+
 /// The server's rate limits and where it reads the client IP.
 #[derive(Clone, Debug)]
 pub struct RateGate {
@@ -226,6 +276,7 @@ pub struct RateGate {
     trusted_header: Option<HeaderName>,
     channels: ChannelLimits,
     open: OpenChannels,
+    plans: PlanCache,
 }
 
 fn over(what: &str, retry_after: Duration) -> Error {
@@ -241,6 +292,34 @@ async fn take(limiter: &dyn Limiter, key: &[u8], cost: u64, limit: Limit) -> Res
     match limiter.take(key, cost, limit).await? {
         Taken::Allowed => Ok(()),
         Taken::Refused { retry_after } => Err(over("over a rate limit", retry_after)),
+    }
+}
+
+/// Takes `cost` from the account's day in one direction, when the budget
+/// sets one.
+async fn take_day(
+    limiter: &dyn Limiter,
+    direction: &str,
+    budget: Option<DailyBudget>,
+    cost: u64,
+) -> Result<(), Error> {
+    let Some(budget) = budget else {
+        return Ok(());
+    };
+    let allowance = if direction == "day-up" {
+        budget.up
+    } else {
+        budget.down
+    };
+    let Some(allowance) = allowance else {
+        return Ok(());
+    };
+    match limiter
+        .take(&key(direction, &budget.account.0), cost, per_day(allowance))
+        .await?
+    {
+        Taken::Allowed => Ok(()),
+        Taken::Refused { retry_after } => Err(over("over the day's transfer budget", retry_after)),
     }
 }
 
@@ -263,6 +342,7 @@ impl RateGate {
             trusted_header,
             channels: ChannelLimits::default(),
             open: OpenChannels::default(),
+            plans: PlanCache::default(),
         }
     }
 
@@ -273,6 +353,7 @@ impl RateGate {
             trusted_header: None,
             channels: ChannelLimits::default(),
             open: OpenChannels::default(),
+            plans: PlanCache::default(),
         }
     }
 
@@ -340,6 +421,7 @@ impl RateGate {
         limiter: &dyn Limiter,
         request: (&Method, &str),
         subject: Id,
+        budget: Option<DailyBudget>,
         meter: &Meter,
     ) -> Result<(), ApiError> {
         let Some(limits) = &self.limits else {
@@ -360,33 +442,44 @@ impl RateGate {
                 };
                 let key = key(class, &subject.0);
                 take(limiter, &key, MIN_CHARGE, limit).await?;
-                meter.set(key, limit);
+                take_day(limiter, "day-down", budget, MIN_CHARGE).await?;
+                meter.add(key, limit);
+                if let Some(budget) = budget
+                    && let Some(down) = budget.down
+                {
+                    meter.add(self::key("day-down", &budget.account.0), per_day(down));
+                }
             }
             Traffic::Other => take(limiter, &key("other", &subject.0), 1, limits.requests).await?,
         }
         Ok(())
     }
 
-    /// Takes a push body of `bytes` from `device`'s push budget.
+    /// Takes a push body of `bytes` from `device`'s push budget and from
+    /// the account's day.
     pub(crate) async fn take_push_body(
         &self,
         limiter: &dyn Limiter,
         device: Id,
+        budget: Option<DailyBudget>,
         bytes: u64,
     ) -> Result<(), ApiError> {
         let Some(limits) = &self.limits else {
             return Ok(());
         };
         let key = key("push-bytes", &device.0);
-        Ok(take(limiter, &key, bytes, limits.push_bytes).await?)
+        take(limiter, &key, bytes, limits.push_bytes).await?;
+        Ok(take_day(limiter, "day-up", budget, bytes).await?)
     }
 
     /// Takes an upload of `bytes` from `device`'s upload budget, which
-    /// [`Self::admit`] already took [`MIN_CHARGE`] from.
+    /// [`Self::admit`] already took [`MIN_CHARGE`] from, and from the
+    /// account's day.
     pub(crate) async fn take_upload(
         &self,
         limiter: &dyn Limiter,
         device: Id,
+        budget: Option<DailyBudget>,
         bytes: u64,
     ) -> Result<(), ApiError> {
         let Some(limits) = &self.limits else {
@@ -394,7 +487,61 @@ impl RateGate {
         };
         let key = key("upload", &device.0);
         let rest = bytes.saturating_sub(MIN_CHARGE);
-        Ok(take(limiter, &key, rest, limits.upload_bytes).await?)
+        take(limiter, &key, rest, limits.upload_bytes).await?;
+        Ok(take_day(limiter, "day-up", budget, bytes).await?)
+    }
+
+    /// The daily budget of `account` on a server that sells plans and
+    /// counts traffic, from a plan the gate read within the last minute.
+    pub(crate) async fn budget<B: Backend>(
+        &self,
+        store: &Store<B>,
+        account: Id,
+    ) -> Result<Option<DailyBudget>, Error> {
+        if self.limits.is_none() || !store.billing() {
+            return Ok(None);
+        }
+        let now = Instant::now();
+        let cached = self
+            .plans
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&account)
+            .filter(|(_, read)| now.duration_since(*read) < PLAN_TTL)
+            .map(|(limits, _)| *limits);
+        let limits = match cached {
+            Some(limits) => limits,
+            None => {
+                let limits = store.plan_limits(account).await?;
+                let mut plans = self.plans.lock().unwrap_or_else(PoisonError::into_inner);
+                if plans.len() >= PLAN_CACHE {
+                    plans.clear();
+                }
+                plans.insert(account, (limits, now));
+                limits
+            }
+        };
+        Ok(Some(DailyBudget::of(account, &limits)))
+    }
+
+    /// Forgets `account`'s plan, so the next request reads the new one.
+    pub(crate) fn forget_plan(&self, account: Id) {
+        self.plans
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&account);
+    }
+
+    /// What `account` pushed and uploaded, and read, so far today.
+    pub(crate) async fn today(limiter: &dyn Limiter, account: Id) -> Result<(u64, u64), Error> {
+        // The window's length, not the allowance, names the counter.
+        let up = limiter
+            .used(&key("day-up", &account.0), per_day(u64::MAX))
+            .await?;
+        let down = limiter
+            .used(&key("day-down", &account.0), per_day(u64::MAX))
+            .await?;
+        Ok((up, down))
     }
 }
 
@@ -435,6 +582,9 @@ pub(crate) async fn layer<B: Backend>(
             Ok(subject) => subject,
             Err(error) => return ApiError(error).into_response(),
         };
+        request
+            .extensions_mut()
+            .insert(crate::accounts::signups::ClientKey(subject));
         match limiter
             .take(&key("sign-in", &subject.0), 1, limits.sign_in)
             .await
@@ -447,15 +597,18 @@ pub(crate) async fn layer<B: Backend>(
     let meter = Meter::default();
     request.extensions_mut().insert(meter.clone());
     let response = next.run(request).await;
-    if let Some((key, limit)) = meter.settle() {
+    let owed = meter.settle();
+    if !owed.is_empty() {
         let size = axum::body::HttpBody::size_hint(response.body())
             .exact()
             .unwrap_or(0);
         let rest = size.saturating_sub(MIN_CHARGE);
-        if rest > 0
-            && let Err(error) = charge(&*limiter, &key, rest, limit).await
-        {
-            tracing::warn!("can't count a response: {error}");
+        for (key, limit) in owed {
+            if rest > 0
+                && let Err(error) = charge(&*limiter, &key, rest, limit).await
+            {
+                tracing::warn!("can't count a response: {error}");
+            }
         }
     }
     response
@@ -516,6 +669,20 @@ mod tests {
             })
         }
 
+        fn used<'a>(&'a self, key: &'a [u8], limit: Limit) -> BoxFut<'a, Result<u64>> {
+            Box::pin(async move {
+                let now = *self.now.lock().expect("now");
+                let ends = limit.window_ends(now);
+                Ok(self
+                    .used
+                    .lock()
+                    .expect("used")
+                    .get(&(key.to_vec(), limit.window_ms()))
+                    .filter(|count| count.0 == ends)
+                    .map_or(0, |count| count.1))
+            })
+        }
+
         fn prune(&self) -> BoxFut<'_, Result<u64>> {
             Box::pin(async { Ok(0) })
         }
@@ -526,6 +693,7 @@ mod tests {
         gate: RateGate,
         clock: VirtualClock,
         id: Id,
+        budget: Option<DailyBudget>,
     }
 
     impl Device {
@@ -534,7 +702,21 @@ mod tests {
                 gate: RateGate::new(RateLimits::default(), None),
                 clock: VirtualClock::default(),
                 id: Id([7; 16]),
+                budget: None,
             }
+        }
+
+        /// A device of an account with `limits`' daily budget.
+        fn on_plan(limits: &PlanLimits) -> Self {
+            Self {
+                budget: Some(DailyBudget::of(Id([8; 16]), limits)),
+                ..Self::new()
+            }
+        }
+
+        /// How long this device has waited so far.
+        fn waited(&self) -> Duration {
+            self.clock.elapsed()
         }
 
         /// Waits out a refusal of `attempt`, and tries again.
@@ -553,16 +735,19 @@ mod tests {
             let meter = Meter::default();
             self.until_taken(async || {
                 self.gate
-                    .admit(&self.clock, (&method, route), self.id, &meter)
+                    .admit(&self.clock, (&method, route), self.id, self.budget, &meter)
                     .await
             })
             .await;
-            let (key, limit) = meter.settle().expect("a read");
-            charge(&self.clock, &key, bytes.saturating_sub(MIN_CHARGE), limit)
-                .await
-                .map_err(ApiError)
-                .ok()
-                .expect("counted");
+            let owed = meter.settle();
+            assert!(!owed.is_empty(), "a read");
+            for (key, limit) in owed {
+                charge(&self.clock, &key, bytes.saturating_sub(MIN_CHARGE), limit)
+                    .await
+                    .map_err(ApiError)
+                    .ok()
+                    .expect("counted");
+            }
         }
 
         /// A request with no response worth counting.
@@ -570,7 +755,7 @@ mod tests {
             let meter = Meter::default();
             self.until_taken(async || {
                 self.gate
-                    .admit(&self.clock, (&method, route), self.id, &meter)
+                    .admit(&self.clock, (&method, route), self.id, self.budget, &meter)
                     .await
             })
             .await;
@@ -581,21 +766,39 @@ mod tests {
             let meter = Meter::default();
             self.until_taken(async || {
                 self.gate
-                    .admit(&self.clock, (&Method::PATCH, route), self.id, &meter)
+                    .admit(
+                        &self.clock,
+                        (&Method::PATCH, route),
+                        self.id,
+                        self.budget,
+                        &meter,
+                    )
                     .await
             })
             .await;
-            self.until_taken(async || self.gate.take_upload(&self.clock, self.id, bytes).await)
-                .await;
+            self.until_taken(async || {
+                self.gate
+                    .take_upload(&self.clock, self.id, self.budget, bytes)
+                    .await
+            })
+            .await;
         }
 
         async fn push(&self, bytes: u64) -> std::result::Result<(), ApiError> {
             let route = "/v2/workspaces/{w}/ops";
             let meter = Meter::default();
             self.gate
-                .admit(&self.clock, (&Method::POST, route), self.id, &meter)
+                .admit(
+                    &self.clock,
+                    (&Method::POST, route),
+                    self.id,
+                    self.budget,
+                    &meter,
+                )
                 .await?;
-            self.gate.take_push_body(&self.clock, self.id, bytes).await
+            self.gate
+                .take_push_body(&self.clock, self.id, self.budget, bytes)
+                .await
         }
     }
 
@@ -668,6 +871,51 @@ mod tests {
             device.upload(MIB).await;
         }
         assert!(device.push(MIB).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_free_account_uploads_a_gigabyte_a_day() {
+        let free = sync_store::plans::limits(sync_store::plans::FREE).expect("free");
+        let device = Device::on_plan(&free);
+        // 953 segments of 1 MiB fit 1 GB, and the 954th waits for the next
+        // UTC day.
+        for _ in 0..953 {
+            device.upload(MIB).await;
+        }
+        assert!(device.waited() < DAY);
+        device.upload(MIB).await;
+        assert!(device.waited() >= DAY - Duration::from_secs(60));
+        let (up, _) = RateGate::today(&device.clock, Id([8; 16]))
+            .await
+            .expect("today");
+        assert_eq!(up, MIB);
+    }
+
+    #[tokio::test]
+    async fn reads_count_down_against_the_day_and_pushes_up() {
+        let device = Device {
+            budget: Some(DailyBudget {
+                account: Id([8; 16]),
+                up: Some(128 * 1024),
+                down: Some(10 * MIB),
+            }),
+            ..Device::new()
+        };
+        device
+            .read(Method::GET, "/v2/workspaces/{w}/blobs/{id}", MIB)
+            .await;
+        assert!(device.push(64 * 1024).await.is_ok(), "a push");
+        let (up, down) = RateGate::today(&device.clock, Id([8; 16]))
+            .await
+            .expect("today");
+        assert_eq!((up, down), (64 * 1024, MIB));
+        // A push over the day's budget gets `rate_limited` until midnight.
+        let Err(ApiError(Error::Refused(refusal))) = device.push(128 * 1024).await else {
+            panic!("refused");
+        };
+        assert_eq!(refusal.code, "rate_limited");
+        let wait = refusal.retry_after_seconds.expect("a wait");
+        assert!(wait > 60 && wait <= DAY.as_secs(), "{wait}");
     }
 
     #[test]

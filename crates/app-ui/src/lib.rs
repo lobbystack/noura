@@ -358,7 +358,10 @@ impl NouraUi {
         }
         let screen = self.app.screen().clone();
         // Without a workspace, only Quit and Close Window take their keys.
-        self.dispatch_keys(ui);
+        // While Settings records a shortcut's keys, they go to Settings alone.
+        if self.app.recording_shortcut().is_none() {
+            self.dispatch_keys(ui);
+        }
         if self.app.is_closed() {
             // Close Window ran: the desktop stops showing this window.
             return;

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO latest_orders (account, subscription, order_id, net, currency, paid_at)\n             VALUES (?1, ?2, ?3, ?4, ?5, ?6)\n             ON CONFLICT (account) DO UPDATE SET\n               subscription = excluded.subscription, order_id = excluded.order_id,\n               net = excluded.net, currency = excluded.currency, paid_at = excluded.paid_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "e49b5ebd949fd53d833088a78f7e9c9c33e8289d8d7d7b9e18b63d538b1eba83"
+}

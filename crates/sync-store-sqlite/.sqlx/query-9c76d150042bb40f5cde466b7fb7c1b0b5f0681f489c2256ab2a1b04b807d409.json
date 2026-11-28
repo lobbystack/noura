@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM billing_events WHERE day < ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "9c76d150042bb40f5cde466b7fb7c1b0b5f0681f489c2256ab2a1b04b807d409"
+}

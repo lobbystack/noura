@@ -157,6 +157,17 @@ pub struct PluginRow {
     pub update_check: Option<UpdateCheck>,
 }
 
+impl PluginRow {
+    /// Whether it declares the `ai` capability, so it asks the AI
+    /// providers and its page in Plugins holds their settings.
+    pub fn uses_ai(&self) -> bool {
+        self.approved
+            .iter()
+            .chain(&self.revoked)
+            .any(|line| line.name == "ai")
+    }
+}
+
 /// Where checking GitHub for a newer release of a plugin stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateCheck {
@@ -709,6 +720,49 @@ impl Plugins {
             .collect()
     }
 
+    /// The shortcuts of the plugins installed here that are off in the
+    /// open workspace, with the keys you gave each: what turning the
+    /// plugin on would register.
+    pub(crate) fn idle_shortcuts(&self) -> Vec<crate::GlobalShortcut> {
+        let Some(kernel) = &self.speech else {
+            return Vec::new();
+        };
+        if self.workspace.is_none() {
+            return Vec::new();
+        }
+        let enabled = self.enabled();
+        self.records
+            .plugins
+            .iter()
+            .filter(|(id, _)| !enabled.contains(id))
+            .flat_map(|(id, record)| {
+                crate::speech_kernel::approved_shortcuts(&record.approved)
+                    .into_iter()
+                    .map(|shortcut| crate::GlobalShortcut {
+                        plugin: id.clone(),
+                        keys: kernel
+                            .speech
+                            .shortcut_keys(id, &shortcut.id, shortcut.keys_here()),
+                        declared: shortcut.keys_here().to_owned(),
+                        id: shortcut.id,
+                        title: shortcut.title,
+                    })
+            })
+            .collect()
+    }
+
+    /// The name of the plugin `id`, as its manifest gives it, or its ID.
+    pub(crate) fn shown_name(&self, id: &str) -> String {
+        self.plugin_name(id)
+            .or_else(|| {
+                SHIPPED_PLUGINS
+                    .iter()
+                    .find(|(shipped, _)| *shipped == id)
+                    .map(|(_, name)| (*name).to_owned())
+            })
+            .unwrap_or_else(|| id.to_owned())
+    }
+
     /// Whether the running plugin `id` was approved `capability`.
     fn holds(&self, id: &str, capability: &str) -> bool {
         self.running.contains_key(id)
@@ -979,12 +1033,17 @@ impl Plugins {
             .collect()
     }
 
-    /// The plugin IDs the open workspace's manifest lists as enabled.
+    /// The plugin IDs the open workspace's manifest lists as enabled. The
+    /// entries that name parts of the kernel, such as `sync`, stay in the
+    /// manifest and out of this list.
     fn enabled(&self) -> Vec<String> {
-        self.workspace
+        let mut enabled = self
+            .workspace
             .as_ref()
             .map(|workspace| workspace.engine().manifest().enabled_plugins)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        enabled.retain(|id| !workspace_format::is_kernel_module_id(id));
+        enabled
     }
 
     /// Run the plugins `workspace` enables that this device installed and
@@ -1308,6 +1367,10 @@ impl Plugins {
     /// Turn the plugin `id` on or off in the open workspace: rewrite the
     /// manifest's enabled plugins list, then start or stop the plugin.
     pub(crate) fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), AppError> {
+        // Sync turns on and off from its own section, never as a plugin.
+        if workspace_format::is_kernel_module_id(id) {
+            return Err(AppError::new("plugin_not_found", "That isn't a plugin."));
+        }
         let Some(workspace) = self.workspace.clone() else {
             return Err(AppError::new(
                 "no_workspace",

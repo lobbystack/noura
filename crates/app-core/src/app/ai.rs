@@ -8,8 +8,8 @@ use local_core::AiStreamer;
 
 use super::{App, Change};
 use crate::{
-    AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt, AppError,
-    ai::{provider_choices, provider_kinds},
+    AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt, AppError, ChatGptStatus,
+    ai::{chatgpt::CHATGPT_USAGE_URL, provider_choices, provider_kinds},
 };
 
 impl App {
@@ -80,6 +80,51 @@ impl App {
             },
         };
         self.save_ai_provider(input)
+    }
+
+    /// How Continue with ChatGPT stands: signed in, waiting for the
+    /// browser, or why the last try didn't work.
+    pub fn chatgpt_status(&self) -> ChatGptStatus {
+        self.session.ai.chatgpt_status()
+    }
+
+    /// Open the ChatGPT sign-in in the browser. Once you sign in there,
+    /// requests to the ChatGPT provider use your ChatGPT plan, and its
+    /// tokens stay in this computer's credential store.
+    pub fn sign_in_with_chatgpt(&mut self) {
+        self.session.ai.sign_in_with_chatgpt();
+        self.ai_changed();
+    }
+
+    /// Stop waiting for the ChatGPT sign-in.
+    pub fn cancel_chatgpt_sign_in(&mut self) {
+        self.session.ai.cancel_chatgpt_sign_in();
+        self.ai_changed();
+    }
+
+    /// Sign out of ChatGPT: OpenAI ends the session, and the provider and
+    /// its tokens leave this computer.
+    pub fn sign_out_chatgpt(&mut self) {
+        self.session.ai.sign_out_chatgpt();
+        self.ai_changed();
+    }
+
+    /// You saw that Noura now uses your ChatGPT plan.
+    pub fn dismiss_chatgpt_notice(&mut self) {
+        self.session.ai.dismiss_chatgpt_notice();
+        self.ai_changed();
+    }
+
+    /// Open ChatGPT's usage settings, where you limit what Noura uses of
+    /// your plan.
+    pub fn open_chatgpt_usage(&mut self) {
+        self.open_link(CHATGPT_USAGE_URL);
+    }
+
+    /// Sign in with ChatGPT at `endpoints` in place of OpenAI's. Tests
+    /// point it at a fake on this computer.
+    pub fn set_chatgpt_endpoints(&mut self, endpoints: crate::ChatGptEndpoints) {
+        self.session.ai.set_chatgpt_endpoints(endpoints);
     }
 
     /// Why Noura can't read its AI provider settings on this computer, if

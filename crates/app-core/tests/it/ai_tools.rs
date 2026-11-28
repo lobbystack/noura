@@ -141,6 +141,85 @@ fn a_run_lists_the_tool_calls_and_carries_their_results_to_the_model() {
     assert!(line.ends_with("calls [] text hi"), "{line}");
 }
 
+/// Reasoning that came with an answer's tool calls goes back with their
+/// results, at the start of the answer, as Anthropic requires within a
+/// tool-use turn.
+#[test]
+fn the_reasoning_behind_a_tool_call_goes_back_with_its_result() {
+    let fixture = Fixture::new(&[]);
+    let mut app = fixture.app_with(FakeSystem::new());
+    let provider = FakeProvider::new();
+    let Some(probe) = plugins::folder_for(
+        "probe_plugin",
+        "chatter",
+        &["name = \"views\"", "name = \"ai\""],
+    ) else {
+        return;
+    };
+    app.set_ai_client(provider.clone());
+    plugins::install_and_enable(&mut app, probe.path(), "chatter");
+    let id = app
+        .save_ai_provider(ai::provider("Local", "ollama", "llama3", None))
+        .unwrap();
+    let created = press(&mut app, "ai:create-chat");
+    let chat = id_after(&created[0], "hello ai chat ").to_owned();
+    let sent = press(&mut app, &format!("ai:send-with-tool:{chat}:{id}:Echo hi"));
+    let run = id_after(&sent[0], "hello ai run ").to_owned();
+    plugins::wait_until(&mut app, "the request leaves", |_| {
+        provider.requests().len() == 1
+    });
+
+    provider.say(0, "Let me echo that.");
+    provider.think(
+        0,
+        vec![local_core::AiContentPart::Thought {
+            kind: "ollama".into(),
+            signature: Some("sig-1".into()),
+            text: Some("Echo it.".into()),
+            block: None,
+            call_id: None,
+        }],
+    );
+    provider.call_tools(
+        0,
+        vec![AiToolCall {
+            call_id: "call_1".into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({ "text": "hi" }),
+        }],
+    );
+    let completed = format!("hello ai run {run} RunStatus::Completed message");
+    let mut line = String::new();
+    for _ in 0..200 {
+        line = press(&mut app, &format!("ai:read-run:{run}"))
+            .pop()
+            .unwrap_or_default();
+        if line.starts_with(&completed) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(line.starts_with(&completed), "{line}");
+    press(
+        &mut app,
+        &format!("ai:answer-tools:{run}:{{\"echoed\":\"hi\"}}"),
+    );
+    plugins::wait_until(&mut app, "the next request leaves", |_| {
+        provider.requests().len() == 2
+    });
+    assert_eq!(
+        provider.requests()[1].messages[1],
+        "assistant: thought ollama sig-1 | Let me echo that. | call call_1 echo {\"text\":\"hi\"}"
+    );
+    // The reasoning never reaches the chat's files.
+    for (_, text) in ai::chat_files(&fixture.root) {
+        assert!(
+            !text.contains("sig-1") && !text.contains("Echo it."),
+            "{text}"
+        );
+    }
+}
+
 #[test]
 fn a_call_to_a_workspace_tool_the_run_didn_t_offer_fails_without_a_prompt() {
     let fixture = Fixture::new(&[]);

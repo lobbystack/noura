@@ -30,6 +30,18 @@ pub use object_type::{
 /// Canonical workspace-relative location of Noura's durable manifest.
 pub const WORKSPACE_MANIFEST_PATH: &str = ".noura/workspace.yaml";
 
+/// The `enabled_plugins` entries that name parts of the kernel rather
+/// than plugins: `sync`, which turns sync on for the replica, and
+/// `folders` and `notes`, which earlier versions of Noura listed for
+/// modules the kernel now holds. Readers keep them, and no plugin may
+/// take one as its ID.
+pub const KERNEL_MODULE_IDS: [&str; 3] = ["folders", "notes", "sync"];
+
+/// Whether the `enabled_plugins` entry `id` names a part of the kernel.
+pub fn is_kernel_module_id(id: &str) -> bool {
+    KERNEL_MODULE_IDS.contains(&id)
+}
+
 /// Errors produced while handling canonical workspace-format data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum FormatError {

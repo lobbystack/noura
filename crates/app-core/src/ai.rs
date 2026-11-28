@@ -36,6 +36,7 @@
     reason = "the run steps pass local-core's structured CoreError along, as local-core does"
 )]
 
+pub(crate) mod chatgpt;
 mod complete;
 mod history;
 pub(crate) mod models;
@@ -222,6 +223,11 @@ struct Run {
     resumed: bool,
     /// The Orb it runs for, whose tool calls run without asking.
     orb: Option<orbs::OrbJob>,
+    /// The reasoning each of its answers that asked for tools came with,
+    /// by the IDs of those calls, to send back unchanged with their
+    /// results. It lives as long as the run in memory: a run resumed after
+    /// a quit sends its results without it.
+    thoughts: Vec<history::Thoughts>,
 }
 
 impl Run {
@@ -256,6 +262,7 @@ impl Run {
             asking: None,
             interrupted: false,
             orb: None,
+            thoughts: Vec::new(),
         }
     }
 
@@ -355,6 +362,8 @@ pub(crate) struct Ai {
     orb_checking: Mutex<()>,
     /// What the default Orb asks with, as this device keeps it.
     default_orb: Mutex<orbs::settings::Settings>,
+    /// Continue with ChatGPT's sign-in under way, and what it left to say.
+    chatgpt: Mutex<chatgpt::Flow>,
 }
 
 impl Drop for Ai {
@@ -428,6 +437,7 @@ impl Ai {
             orb_threads: Mutex::new(HashMap::new()),
             orb_checking: Mutex::new(()),
             default_orb: Mutex::new(orbs::settings::Settings::load(app_data)),
+            chatgpt: Mutex::new(chatgpt::Flow::default()),
         })
     }
 
@@ -1165,12 +1175,11 @@ impl Ai {
                 read.messages.push(mine);
             }
         }
-        Ok(history::request(
-            instructions,
-            &read.messages,
-            answering,
-            id,
-        ))
+        let mut request = history::request(instructions, &read.messages, answering, id);
+        if let Some(run) = lock(&self.state).runs.get(id) {
+            history::add_thoughts(&mut request, &run.thoughts);
+        }
+        Ok(request)
     }
 
     /// Whether `request` no longer fits the context window of `provider`,
@@ -1305,6 +1314,7 @@ impl Ai {
         mut on_text: impl FnMut(&str),
         mut on_call: impl FnMut(AiToolCall),
     ) -> Ended {
+        let mut thoughts = history::Thoughts::default();
         let ended = loop {
             let Some(frame) = frames.blocking_recv() else {
                 break Ended::Failed(Box::new(incomplete()));
@@ -1312,12 +1322,22 @@ impl Ai {
             match frame.event {
                 AiStreamEvent::Started { .. } => {}
                 AiStreamEvent::TextDelta { text } => on_text(&text),
-                AiStreamEvent::ToolCall { call } => on_call(AiToolCall {
-                    id: call.call_id,
-                    name: call.name,
-                    arguments: call.arguments.to_string(),
-                }),
+                AiStreamEvent::Thoughts { parts } => thoughts.parts.extend(parts),
+                AiStreamEvent::ToolCall { call } => {
+                    thoughts.calls.push(call.call_id.clone());
+                    on_call(AiToolCall {
+                        id: call.call_id,
+                        name: call.name,
+                        arguments: call.arguments.to_string(),
+                    });
+                }
                 AiStreamEvent::Completed { summary } => {
+                    if !thoughts.parts.is_empty()
+                        && !thoughts.calls.is_empty()
+                        && let Some(run) = lock(&self.state).runs.get_mut(id)
+                    {
+                        run.thoughts.push(std::mem::take(&mut thoughts));
+                    }
                     let tokens = summary
                         .usage
                         .and_then(|usage| usage.prompt_tokens)
@@ -2419,6 +2439,19 @@ fn failure_of(error: &CoreError) -> AiFailure {
         "endpoint_insecure" => "Use HTTPS, or HTTP only for a server on this computer.",
         "revision_conflict" => "The chat changed elsewhere, so the answer wasn't saved.",
         "provider_stream_incomplete" => "The provider stopped early. Try again.",
+        "provider_auth_failed" => "The provider didn't accept the key. Update it in AI settings.",
+        "provider_key_missing" => "The provider has no key yet. Add one in AI settings.",
+        "provider_billing" => "The provider account is out of credit. Check its billing.",
+        "provider_rate_limited" => "The provider is limiting requests. Try again in a minute.",
+        "provider_model_not_found" | "provider_model_retired" => {
+            "The provider doesn't offer this model anymore. Pick another one."
+        }
+        "provider_too_long" => "This chat is too long for the model. Start a new chat.",
+        "provider_overloaded" => "The provider is down or busy. Try again in a few minutes.",
+        "provider_unreachable" => "Noura couldn't reach the provider. Check your connection.",
+        "provider_connection_lost" => "The connection to the provider dropped. Try again.",
+        "provider_plan_limit" => "The ChatGPT plan has no usage left for Noura.",
+        "provider_signed_out" => "Noura is signed out of ChatGPT. Sign in again in AI settings.",
         PLUGIN_DISABLED => "You turned off a plugin this answer relied on.",
         _ => match error.category {
             local_core::ErrorCategory::Provider | local_core::ErrorCategory::Transient => {
@@ -2569,19 +2602,83 @@ pub(crate) fn provider_kinds() -> &'static [(&'static str, &'static str)] {
 /// OpenAI-compatible servers, which need an address, go under Local or
 /// custom; OpenAI Responses is OpenAI's own other interface.
 pub const AI_KEY_PROVIDERS: [(&str, &str); 10] = [
-    ("openai", "gpt-4.1-mini"),
-    ("anthropic", "claude-sonnet-4-5"),
-    ("gemini", "gemini-2.5-flash"),
-    ("groq", "llama-3.3-70b-versatile"),
-    ("deepseek", "deepseek-chat"),
-    ("xai", "grok-3-mini"),
-    ("together", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
-    (
-        "fireworks",
-        "accounts/fireworks/models/llama-v3p3-70b-instruct",
-    ),
+    ("openai", "gpt-6-luna"),
+    ("anthropic", "claude-sonnet-5-5"),
+    ("gemini", "gemini-4-hydrogen"),
+    ("groq", "openai/gpt-oss-120b"),
+    ("deepseek", "deepseek-flash"),
+    ("xai", "grok-4.3"),
+    ("together", "openai/gpt-oss-120b"),
+    ("fireworks", "accounts/fireworks/models/deepseek-v4p1-flash"),
     ("cohere", "command-a-03-2025"),
     ("open_router", "openrouter/auto"),
+];
+
+/// Each default in [`AI_KEY_PROVIDERS`], the day someone last checked that
+/// its provider still serves it, and the page that says so. Changing a
+/// default means checking it and updating its line here.
+#[cfg(test)]
+const DEFAULTS_CHECKED: [(&str, &str, &str, &str); 10] = [
+    (
+        "openai",
+        "gpt-6-luna",
+        "2026-11-27",
+        "https://developers.openai.com/api/docs/models",
+    ),
+    (
+        "anthropic",
+        "claude-sonnet-5-5",
+        "2026-11-27",
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+    ),
+    (
+        "gemini",
+        "gemini-4-hydrogen",
+        "2026-11-27",
+        "https://ai.google.dev/gemini-api/docs/models",
+    ),
+    (
+        "groq",
+        "openai/gpt-oss-120b",
+        "2026-11-27",
+        "https://console.groq.com/docs/models",
+    ),
+    (
+        "deepseek",
+        "deepseek-flash",
+        "2026-11-27",
+        "https://api-docs.deepseek.com/quick_start/pricing",
+    ),
+    (
+        "xai",
+        "grok-4.3",
+        "2026-11-27",
+        "https://docs.x.ai/developers/migration/may-15-retirement",
+    ),
+    (
+        "together",
+        "openai/gpt-oss-120b",
+        "2026-11-27",
+        "https://docs.together.ai/docs/gpt-oss",
+    ),
+    (
+        "fireworks",
+        "accounts/fireworks/models/deepseek-v4p1-flash",
+        "2026-11-27",
+        "https://docs.fireworks.ai/updates/changelog",
+    ),
+    (
+        "cohere",
+        "command-a-03-2025",
+        "2026-11-27",
+        "https://docs.cohere.com/docs/models",
+    ),
+    (
+        "open_router",
+        "openrouter/auto",
+        "2026-11-27",
+        "https://openrouter.ai/docs",
+    ),
 ];
 
 /// One provider Settings lists to connect with a key.
@@ -2627,6 +2724,32 @@ pub(crate) fn provider_choices(rows: &[AiProviderRow]) -> Vec<AiProviderChoice> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each default was checked against its provider's pages, and none is
+    /// a model Noura knows its provider retired.
+    #[test]
+    fn each_default_model_is_checked_and_not_retired() {
+        for ((kind, model), (checked_kind, checked_model, checked_on, source)) in
+            AI_KEY_PROVIDERS.iter().zip(DEFAULTS_CHECKED)
+        {
+            assert_eq!(
+                (*kind, *model),
+                (checked_kind, checked_model),
+                "check {kind}'s default"
+            );
+            assert!(
+                checked_on.parse::<jiff::civil::Date>().is_ok(),
+                "{checked_on}"
+            );
+            assert!(source.starts_with("https://"), "{source}");
+            assert!(
+                local_core::RETIRED_MODELS
+                    .iter()
+                    .all(|(retired_kind, retired, _, _)| (retired_kind, retired) != (kind, model)),
+                "{kind}'s default {model} is retired"
+            );
+        }
+    }
 
     #[test]
     fn every_provider_settings_lists_is_a_kind_noura_connects_to() {

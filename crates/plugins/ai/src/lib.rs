@@ -21,6 +21,7 @@
 //! Build it with `crates/plugin-sdk/build-plugins.sh`, then install the
 //! folder holding `plugin.toml` and the built `ai_plugin.wasm`.
 
+mod failures;
 mod look;
 mod page;
 mod panel;

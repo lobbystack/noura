@@ -270,7 +270,7 @@ pub(crate) async fn commit(
     txn: &mut impl WriteTxn,
     cache: &PolicyCache,
     interval: CheckpointInterval,
-    quota: Option<u64>,
+    quota: crate::retention::Quota,
     generation: u64,
     session: Session,
     workspace: Id,
@@ -354,6 +354,8 @@ pub(crate) async fn commit(
         ));
     }
     let mut state = keys::PushState::new(policy, interval, quota, now);
+    state.over_plan = row.over_plan;
+    state.limits = crate::retention::plan_of(txn, row.owner, quota.billing).await?;
     let mut receipts = Vec::with_capacity(pushed.len());
     for record in &pushed {
         let index = record.index();
@@ -363,6 +365,7 @@ pub(crate) async fn commit(
                 state.policy(),
                 interval,
                 quota,
+                state.over_plan,
                 generation,
                 workspace,
                 op,
@@ -400,11 +403,16 @@ pub(crate) async fn commit(
                     .await
                     .map(|()| Vec::new())
             }
-            Pushed::Profile(_, profile) => {
-                apply_profile(txn, state.policy(), quota, workspace, profile)
-                    .await
-                    .map(|()| Vec::new())
-            }
+            Pushed::Profile(_, profile) => apply_profile(
+                txn,
+                state.policy(),
+                quota,
+                state.over_plan,
+                workspace,
+                profile,
+            )
+            .await
+            .map(|()| Vec::new()),
         };
         let created = result.map_err(|e| match e {
             Error::Refused(refusal) => failure(index, refusal),
@@ -471,10 +479,14 @@ async fn set_history_floors(
 async fn apply_profile(
     txn: &mut impl WriteTxn,
     policy: &Arc<PolicyChain>,
-    quota: Option<u64>,
+    quota: crate::retention::Quota,
+    over_plan: bool,
     workspace: Id,
     profile: &Signed<Profile>,
 ) -> Result<()> {
+    if over_plan {
+        return Err(crate::plans::over_plan());
+    }
     if crate::retention::over_quota(txn, workspace, quota).await? {
         return Err(refuse(
             "quota_exceeded",
@@ -565,11 +577,13 @@ fn chain_conflict(domain: Id, head: Option<ChainHeadRow>) -> Error {
 
 /// The checks of §13 for one operation, in the order the spec lists them,
 /// then its write.
+#[allow(clippy::too_many_arguments)]
 async fn apply(
     txn: &mut impl WriteTxn,
     policy: &Arc<PolicyChain>,
     interval: CheckpointInterval,
-    quota: Option<u64>,
+    quota: crate::retention::Quota,
+    over_plan: bool,
     generation: u64,
     workspace: Id,
     pushed: &PushedOp,
@@ -614,6 +628,9 @@ async fn apply(
             });
         }
         return Err(chain_conflict(domain, head));
+    }
+    if over_plan {
+        return Err(crate::plans::over_plan());
     }
 
     // Write access at the latest policy entry and at `policy_revision`.

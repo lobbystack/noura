@@ -69,14 +69,23 @@ fn plugin_icon(row: &PluginRow) -> icons::Icon {
     }
 }
 
+/// What the AI plugin's page keeps between frames: its providers and its
+/// Brave Search key.
+pub(crate) struct AiPage<'a> {
+    pub(crate) ai: &'a mut crate::ai::AiSettingsView,
+    pub(crate) web: &'a mut crate::web_search::WebSettingsView,
+}
+
 /// The Plugins section's content: the list of plugins with their
 /// switches, or one plugin's details, then the ways to install another.
-/// `address` holds what you typed in the release address field.
+/// `address` holds what you typed in the release address field. The AI
+/// plugin's details hold the AI settings.
 pub(crate) fn section(
     ui: &mut Ui,
     app: &mut App,
     picker: &mut dyn FolderPicker,
     address: &mut String,
+    ai: &mut AiPage<'_>,
 ) {
     let rows = app.plugins();
     let workspace_open = app.workspace().is_some();
@@ -84,7 +93,7 @@ pub(crate) fn section(
         .settings()
         .and_then(|settings| settings.plugin_details.clone());
     if let Some(row) = details.and_then(|id| rows.iter().find(|row| row.id == id)) {
-        details_page(ui, app, row, workspace_open);
+        details_page(ui, app, row, workspace_open, ai);
         return;
     }
     if !workspace_open {
@@ -199,7 +208,13 @@ fn list_row(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) -
 
 /// One plugin's page: back to the list, its name with its switch, then
 /// its version, source and what it may use.
-fn details_page(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: bool) {
+fn details_page(
+    ui: &mut Ui,
+    app: &mut App,
+    row: &PluginRow,
+    workspace_open: bool,
+    ai: &mut AiPage<'_>,
+) {
     let palette = Palette::of(ui.ctx());
     if Btn::new("Plugins")
         .icon(icons::BACK)
@@ -241,6 +256,17 @@ fn details_page(ui: &mut Ui, app: &mut App, row: &PluginRow, workspace_open: boo
     ui.add_space(24.0);
     ui.separator();
     ui.add_space(24.0);
+    // Each plugin that asks the AI providers holds their settings, so they
+    // stay in reach while the AI plugin is off. The AI plugin's page adds
+    // the Brave Search key its chats search the web with.
+    if row.id == app_core::AI_PLUGIN || row.uses_ai() {
+        crate::ai::settings(ui, app, ai.ai);
+        if row.id == app_core::AI_PLUGIN {
+            ui.add_space(24.0);
+            crate::web_search::settings(ui, app, ai.web);
+        }
+        ui.add_space(32.0);
+    }
     plugin(ui, app, row);
 }
 

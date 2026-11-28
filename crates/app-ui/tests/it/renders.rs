@@ -1500,7 +1500,7 @@ fn website_window(
     system.set_now("2026-11-22T14:00:00Z");
     let mut app = App::launch_with(app_data.path(), system);
     app.set_ai_client(Arc::new(answers));
-    let probe = crate::ai_tools::FakeProbe(Ok("noura 0.3.3".into()));
+    let probe = crate::ai_tools::FakeProbe(Ok("noura 0.4.0".into()));
     app.set_mcp_server(Ok(MAC_PROGRAM.into()), Arc::new(probe));
     (window(app, theme, None), (app_data, parent))
 }

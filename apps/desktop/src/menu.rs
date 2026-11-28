@@ -255,6 +255,8 @@ pub(crate) mod native {
         /// table.
         #[cfg(target_os = "windows")]
         main: isize,
+        #[cfg(target_os = "windows")]
+        theme: muda::MenuTheme,
         /// On Windows, the menu bar of every other window. Each window
         /// owns its menu bar, which Windows destroys with the window.
         #[cfg(target_os = "windows")]
@@ -278,6 +280,8 @@ pub(crate) mod native {
             shown: menus.to_vec(),
             #[cfg(target_os = "windows")]
             main,
+            #[cfg(target_os = "windows")]
+            theme: menu_theme(cc.egui_ctx.theme()),
             #[cfg(target_os = "windows")]
             others: Vec::new(),
         };
@@ -400,8 +404,9 @@ pub(crate) mod native {
             && let RawWindowHandle::Win32(handle) = handle.as_raw()
         {
             let hwnd = handle.hwnd.get();
+            let theme = menu_theme(cc.egui_ctx.theme());
             // SAFETY: the handle is eframe's live main window.
-            unsafe { menu.init_for_hwnd(hwnd)? };
+            unsafe { menu.init_for_hwnd_with_theme(hwnd, theme)? };
             return Ok(hwnd);
         }
         Ok(0)
@@ -410,12 +415,23 @@ pub(crate) mod native {
     #[cfg(target_os = "windows")]
     fn after_update(_menu: &muda::Menu, _window_menu: Option<&Submenu>) {}
 
+    /// The menu bar's theme for the appearance Noura draws with, which
+    /// can differ from the system's.
+    #[cfg(target_os = "windows")]
+    pub(crate) fn menu_theme(theme: egui::Theme) -> muda::MenuTheme {
+        match theme {
+            egui::Theme::Dark => muda::MenuTheme::Dark,
+            egui::Theme::Light => muda::MenuTheme::Light,
+        }
+    }
+
     #[cfg(target_os = "windows")]
     impl NativeMenu {
-        /// Give every window of the app that has no menu bar its own, and
-        /// let go of the menu bars of windows that closed. Returns how
+        /// Give every window of the app that has no menu bar its own, let
+        /// go of the menu bars of windows that closed, and draw every menu
+        /// bar in `theme`, the appearance Noura draws with. Returns how
         /// many windows other than the first have one.
-        pub(crate) fn cover_windows(&mut self) -> muda::Result<usize> {
+        pub(crate) fn cover_windows(&mut self, theme: egui::Theme) -> muda::Result<usize> {
             use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
 
             let before = self.others.len();
@@ -424,6 +440,20 @@ pub(crate) mod native {
             // SAFETY: IsWindow takes any handle and only reads it.
             self.others
                 .retain(|(hwnd, _)| unsafe { IsWindow(*hwnd as _) } != 0);
+            // Follow Noura's appearance even when Windows uses another theme.
+            let theme = menu_theme(theme);
+            if self.theme != theme {
+                // SAFETY: only update handles that still belong to live windows.
+                if unsafe { IsWindow(self.main as _) } != 0 {
+                    // SAFETY: the main window was checked above.
+                    unsafe { self.menu.set_theme_for_hwnd(self.main, theme)? };
+                }
+                for (hwnd, menu) in &self.others {
+                    // SAFETY: closed windows were removed above.
+                    unsafe { menu.set_theme_for_hwnd(*hwnd, theme)? };
+                }
+                self.theme = theme;
+            }
             let mut changed = self.others.len() != before;
             for hwnd in windows_without_menu() {
                 // A new window may reuse the handle of one that closed.
@@ -431,7 +461,7 @@ pub(crate) mod native {
                 let menu = muda::Menu::new();
                 fill(&menu, &self.shown)?;
                 // SAFETY: the handle is one of this thread's live windows.
-                unsafe { menu.init_for_hwnd(hwnd)? };
+                unsafe { menu.init_for_hwnd_with_theme(hwnd, self.theme)? };
                 self.others.push((hwnd, menu));
                 changed = true;
             }
@@ -680,6 +710,21 @@ mod tests {
             harness.step();
             let commands = &harness.output().viewport_output[&ViewportId::ROOT].commands;
             assert_eq!(commands, &[request], "{item:?}");
+        }
+    }
+
+    /// Noura's own appearance picks the menu bar's theme, so a dark Noura
+    /// on a light Windows gets a dark menu bar.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_menu_bar_follows_the_appearance_noura_draws_with() {
+        let ctx = egui::Context::default();
+        for (preference, theme) in [
+            (egui::ThemePreference::Dark, muda::MenuTheme::Dark),
+            (egui::ThemePreference::Light, muda::MenuTheme::Light),
+        ] {
+            ctx.set_theme(preference);
+            assert_eq!(native::menu_theme(ctx.theme()), theme, "{preference:?}");
         }
     }
 }

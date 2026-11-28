@@ -149,3 +149,55 @@ main:has(.share) {
   padding: 0.25rem 0.75rem;
   border: 1px solid var(--line);
 }
+
+/* The plan section: its heading, and links that look like buttons. */
+h2 {
+  margin: 2rem 0 0.5rem;
+  font-size: 1.15rem;
+}
+
+.plan p {
+  margin: 0 0 0.5rem;
+}
+
+.plan .actions {
+  display: grid;
+  gap: 0.5rem;
+  margin: 1rem 0 1.75rem;
+}
+
+a.button {
+  display: block;
+  padding: 0.65rem 1rem;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
+
+a.button.secondary {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+}
+
+/* Consent boxes: the box beside its sentence. */
+label.check {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-start;
+  color: var(--fg);
+  font-size: 1rem;
+}
+
+label.check input {
+  width: auto;
+  margin: 0.2rem 0 0;
+}
+
+.error {
+  color: var(--fg);
+  font-weight: 600;
+}

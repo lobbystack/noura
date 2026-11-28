@@ -486,7 +486,7 @@ fn a_listed_provider_connects_with_a_pasted_key() {
         .find(|row| row.kind == "openai")
         .expect("OpenAI is set up");
     assert!(row.has_key && row.enabled);
-    assert_eq!(row.model, "gpt-4.1-mini");
+    assert_eq!(row.model, "gpt-6-luna");
     assert!(
         !all_labels(harness)
             .iter()
@@ -809,8 +809,179 @@ fn without_a_provider_the_page_offers_open_ai_settings_which_opens_settings_on_a
             .query_by_role_and_label(Role::Dialog, "Settings")
             .is_some()
     });
+    // The AI settings live on the AI plugin's page in Plugins.
+    let settings = harness.state().app().settings().unwrap().clone();
+    assert_eq!(settings.section, app_core::settings_section::PLUGINS);
+    assert_eq!(settings.plugin_details.as_deref(), Some("ai"));
+    run(&mut harness);
+    harness.get_by_role_and_label(Role::Group, "OpenAI");
+    harness.get_by_role_and_label(Role::Group, "Brave Search key");
+}
+
+/// Continue with ChatGPT in the OpenAI row: the browser opens on the
+/// sign-in, the notice says once that Noura uses your plan, the row says
+/// the plan answers, and Sign out brings the button back.
+#[test]
+fn continue_with_chatgpt_uses_your_plan_and_sign_out_ends_it() {
+    let Some(component) = plugins::built("ai_plugin") else {
+        return;
+    };
+    let fake = app_core::chatgpt_fake::FakeOpenAi::start();
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
+    let plugin = plugins::folder(parent.path(), MANIFEST, "ai_plugin.wasm", &component);
+    plugins::install_and_enable(app_data.path(), &plugin, "ai");
+    let system = FakeSystem::new(Platform::current());
+    let mut harness = harness_with(app_data.path(), FakePicker::default(), system.clone());
+    settle(&mut harness);
+    harness
+        .state_mut()
+        .app_mut()
+        .set_chatgpt_endpoints(fake.endpoints.clone());
+    harness
+        .state_mut()
+        .app_mut()
+        .open_settings_at("ai-providers");
+    run(&mut harness);
+    let openai = (Role::Group, "OpenAI");
+    click_in(&mut harness, openai, Role::Button, "OpenAI");
+    click_in(&mut harness, openai, Role::Button, "Continue with ChatGPT");
+
+    let browse = format!("browse {}", fake.endpoints.issuer);
+    let opened = |system: &FakeSystem| {
+        system
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|call| {
+                call.strip_prefix("browse ")
+                    .filter(|_| call.starts_with(&browse))
+            })
+            .map(str::to_owned)
+    };
+    wait_until(&mut harness, |_| opened(&system).is_some());
+    wait_until(&mut harness, |harness| {
+        all_labels(harness)
+            .iter()
+            .any(|label| label == "Finish in your browser.")
+    });
+    assert_eq!(fake.come_back(&opened(&system).unwrap()), 200);
+
+    let notice = "You're using your ChatGPT plan";
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Dialog, notice)
+            .is_some()
+    });
+    harness
+        .get_by_role_and_label(Role::Dialog, notice)
+        .get_by_role_and_label(Role::Button, "Got it")
+        .click();
+    run(&mut harness);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Dialog, notice)
+            .is_none()
+    );
+    assert!(harness.state().app().chatgpt_status().signed_in);
+
+    let plan = harness.get_by_role_and_label(Role::Group, "ChatGPT plan");
+    let shown = texts(plan.query_all(By::new().role(Role::Label)));
+    assert!(
+        shown.contains(&"Using ChatGPT plan".to_owned()),
+        "{shown:?}"
+    );
+    assert!(
+        shown.contains(&app_core::chatgpt_fake::EMAIL.to_owned()),
+        "{shown:?}"
+    );
+    let row = texts(
+        harness
+            .get_by_role_and_label(Role::Group, "OpenAI")
+            .query_all(By::new().role(Role::Label)),
+    );
+    assert!(row.contains(&"ChatGPT plan".to_owned()), "{row:?}");
+    assert_eq!(harness.unnamed_widgets(), Vec::<String>::new());
+
+    click_in(
+        &mut harness,
+        (Role::Group, "ChatGPT plan"),
+        Role::Button,
+        "Sign out",
+    );
+    wait_until(&mut harness, |harness| {
+        harness
+            .query_by_role_and_label(Role::Button, "Continue with ChatGPT")
+            .is_some()
+    });
+    assert_eq!(fake.state().revoked.len(), 1);
+    // The tokens never reach a label.
+    assert!(
+        all_labels(&harness)
+            .iter()
+            .all(|label| !label.contains("access_1") && !label.contains("refresh_1"))
+    );
+}
+
+/// With the AI plugin gone, Transcription, which asks the AI providers
+/// for its summaries, holds their settings on its page in Plugins, and
+/// Search settings finds them as AI.
+#[test]
+fn transcription_holds_the_ai_settings_while_the_ai_plugin_is_gone() {
+    let Some(component) = plugins::built("transcription_plugin") else {
+        return;
+    };
+    let app_data = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    create_workspace(app_data.path(), &parent.path().join("Garden"));
+    let plugin = plugins::folder(
+        parent.path(),
+        include_str!("../../../plugins/transcription/plugin.toml"),
+        "transcription_plugin.wasm",
+        &component,
+    );
+    plugins::install_and_enable(app_data.path(), &plugin, "transcription");
+    let system = FakeSystem::new(Platform::current());
+    let mut harness = harness_with(app_data.path(), FakePicker::default(), system);
+    settle(&mut harness);
+    harness.state_mut().app_mut().open_settings_at("plugins");
+    run(&mut harness);
+    let nav = harness.get_by_role_and_label(Role::Navigation, "Settings sections");
+    assert!(nav.query_by_role_and_label(Role::Button, "AI").is_none());
+
+    harness
+        .get_by_role_and_label(Role::Button, "Transcription settings")
+        .click_accesskit();
+    run(&mut harness);
+    harness.get_by_role_and_label(Role::Group, "OpenAI");
+    harness.get_by_role_and_label(Role::Group, "Anthropic");
+    // Web search is for the AI plugin's chats, so its key stays there.
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Group, "Brave Search key")
+            .is_none()
+    );
+
+    // Search settings finds the AI settings, and choosing them opens the
+    // same page.
+    harness.state_mut().app_mut().show_plugin_details(None);
+    harness.state_mut().app_mut().set_settings_query("api keys");
+    run(&mut harness);
+    harness
+        .get_by_role_and_label(Role::Navigation, "Settings sections")
+        .get_by_role_and_label(Role::Button, "AI")
+        .click_accesskit();
+    run(&mut harness);
     assert_eq!(
-        harness.state().app().settings().unwrap().section,
-        app_core::settings_section::AI
+        harness
+            .state()
+            .app()
+            .settings()
+            .unwrap()
+            .plugin_details
+            .as_deref(),
+        Some("transcription")
     );
 }

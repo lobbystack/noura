@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT accepted_at, plan, version, immediate, renewal\n             FROM consents WHERE account = ?1\n             ORDER BY accepted_at DESC, plan LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "accepted_at",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "consents",
+            "name": "accepted_at"
+          }
+        }
+      },
+      {
+        "name": "plan",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "consents",
+            "name": "plan"
+          }
+        }
+      },
+      {
+        "name": "version",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "consents",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "name": "immediate",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "consents",
+            "name": "immediate"
+          }
+        }
+      },
+      {
+        "name": "renewal",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "consents",
+            "name": "renewal"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "da7411629eb3dfefa9f12c79b1361522fdc424903a630c12b97526c5aea541c4"
+}

@@ -44,8 +44,8 @@ use sync_protocol::keys::{
 use sync_protocol::live::LiveOp;
 use sync_protocol::matching::{domain_of, synced_path};
 use sync_protocol::messages::{
-    ChainConflictDetail, Entry, EntryRecord, Frame, FrameAction, MAX_BODY, Page, PageStatus,
-    PullCursor, PushFailureDetail, Receipt, RecordRef, records_frame_action,
+    ChainConflictDetail, Entry, EntryRecord, FileTooLargeDetail, Frame, FrameAction, MAX_BODY,
+    Page, PageStatus, PullCursor, PushFailureDetail, Receipt, RecordRef, records_frame_action,
     records_frame_is_well_formed,
 };
 use sync_protocol::policy::PolicyChain;
@@ -156,6 +156,11 @@ pub struct Status {
     /// The workspace's usage against its quota, once the server reported
     /// it (§20).
     pub usage: Option<Usage>,
+    /// Whether the workspace is over its owner's plan, so this device's
+    /// changes wait (§20).
+    pub over_plan: bool,
+    /// The largest file the owner's plan allows, once the server named it.
+    pub max_file: Option<u64>,
     /// What a restore lost that stopped this workspace (§14).
     pub restore_lost: Option<restore::Lost>,
     /// A rollback that holds this workspace until the generation changes.
@@ -185,6 +190,8 @@ pub struct Usage {
 
 /// How long the device keeps the usage it last read.
 const USAGE_REFRESH: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long the device keeps the largest file of another owner's plan.
+const MAX_FILE_REFRESH: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 /// How often a sync that a change ended looks for its access again.
 const ACCESS_RECHECK: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -239,6 +246,10 @@ pub struct WorkspaceSync {
     /// The workspace's usage, and when the device last read it.
     usage: Option<Usage>,
     usage_checked: Option<std::time::Instant>,
+    /// When the device last tried a push while the workspace was over plan.
+    plan_checked: Option<std::time::Instant>,
+    /// When the device learned the largest file of the owner's plan.
+    max_file_learned: Option<std::time::Instant>,
     /// When an ended sync last looked at the policy.
     access_checked: Option<std::time::Instant>,
     /// The moves you confirmed, which the next capture signs.
@@ -490,6 +501,8 @@ impl WorkspaceSync {
             bootstrap: false,
             bootstrap_progress: None,
             waiting_for_space: BTreeSet::new(),
+            over_plan: false,
+            max_file: None,
             restore: restore::Restore {
                 owner,
                 ..Default::default()
@@ -546,6 +559,8 @@ impl WorkspaceSync {
             reviews: Vec::new(),
             usage: None,
             usage_checked: None,
+            plan_checked: None,
+            max_file_learned: None,
             access_checked: None,
             confirmed_moves: BTreeSet::new(),
             skipped_now: Vec::new(),
@@ -691,6 +706,8 @@ impl WorkspaceSync {
             reviews: Vec::new(),
             usage: None,
             usage_checked: None,
+            plan_checked: None,
+            max_file_learned: None,
             access_checked: None,
             confirmed_moves: BTreeSet::new(),
             skipped_now: Vec::new(),
@@ -853,6 +870,8 @@ impl WorkspaceSync {
                     .map(|f| f.outbox.len())
                     .sum::<usize>(),
             waiting_for_space: self.state.waiting_for_space.len(),
+            over_plan: self.state.over_plan,
+            max_file: self.state.max_file,
             restore_lost: self.state.restore.lost.clone(),
             rollback: self.state.restore.rollback.clone(),
             restored: self.state.restore.alerted,
@@ -902,7 +921,54 @@ impl WorkspaceSync {
         self.save()
     }
 
-    /// Reads the workspace's usage and quota, at most once a minute.
+    /// Reads the plan again in the next round and, if the workspace is
+    /// back within it, pushes at once, as after you upgrade or keep this
+    /// workspace synced (§20).
+    pub fn recheck_plan(&mut self) {
+        self.usage_checked = None;
+        self.plan_checked = None;
+    }
+
+    /// Whether a file of `size` bytes is above the largest file the
+    /// owner's plan allows, as far as this device knows (§20).
+    fn above_plan(&self, size: u64) -> bool {
+        self.state.max_file.is_some_and(|max| size > max)
+    }
+
+    /// Reads the account's plan (§20): for a workspace the account owns,
+    /// the largest file and whether the workspace is over plan; for
+    /// another, it forgets a largest file learned more than an hour ago,
+    /// since only an upload tells it the owner's.
+    async fn refresh_plan(&mut self, service: &mut SyncService, now: std::time::Instant) {
+        let Ok(report) = service.client().account().await else {
+            return;
+        };
+        let owned = report
+            .workspaces
+            .iter()
+            .find(|w| w.workspace == self.state.workspace);
+        if let Some(owned) = owned {
+            self.state.max_file = report.max_file_bytes;
+            let over = owned.state == sync_protocol::messages::OwnedState::OverPlan;
+            if over && !self.state.over_plan {
+                self.over_plan_now();
+            }
+            self.state.over_plan = over;
+            if !over {
+                self.plan_checked = None;
+            }
+            self.max_file_learned = Some(now);
+        } else if self
+            .max_file_learned
+            .is_none_or(|at| now.duration_since(at) > MAX_FILE_REFRESH)
+        {
+            self.state.max_file = None;
+            self.max_file_learned = Some(now);
+        }
+    }
+
+    /// Reads the workspace's usage and quota, and the account's plan, at
+    /// most once a minute.
     async fn refresh_usage(&mut self, service: &mut SyncService) {
         let now = std::time::Instant::now();
         if self
@@ -911,6 +977,7 @@ impl WorkspaceSync {
         {
             return;
         }
+        self.refresh_plan(service, now).await;
         if let Ok(response) = service.client().workspaces().await {
             self.usage_checked = Some(now);
             if let Some(info) = response
@@ -2022,6 +2089,13 @@ impl WorkspaceSync {
                         });
                         continue;
                     }
+                    if self.above_plan(found.file.size) {
+                        skipped.push(Skipped {
+                            path: found.file.relative_path.clone(),
+                            why: SkipWhy::AbovePlan,
+                        });
+                        continue;
+                    }
                     // Until the device applied every marker it reads, it
                     // can't tell where a new file goes (§9).
                     if holding_new {
@@ -2049,6 +2123,13 @@ impl WorkspaceSync {
                         skipped.push(Skipped {
                             path: found.file.relative_path.clone(),
                             why: SkipWhy::TooLarge,
+                        });
+                        continue;
+                    }
+                    if self.above_plan(found.file.size) {
+                        skipped.push(Skipped {
+                            path: found.file.relative_path.clone(),
+                            why: SkipWhy::AbovePlan,
                         });
                         continue;
                     }
@@ -2564,6 +2645,7 @@ impl WorkspaceSync {
     /// server acknowledges the record that lists it.
     async fn upload_blobs(&mut self, service: &mut SyncService) -> Result<(), SyncError> {
         let mut index = 0;
+        let checked = self.plan_checked;
         while index < self.state.outbox.len() {
             let outgoing = &self.state.outbox[index];
             if outgoing.upload.is_none()
@@ -2571,6 +2653,10 @@ impl WorkspaceSync {
                 || self.upload_at(service, index).await?
             {
                 index += 1;
+            }
+            // An upload answered `over_plan`: nothing else goes now.
+            if self.plan_checked != checked {
+                return Ok(());
             }
         }
         Ok(())
@@ -2608,6 +2694,24 @@ impl WorkspaceSync {
             // the space (§20).
             Err(SyncError::Refused { code, .. }) if code == "quota_exceeded" => {
                 self.wait_for_space(index)?;
+                false
+            }
+            // The workspace takes nothing until it's back within its
+            // owner's plan; the record waits where it is (§20).
+            Err(SyncError::Refused { code, .. }) if code == "over_plan" => {
+                self.over_plan_now();
+                true
+            }
+            // The file stays on this device, and captures leave it out
+            // while it stays above the plan's largest file (§20).
+            Err(SyncError::Refused { code, detail, .. }) if code == "file_too_large" => {
+                self.state.max_file = detail
+                    .as_deref()
+                    .and_then(|d| FileTooLargeDetail::from_bytes(d).ok())
+                    .map(|d| d.max_file_bytes)
+                    .or(self.state.max_file);
+                self.max_file_learned = Some(std::time::Instant::now());
+                self.give_up_blob(index)?;
                 false
             }
             Err(SyncError::Refused { code, .. }) if code == "forbidden" => {
@@ -3077,6 +3181,18 @@ impl WorkspaceSync {
         if self.state.removal_hold {
             return Ok(0);
         }
+        // Over plan, the device tries one push a minute, and its changes
+        // wait in the outbox meanwhile (§20).
+        if self.state.over_plan {
+            let now = std::time::Instant::now();
+            if self
+                .plan_checked
+                .is_some_and(|at| now.duration_since(at) < ACCESS_RECHECK)
+            {
+                return Ok(0);
+            }
+            self.plan_checked = Some(now);
+        }
         // Records sealed under an epoch that a rotation since replaced go
         // out re-sealed under the current one (§9).
         let latest = self.state.epochs.last().map_or(0, |e| e.body.epoch);
@@ -3089,13 +3205,20 @@ impl WorkspaceSync {
             self.reseal_from(index, true)?;
             self.save()?;
         }
+        let checked = self.plan_checked;
         self.upload_blobs(service).await?;
+        if self.plan_checked != checked {
+            return Ok(0);
+        }
         // A move's records leave in one push across domains (§9).
         while self.state.outbox.first().is_some_and(|o| o.pair.is_none()) {
             // At the re-seal cap the device signs nothing more there, but
             // retries the last attempt's bytes (§14).
             let at_cap = self.stopped == Some("sync_reseal_limit");
             if self.stopped.is_some() && !at_cap {
+                return Ok(acknowledged);
+            }
+            if self.state.over_plan && attempts > 0 {
                 return Ok(acknowledged);
             }
             attempts += 1;
@@ -3119,6 +3242,7 @@ impl WorkspaceSync {
             let sent = batch.len();
             match service.client().push(self.state.workspace, batch).await {
                 Ok(response) => {
+                    self.state.over_plan = false;
                     let outgoing: Vec<Outgoing> = self.state.outbox.drain(..sent).collect();
                     for (outgoing, receipt) in outgoing.into_iter().zip(response.receipts.0.iter())
                     {
@@ -3349,6 +3473,10 @@ impl WorkspaceSync {
                 self.reseal_replacing(index, &rejected.record)
             }
             "quota_exceeded" => self.wait_for_space(index),
+            "over_plan" => {
+                self.over_plan_now();
+                Ok(())
+            }
             "conflict_limit" | "snapshot_required" => {
                 // The change stays local, and the next record, if any,
                 // takes its place.
@@ -3475,6 +3603,14 @@ impl WorkspaceSync {
     /// The server has no space for the outbox's record at `index`: the
     /// change stays local, the next capture signs it again, and the next
     /// record takes its place (§20).
+    /// Notes that the server answered `over_plan`: pushes stop, and the
+    /// device tries again once a minute (§20).
+    fn over_plan_now(&mut self) {
+        self.state.over_plan = true;
+        self.plan_checked = Some(std::time::Instant::now());
+        self.usage_checked = None;
+    }
+
     fn wait_for_space(&mut self, index: usize) -> Result<(), SyncError> {
         let rejected = self.take_outgoing(index);
         self.hold_refused_snapshot(&rejected.record)?;

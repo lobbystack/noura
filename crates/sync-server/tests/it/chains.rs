@@ -694,6 +694,7 @@ async fn the_server_serves_the_chain_reads_of_the_policy_fixture() {
                         creation_response: Vec::new(),
                         policy_revision: last.body.revision,
                         policy_head: last.digest(),
+                        over_plan: false,
                     },
                 )
                 .await?;

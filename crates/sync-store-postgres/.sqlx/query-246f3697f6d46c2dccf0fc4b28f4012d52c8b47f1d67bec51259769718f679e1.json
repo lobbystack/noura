@@ -1,60 +1,60 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT owner, creation_digest, creation_response, policy_revision, policy_head\n             FROM workspaces WHERE workspace = $1 AND closed = 0",
+  "query": "SELECT workspace, ordinal, kept, over_plan_since, over_plan_notices\n             FROM workspaces WHERE owner = $1 AND closed = 0\n             ORDER BY ordinal, workspace",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "owner",
+        "name": "workspace",
         "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "owner"
+            "name": "workspace"
           }
         }
       },
       {
         "ordinal": 1,
-        "name": "creation_digest",
-        "type_info": "Bytea",
+        "name": "ordinal",
+        "type_info": "Int8",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "creation_digest"
+            "name": "ordinal"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "creation_response",
-        "type_info": "Bytea",
+        "name": "kept",
+        "type_info": "Bool",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "creation_response"
+            "name": "kept"
           }
         }
       },
       {
         "ordinal": 3,
-        "name": "policy_revision",
+        "name": "over_plan_since",
         "type_info": "Int8",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "policy_revision"
+            "name": "over_plan_since"
           }
         }
       },
       {
         "ordinal": 4,
-        "name": "policy_head",
-        "type_info": "Bytea",
+        "name": "over_plan_notices",
+        "type_info": "Int8",
         "origin": {
           "Table": {
             "table": "workspaces",
-            "name": "policy_head"
+            "name": "over_plan_notices"
           }
         }
       }
@@ -68,9 +68,9 @@
       false,
       false,
       false,
-      false,
+      true,
       false
     ]
   },
-  "hash": "49495c6396a2139a75c09df9abcc7e1314bbf346e359905af37950dacc639401"
+  "hash": "246f3697f6d46c2dccf0fc4b28f4012d52c8b47f1d67bec51259769718f679e1"
 }

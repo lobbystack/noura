@@ -1,15 +1,34 @@
 {% extends "base.html" %}
-{% block title %}Your account{% endblock %}
+{% block lang %}{{ lang }}{% endblock %}
+{% block title %}{{ title }}{% endblock %}
 {% block content %}
-<h1>Your account</h1>
-<p>You're signed in as {{ email }}.</p>
-<p data-passkey-count="{{ passkeys }}">{% if passkeys == 1 %}You have 1 passkey.{% else %}You have {{ passkeys }} passkeys.{% endif %}</p>
+<h1>{{ title }}</h1>
+<p>{{ signed_in }}</p>
+<p data-passkey-count="{{ passkeys }}">{{ passkeys_line }}</p>
 <form data-passkey="add">
-<button type="button" data-passkey-start hidden>Add a passkey</button>
+<button type="button" data-passkey-start hidden>{{ add_passkey }}</button>
 <p class="status" data-status role="status"></p>
 </form>
-<p><a href="/device">Sign in a device</a></p>
+{% if billing %}
+<section class="plan">
+<h2>{{ plan_heading }}</h2>
+<p data-plan="{{ plan_id }}">{{ plan_name }}</p>
+<p>{{ usage }}</p>
+{% if !notice.is_empty() %}<p>{{ notice }}</p>{% endif %}
+{% if !over_plan.is_empty() %}<p>{{ over_plan }}</p>{% endif %}
+<div class="actions">
+{% for offer in offers %}<a class="button" href="/account/upgrade?plan={{ offer.0 }}">{{ offer.1 }}</a>
+{% endfor %}{% if manage %}<a class="button secondary" href="/account/billing">{{ manage_label }}</a>{% endif %}
+{% if cancel %}<a class="button secondary" href="/account/cancel">{{ cancel_label }}</a>{% endif %}
+{% if refund %}<a class="button secondary" href="/account/refund">{{ refund_label }}</a>{% endif %}
+{% if withdraw %}<a class="button secondary" href="/account/withdraw">{{ withdraw_label }}</a>{% endif %}
+</div>
+<p class="aside">{{ contact }}</p>
+</section>
+{% endif %}
+<p><a href="/device">{{ device_link }}</a></p>
 <form method="post" action="/account/sign-out">
-<button type="submit" class="secondary">Sign out</button>
+<button type="submit" class="secondary">{{ sign_out }}</button>
 </form>
+<p class="aside"><a href="/account/language?to={{ switch_to }}&amp;back=/account" lang="{{ switch_to }}">{{ switch_label }}</a></p>
 {% endblock %}

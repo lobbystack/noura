@@ -145,6 +145,9 @@ pub(crate) struct SpeechKernel {
     pub(crate) speech: Arc<Speech>,
     menus: Mutex<BTreeMap<String, Vec<MenuBarEntry>>>,
     registered: Mutex<BTreeMap<(String, String), bool>>,
+    /// The window recording new keys for a shortcut in Settings, while
+    /// the system's shortcuts wait so the keys reach Settings.
+    recording: Mutex<Option<crate::session::WindowKey>>,
     /// Kernel events for plugins, and plugins to draw again, until the
     /// plugin service takes them.
     pending: Mutex<Vec<(String, Option<KernelEvent>)>>,
@@ -177,6 +180,7 @@ impl SpeechKernel {
             speech,
             menus: Mutex::new(BTreeMap::new()),
             registered: Mutex::new(BTreeMap::new()),
+            recording: Mutex::new(None),
             pending: Mutex::new(Vec::new()),
             version: AtomicU64::new(0),
             notifier,
@@ -297,9 +301,40 @@ impl SpeechKernel {
     }
 
     pub(crate) fn set_registered(&self, plugin: &str, id: &str, registered: bool) {
-        self.registered
+        let before = self
+            .registered
             .lock()
             .insert((plugin.to_owned(), id.to_owned()), registered);
+        // Settings says when the system refused a shortcut's keys.
+        if before != Some(registered) {
+            self.changed();
+        }
+    }
+
+    /// Whether the system took the keys of `plugin`'s shortcut `id`, once
+    /// the desktop app asked it.
+    pub(crate) fn registered(&self, plugin: &str, id: &str) -> Option<bool> {
+        self.registered
+            .lock()
+            .get(&(plugin.to_owned(), id.to_owned()))
+            .copied()
+    }
+
+    /// The window recording new keys for a shortcut, if one is.
+    pub(crate) fn recording(&self) -> Option<crate::session::WindowKey> {
+        *self.recording.lock()
+    }
+
+    /// Let `window` record keys, or with `None` stop whichever window
+    /// recorded. The desktop app sets the system's shortcuts aside
+    /// meanwhile.
+    pub(crate) fn set_recording(&self, window: Option<crate::session::WindowKey>) {
+        let mut recording = self.recording.lock();
+        if *recording != window {
+            *recording = window;
+            drop(recording);
+            self.changed();
+        }
     }
 
     /// The services one plugin reaches.

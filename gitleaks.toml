@@ -6,10 +6,11 @@
 useDefault = true
 
 [[allowlists]]
-description = "Deterministic workspace-format conformance fixtures and test vectors"
+description = "Deterministic workspace-format conformance fixtures, test vectors and the synthetic ChatGPT test signing key"
 paths = [
 	'''(^|/)docs/workspace-format/fixtures/.*''',
 	'''(^|/)crates/sync-key-envelope/tests/vectors/.*''',
+	'''(^|/)crates/local-core/tests/fixtures/chatgpt-test-signing-key\.pk8''',
 ]
 
 [[allowlists]]
@@ -23,4 +24,11 @@ regexes = [
 description = "The cipher's name in the sync spec, which reads as a key after the word key"
 regexes = [
 	'''^XChaCha20-Poly1305$''',
+]
+
+[[allowlists]]
+description = "The Standard Webhooks specification's example secret, which the billing webhook tests sign with"
+regexTarget = "match"
+regexes = [
+	'''whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw''',
 ]

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT month, warnings FROM account_activity WHERE account = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "month",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_activity",
+            "name": "month"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "warnings",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "account_activity",
+            "name": "warnings"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9da8589663af2fd20e0dd4d7e87d996600cbfe12e5dbd3a5ebcdaf250f456c4c"
+}

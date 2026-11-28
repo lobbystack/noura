@@ -654,6 +654,9 @@ pub const SERVER_ERRORS: &[(&str, u16)] = &[
     ("blob_domain_mismatch", 422),
     ("blob_offset_conflict", 409),
     ("quota_exceeded", 507),
+    ("file_too_large", 413),
+    ("over_plan", 403),
+    ("member_limit", 409),
     ("id_conflict", 409),
     ("rid_domain_mismatch", 409),
     ("checkpoint_not_due", 409),
@@ -981,6 +984,98 @@ crate::wire_struct! {
     pub struct WorkspacesResponse {
         /// The workspaces.
         pub workspaces: List<WorkspaceInfo>,
+    }
+}
+
+crate::byte_enum! {
+    /// Where an account's subscription stands (§20, Plans).
+    pub enum SubscriptionStatus {
+        /// 0: no subscription.
+        None = 0,
+        /// 1: active.
+        Active = 1,
+        /// 2: a payment failed and the provider retries it; the plan holds.
+        PastDue = 2,
+        /// 3: ended; the account has the `free` plan.
+        Ended = 3,
+    }
+}
+
+crate::byte_enum! {
+    /// Whether a workspace an account owns takes writes (§20, Over plan).
+    pub enum OwnedState {
+        /// 1: active.
+        Active = 1,
+        /// 2: over its owner's plan, and read-only.
+        OverPlan = 2,
+    }
+}
+
+crate::wire_struct! {
+    /// `owned_workspace`: a workspace the account owns, and its state.
+    pub struct OwnedWorkspace {
+        /// The workspace.
+        pub workspace: Id,
+        /// Its state.
+        pub state: OwnedState,
+        /// When the server closes it, in Unix seconds, while over plan.
+        pub closes_at: Option<u64>,
+    }
+}
+
+crate::wire_struct! {
+    /// `GET /v2/account` response: the account's plan, its limits and
+    /// what it uses (§20, §26). Each limit is absent when the plan has
+    /// none.
+    pub struct AccountResponse {
+        /// A plan ID of §20, or `operator`.
+        pub plan: Text,
+        /// The subscription's status.
+        pub status: SubscriptionStatus,
+        /// The end of the subscription's current period, in Unix seconds.
+        pub period_end: Option<u64>,
+        /// Whether the server sells plans.
+        pub billing: bool,
+        /// Storage the account's workspaces share.
+        pub storage_bytes: Option<u64>,
+        /// Open workspaces the account may own.
+        pub owned_workspaces: u32,
+        /// The largest file a blob may hold.
+        pub max_file_bytes: Option<u64>,
+        /// Member accounts per owned workspace.
+        pub members: Option<u32>,
+        /// Bytes the account may push and upload each UTC day.
+        pub upload_bytes_per_day: Option<u64>,
+        /// Bytes the account may read each UTC day.
+        pub download_bytes_per_day: Option<u64>,
+        /// Usage summed over the open workspaces it owns.
+        pub used_bytes: u64,
+        /// History summed over them.
+        pub history_bytes: u64,
+        /// Bytes it pushed and uploaded today.
+        pub uploaded_today: u64,
+        /// Bytes it read today.
+        pub downloaded_today: u64,
+        /// The open workspaces it owns, oldest first.
+        pub workspaces: List<OwnedWorkspace>,
+    }
+}
+
+crate::wire_struct! {
+    /// `POST /v2/account/active-workspaces` request: the owned workspaces
+    /// that stay active (§20, Over plan).
+    pub struct ActiveWorkspacesRequest {
+        /// The workspaces.
+        pub workspaces: List<Id>,
+    }
+}
+
+crate::wire_struct! {
+    /// The detail of `file_too_large`: the largest file the owner's plan
+    /// allows.
+    pub struct FileTooLargeDetail {
+        /// The size in bytes.
+        pub max_file_bytes: u64,
     }
 }
 

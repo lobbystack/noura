@@ -204,6 +204,15 @@ fn events_declare_an_id_and_a_title_each() {
 }
 
 #[test]
+fn no_plugin_takes_the_id_of_a_part_of_noura() {
+    for id in ["folders", "notes", "sync"] {
+        let (code, refused) = read_with(id, "").unwrap_err();
+        assert_eq!(code, InstallErrorCode::InvalidManifest, "{id}");
+        assert!(refused.contains("names a part of Noura"), "{refused}");
+    }
+}
+
+#[test]
 fn no_plugin_takes_the_id_of_nouras_own_tools() {
     let (code, refused) = read_with("noura", "").unwrap_err();
     assert_eq!(code, InstallErrorCode::InvalidManifest);

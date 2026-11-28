@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id!: i64\", account, provider, subscription, order_id, amount, revoke\n               FROM refunds_owed ORDER BY id LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: i64",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "account",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "account"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "subscription",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "subscription"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "order_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "order_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "amount",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "amount"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "revoke",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "refunds_owed",
+            "name": "revoke"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0b6c01ce3be504180b15cb7d56b20b40c59a69742274c4db637a910b8f0e2d7c"
+}

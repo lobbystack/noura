@@ -397,12 +397,17 @@ fn a_failed_answer_shows_a_public_reason_and_records_its_code() {
     chat.wait("the request leaves", |_| provider.requests().len() == 1);
     provider.say(0, "Partly");
     provider.fail(0);
+    // The answer says which provider failed and what to do next, once:
+    // the run adds no line of its own.
     chat.wait("the failure shows", |app| {
-        ai::lines(app).contains(&"This answer failed.".to_owned())
+        ai::lines(app).contains(&"Local couldn't answer, so try again.".to_owned())
     });
     assert!(
         ai::lines(&chat.app)
-            .contains(&"The answer failed: The provider couldn't answer. Try again.".to_owned())
+            .iter()
+            .all(|line| !line.starts_with("The answer failed")),
+        "{:?}",
+        ai::lines(&chat.app)
     );
     let files = messages(&chat.fixture);
     let answer = files
@@ -427,6 +432,34 @@ fn a_failed_answer_shows_a_public_reason_and_records_its_code() {
         assert!(files.iter().all(|text| !text.contains(raw)), "{raw}");
     }
     assert!(ai::RAW_FAILURE.contains("sk-raw-key"));
+    let _ = chat.requests();
+}
+
+#[test]
+fn an_account_out_of_credit_says_so_and_names_the_provider() {
+    let Some(mut chat) = Chatting::new() else {
+        return;
+    };
+    let provider = chat.provider.clone();
+    let id = chat.id.clone();
+    ai::send(&mut chat.app, "allo", &id);
+    chat.wait("the request leaves", |_| provider.requests().len() == 1);
+    provider.fail_with(0, "provider_billing");
+    chat.wait("the failure shows", |app| {
+        ai::lines(app).contains(
+            &"Your Local account is out of credit or at its spending limit, so check its billing."
+                .to_owned(),
+        )
+    });
+    let files = messages(&chat.fixture);
+    let answer = files
+        .iter()
+        .find(|text| text.contains("kind: assistant"))
+        .unwrap();
+    assert_eq!(
+        frontmatter_value(answer, "error_code").as_deref(),
+        Some("provider_billing")
+    );
     let _ = chat.requests();
 }
 

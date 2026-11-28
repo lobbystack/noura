@@ -130,6 +130,22 @@ impl Server<SqliteBackend> {
         Self::start_at(interval, retention, sync_server::RateGate::unlimited()).await
     }
 
+    /// A server that sells plans, so every account starts on `free`
+    /// (§20, Plans).
+    pub async fn start_with_billing() -> Self {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let data = dir.path().join("data");
+        sync_server::migrate(&data).await.expect("migrated");
+        let store = sync_server::open_store(&sync_server::Config::new(
+            data,
+            "127.0.0.1:0".parse().expect("an address"),
+        ))
+        .await
+        .expect("the store opens")
+        .with_billing(true);
+        Self::serve_at(store, dir, None, sync_server::RateGate::unlimited()).await
+    }
+
     /// [`start_with`](Self::start_with) behind the rate limits of `rate`.
     pub async fn start_at(
         interval: sync_store::CheckpointInterval,

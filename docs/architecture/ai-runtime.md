@@ -19,7 +19,25 @@ The run loop, the provider requests, the credentials and every durable write sta
 - **Provider transport**: `local-core` streams through `genai`. A provider endpoint must use HTTPS, or HTTP to a loopback address.
 - **Credentials**: the operating system's credential store holds each provider key under the service `org.noura.ai`. `ai/providers.json` in the app data keeps only a reference to it, and `local-core` reads the key only when a request starts.
 
+The AI settings have no section of their own in Settings. They sit on the page in Settings > Plugins of each plugin that declares the `ai` capability: the AI plugin's page, which also holds the Brave Search key, and Transcription's. The `ai-providers` and `web-search` sections, which "Open AI settings" and Search settings use, open the AI plugin's page while it's installed, on or off, or else the page of the first installed plugin that uses the providers. External tools stays a section of its own: it sets up Noura's MCP server for apps outside Noura, which needs no provider and works with the AI plugin off.
+
 Noura loads the provider file when the session starts. If it can't read them, AI requests fail with `ai_settings_unreadable` until Noura restarts.
+
+### Retired models
+
+`RETIRED_MODELS` in `crates/local-core/src/ai/providers.rs` lists the models their providers stopped serving, each with its last day and a replacement, from each provider's deprecation page. When Noura loads the provider file after that day, a provider at its default address moves to the replacement, and Noura writes the file and logs the move. A provider at an address you set keeps its model, since that server decides what it serves. An Orb or the default Orb that names a retired model keeps it, and its next answer fails with `provider_model_not_found`, which tells you to pick another model.
+
+`AI_KEY_PROVIDERS` in `crates/app-core/src/ai.rs` holds the model a new connection starts with. A test checks each one against a dated list of the pages that show its provider still serves it, and against `RETIRED_MODELS`.
+
+### Continue with ChatGPT
+
+OpenAI lets open-source apps on your computer use your ChatGPT plan through [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source). Continue with ChatGPT, in the OpenAI row of the AI settings, opens OpenAI's sign-in in your browser. The first sign-in registers Noura with `dynamic_agent_client` and the host ID Noura keeps in `ai/chatgpt.json`, and later sign-ins reuse the client ID OpenAI issued. The browser comes back to a listener on `127.0.0.1`, preferably port 1455, at `/auth/callback`. A callback with another `state` gets an error page and changes nothing.
+
+`crates/local-core/src/ai/chatgpt.rs` exchanges the code with PKCE and no secret, checks the ID token's RS256 signature against the keys the issuer publishes and its issuer, audience, expiry and nonce, and refuses a grant without `chatgpt.tokens.use.direct`. The tokens, the ID token and the account go to the credential store as one record under the ChatGPT provider's reference. `ai/chatgpt.json` keeps only the host ID, the issued client ID, the account's email and whether you saw the one-time notice.
+
+Each request takes the access token from that record. An access token that expires within five minutes is refreshed first, under a lock per record, and the rotated refresh token replaces the old one. A request the API refuses with 401 refreshes once and tries again. A refresh OpenAI refuses fails the answer with `provider_signed_out`. Sign out revokes the refresh token through the issuer's `revocation_endpoint`, then removes the provider and its record; the registration stays.
+
+Requests go to `https://api.openai.com/v1/responses` with `store: false` and `stream: true`. Noura's instructions go in `instructions`, the conversation in `input`, and the tools in a `noura` namespace, as [OpenAI's limits for this route](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations) ask. The AI page shows Using ChatGPT plan with a Manage usage link while an Orb asks the ChatGPT provider.
 
 ## Authorization
 
@@ -48,7 +66,7 @@ An Orb runs its tools without asking (ADR 0007). Its file lists the tools it may
 An Orb is a named agent in the workspace: `Orbs/<name>/<name>.md`, its `Memory.md`, its `Heartbeat.md` checklist and a `Runs` folder of records, as [the workspace format](../workspace-format/v1.md#orbs) describes. Each Orb keeps one thread, a chat whose `orb_id` names it.
 
 - **Noura's tools**: `noura__read` reads a note or object that the Orb's `reads` allow, `noura__remember` adds a line to its memory file, and `noura__web_search` and `noura__web_fetch` reach the web through the limits below. An Orb gets each one only when its file lists it.
-- **Model and effort**: an Orb's file may name a model of its provider and how hard it reasons, `off` to `high`. `crates/app-core/src/ai/models.rs` lists the models the Model menu offers and maps each effort to the provider's parameter, such as Anthropic's `output_config.effort` with adaptive thinking or OpenAI's `reasoning_effort`, and sends none to a model that takes none. A model that reasons only when asked, such as Claude Opus 4.8, answers its tool calls without reasoning, because Noura keeps no reasoning blocks to send back. The default Orb's provider, model and effort live in `ai/default-orb.json` in the app data, and its plain chats ask with them.
+- **Model and effort**: an Orb's file may name a model of its provider and how hard it reasons, `off` to `high`. `crates/app-core/src/ai/models.rs` lists the models the Model menu offers and maps each effort to the provider's parameter, such as Anthropic's `output_config.effort` with adaptive thinking or OpenAI's `reasoning_effort`, and sends none to a model that takes none. A model that reasons only when asked, such as Claude Opus 4.8, answers its tool calls without reasoning, so a run resumed after a quit never needs reasoning blocks it no longer has. The default Orb's provider, model and effort live in `ai/default-orb.json` in the app data, and its plain chats ask with them.
 - **Run records**: Noura writes a run's record before its first message and again when it ends, with its status, how many tool calls it made and a line for each. One run at a time works per Orb.
 - **Triggers**: a thread checks them every 30 seconds while a workspace is open, and at once when a plugin emits an event. A schedule catches up once on the last time it missed. An event starts each Orb once per object revision. A trigger key in each record keeps a firing from running twice, and triggers start at most 20 runs per Orb an hour.
 - **Loops**: an event that a plugin emits during an Orb's tool call starts no Orb.
@@ -59,7 +77,9 @@ An Orb is a named agent in the workspace: `Orbs/<name>/<name>.md`, its `Memory.m
 
 Each provider stream has a UUID and numbers its frames from 1. The frames pass through a bounded channel of 32, and a send that waits more than 5 seconds ends the stream, so a reader that goes away cancels it. The run thread adds each text delta to the run in memory and wakes the windows. The plugin then reads the text so far and redraws.
 
-Provider errors reach a plugin as a stable code and a fixed message. They never carry provider bodies, request headers or keys.
+When an answer asks for tools, the provider client keeps the reasoning that came with it as `Thought` parts: Anthropic's signed `thinking` and `redacted_thinking` blocks, and Gemini's thought signature on each call. The run holds them in memory and puts them back, unchanged, at the start of that answer in the request that carries the tool results, as [Anthropic requires within a tool-use turn](https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks). Only a provider of the kind that wrote them gets them. They never reach the chat's files, so a run resumed after a quit sends its results without them, and the provider then answers without that reasoning.
+
+Provider errors reach a plugin as a stable code and a fixed message. They never carry provider bodies, request headers or keys. `crates/local-core/src/ai/failures.rs` picks the code from the HTTP status, the provider's error type and code, and a few words of its message, such as Anthropic's 400 about a low credit balance, which becomes `provider_billing`. The diagnostic log gets the code, the status, the provider's error type and code, and its request ID. The AI plugin shows one sentence for each code, naming the provider and what to do next.
 
 ## Cancellation and recovery
 

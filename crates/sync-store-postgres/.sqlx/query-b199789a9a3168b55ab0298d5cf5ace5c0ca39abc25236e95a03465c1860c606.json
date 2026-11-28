@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.account FROM account_activity a\n             WHERE a.month <= $1\n               AND EXISTS (SELECT 1 FROM workspaces w WHERE w.owner = a.account AND w.closed = 0)\n             ORDER BY a.month, a.account LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "account_activity",
+            "name": "account"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b199789a9a3168b55ab0298d5cf5ace5c0ca39abc25236e95a03465c1860c606"
+}

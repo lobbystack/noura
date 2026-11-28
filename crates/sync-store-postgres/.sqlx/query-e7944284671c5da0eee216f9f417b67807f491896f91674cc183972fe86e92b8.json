@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT subscription, order_id, net, currency, paid_at\n             FROM latest_orders WHERE account = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "subscription",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "subscription"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "order_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "order_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "net",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "net"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "currency",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "currency"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "paid_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "latest_orders",
+            "name": "paid_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e7944284671c5da0eee216f9f417b67807f491896f91674cc183972fe86e92b8"
+}

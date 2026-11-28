@@ -616,7 +616,7 @@ An owner or admin invites someone by link. The link carries an invitation secret
 {origin}/invite/{base64url(token)}#{base64url(secret)}
 ```
 
-The inviting device generates the invitation ID (16 bytes), the token (16 bytes) and the secret (32 bytes), and keeps the secret until the invitation ends. While the invitation is open, the server stores `BLAKE3(tag(noura.sync.invite.token) || token)`, the workspace, the role, the inviting account, the accepting account once known, the status, an expiry seven days out, and the context below. It deletes the row once the invitation is approved, revoked or expired, or once a change leaves the inviting account unable to grant the invitation's role under [§8](#roles-and-authority), such as an admin demoted or removed. After an approval or a revocation it keeps only the invitation ID until the expiry the row had, and answers a retried creation under that ID with `invitation_invalid`, so a late retry can't open the link again. A workspace holds at most 100 open invitations.
+The inviting device generates the invitation ID (16 bytes), the token (16 bytes) and the secret (32 bytes), and keeps the secret until the invitation ends. While the invitation is open, the server stores `BLAKE3(tag(noura.sync.invite.token) || token)`, the workspace, the role, the inviting account, the accepting account once known, the status, an expiry seven days out, and the context below. It deletes the row once the invitation is approved, revoked or expired, or once a change leaves the inviting account unable to grant the invitation's role under [§8](#roles-and-authority), such as an admin demoted or removed. After an approval or a revocation it keeps only the invitation ID until the expiry the row had, and answers a retried creation under that ID with `invitation_invalid`, so a late retry can't open the link again. A workspace holds at most 100 open invitations. On a server that sells plans, a workspace whose member accounts and open invitations together reach its owner's member limit takes no new invitation (`member_limit`, [§20](#plans)).
 
 `invite_context`, encrypted with the subkey `derive_key("noura.sync.v2 invitation key", secret)`:
 
@@ -1166,13 +1166,46 @@ Every atomic change is one push of at most 1 MiB ([§15](#push)), which the serv
 
 A move of many objects commits one object pair at a time, with many pairs per push, so each file sits in exactly one domain throughout.
 
-**Quota.** The operator sets each workspace's storage quota with the server setting `workspace_quota_bytes`, which applies to every workspace and is unlimited by default. `GET /v2/workspaces` reports each workspace's quota, usage and history. Usage counts live data and the records the server keeps for the workspace's whole life: the operations live at each domain's head, the blobs they list, uploads in progress or completed but not yet listed, share snapshots, policy changes and epoch bundles. A delete therefore frees its object's usage when it commits. History is everything else each domain's log retains: the operations above and below its floor that no live set holds, the policy and epoch entries, and the blobs only those operations list. Checkpoint records, bundles and bucket hashes count toward neither, so pressure can't come from them and never stays for good. History counts nothing toward usage but yields to the quota. When usage and history together come to exceed the quota, a checkpoint falls due in each domain ([§17](#checkpoint)), and while they stay above it and usage alone doesn't, the server raises floors as far as it must, so pruning reclaims history first ([§19](#19-compaction)).
+**Quota.** Two quotas bound storage, and a workspace answers to both. The operator sets each workspace's storage quota with the server setting `workspace_quota_bytes`, which applies to every workspace and is unlimited by default. A server that sells plans also gives each account a storage allowance from its plan ([Plans](#plans)), which the usage and history of every open workspace the account owns share; a workspace counts only against its owner, never against its members. `GET /v2/workspaces` reports each workspace's quota, usage and history, and `GET /v2/account` the account's allowance and what its workspaces use ([§26](#26-http-api)). Usage counts live data and the records the server keeps for the workspace's whole life: the operations live at each domain's head, the blobs they list, uploads in progress or completed but not yet listed, share snapshots, policy changes and epoch bundles. A delete therefore frees its object's usage when it commits. History is everything else each domain's log retains: the operations above and below its floor that no live set holds, the policy and epoch entries, and the blobs only those operations list. Checkpoint records, bundles and bucket hashes count toward neither, so pressure can't come from them and never stays for good. History counts nothing toward usage but yields to the quota. When usage and history together come to exceed the quota, a checkpoint falls due in each domain ([§17](#checkpoint)), and while they stay above it and usage alone doesn't, the server raises floors as far as it must, so pruning reclaims history first ([§19](#19-compaction)).
+
+The rules in this section read the same for the account's allowance, with the sums of usage and history over the open workspaces the owner holds in place of one workspace's. A push into one of them that takes those sums over the allowance counts a crossing in that workspace, so a checkpoint falls due in each of its domains, and the server then raises floors across all the owner's workspaces, starting with the domain that holds the most history. The check reads the other workspaces' numbers without their locks, so concurrent pushes into two workspaces of one owner can pass the allowance by one push each, as pushes into two domains of one workspace can pass its quota.
 
 Pressure has a price. A floor that rises past `retained_bytes` of log shortens the time a device can stay offline and still catch up from the log: a device behind a raised floor bootstraps, a returning device turns deletes it missed into review prompts ([§18](#18-bootstrap)), and a bootstrap can restart at each checkpoint. When usage alone exceeds the quota, raising floors would reclaim too little to help and every device would pay that price for good, so the server keeps to the `retained_bytes` rule.
 
 While checkpoints keep committing and usage stays within the quota, a workspace's storage stays within its quota plus about one checkpoint interval per domain, plus the checkpoint data above. Your own devices and kits can pass the quota by one approval or export at a time, and so can a push that races another into a different domain ([§15](#store-transactions)). An account owns at most 100 workspaces and belongs to at most 1,000 ([§27](#27-limits)).
 
 While usage exceeds the quota, the server accepts envelopes, checkpoints, epoch bundles, policy changes that add nobody (any change but `add_member`, `accept_reset`, `create_domain`, a `set_access` that grants and an `account_heads` change that brings a card in without taking one out), an `account_heads` change for its signer's own account, and any operation that doesn't raise usage: a delete, or an edit whose payload, plus any blobs it brings back from history, takes no more than the live operations it replaces. A blob the edit uploaded already counts as an upload, so listing it raises nothing. A workspace over quota can therefore still remove a device, approve a replacement device, recover with a kit, rotate and free space, while churn in its membership can't grow its policy chain past the quota; only your own devices and kits still add to it, one approval or export at a time. The server rejects other records with `quota_exceeded`, and the writer moves its next outbox record into that position ([§14](#your-own-chain)). A tus creation request whose `Upload-Length` would take usage above the quota fails with `quota_exceeded` too ([§21](#21-attachments)), and the writer handles the record that lists the blob the same way, so the records behind it still go out. The writer keeps each refused change locally, shows it as waiting for space, and signs it again in a later capture.
+
+### Plans
+
+A server that sells plans gives each account the limits of its plan, and the owner's plan sets the limits of every workspace the owner holds. A member who joins someone else's workspace takes nothing from their own plan. The server keeps the table below in its code, keyed by its own plan IDs, so no change in a payment provider's dashboard can change a limit. Sizes are decimal: 1 GB is 10^9 bytes.
+
+| Plan IDs | Storage per account | Owned synced workspaces | Largest file | Members per owned workspace | Transfer a day, up and down |
+|---|---|---|---|---|---|
+| `free` | 100 MB | 1 | 5 MB | 4 | 1 GB, 10 GB |
+| `standard_year`, `standard_month` | 1 GB | 1 | 5 MB | 20 | 10 GB, 100 GB |
+| `plus_year`, `plus_month` | 10 GB | 10 | 200 MB | 20 | 50 GB, 500 GB |
+| `plus_100gb_year`, `plus_100gb_month` | 100 GB | 10 | 200 MB | 20 | 50 GB, 500 GB |
+
+An account without a subscription, or whose subscription ended, has the `free` plan. A subscription keeps its plan while its provider retries a failed payment, and the account returns to `free` when the provider cancels it or gives up. Storage counts usage and history, so history also gives way to the allowance, and the server promises no length of history. A server that sells no plans, which is the default, gives every account the plan `operator`: no allowance, 100 owned workspaces ([§27](#27-limits)), files up to the 2 GiB blob limit, no member limit and no transfer budget, so only the operator's own settings bound it.
+
+Each limit applies where the server can check it:
+
+- **Storage**: a record or upload that would raise the owner's usage while it stands above the allowance gets `quota_exceeded`, as above.
+- **Owned workspaces**: `POST /v2/workspaces` from an account that already owns as many open workspaces as its plan allows gets `workspace_limit`.
+- **Largest file**: a tus creation whose `Upload-Length` exceeds the ciphertext length of a file of the plan's largest size gets `file_too_large`, whose `detail` holds that size as `u64` ([§21](#21-attachments)). A device checks a file's size before it uploads, keeps a file over the limit out of sync, and shows it as too large. A file of 262,144 bytes or less travels inline and always fits.
+- **Members**: an `add_member` that would give a workspace more member accounts, the owner included, than its owner's plan allows gets `member_limit`, and so does an invitation created while members and open invitations together already reach that number ([§11](#11-invitations)).
+- **Transfer**: the server counts what each account pushes and uploads, and what it reads, per UTC day ([§26](#transfer-budgets)).
+
+### Over plan
+
+When the owner's plan allows fewer workspaces than the owner holds open, as after a downgrade, the workspaces beyond the allowance go over plan. The owner chooses which workspaces stay active with `POST /v2/account/active-workspaces`; until they choose, the oldest stay active, by the order the server created them. A workspace over plan is read-only on the server: it takes no operation, profile, blob upload, share link, invitation, invitation acceptance or policy change that adds someone, and answers each with `over_plan`. It still takes what keeps it safe: policy changes that add nobody, epoch bundles, envelopes and checkpoints, so a member can remove a device and rotate. Reads go on, and the owner can still close it.
+
+The server records the day a workspace went over plan, and closes it 90 days later, as `DELETE /v2/workspaces/{w}` would. It emails the owner and the members on that first day, on day 60 and on day 85. A workspace that returns within the allowance, because the owner upgraded, subscribed again, chose it, or closed another, becomes active again at once, even on day 89: its remaining notices and its close are dropped, and if it goes over plan again, its count starts over. Closing a workspace touches no device's files: members keep their folders, which go on working without sync ([§14](#after-a-server-restore)).
+
+### Inactive accounts
+
+A server that sells plans keeps the month each account last sent an authenticated request, and nothing finer. An account on `free` whose own month and those of every member of the workspaces it owns lie 10 months back gets a first warning email, and at 11 months a second. At 13 months the server closes every workspace the account owns, from the first day of that month, which is at least 60 days after the first warning, since a warning goes out only in its own month. Any request from the account or one of those members before then, a sign-in on the account pages included, makes it active again and clears the warnings. Accounts on a paid plan, and servers that sell no plans, keep their workspaces whatever the activity.
 
 ## 21. Attachments
 
@@ -1205,7 +1238,7 @@ Uploads use tus 1.0.0 core with the `creation`, `termination` and `expiration` e
 
 | Request | Purpose |
 |---|---|
-| `POST /v2/workspaces/{w}/blobs` with `Upload-Length` and `Upload-Metadata: blob <base64>,digest <base64>,domain <base64>` (standard base64, as tus requires) | create; the device must be able to write that domain, the upload must fit the workspace's quota (else `quota_exceeded`, [§20](#20-atomic-changes-and-quota)), and only operations of that domain may list the blob (else `blob_domain_mismatch`) |
+| `POST /v2/workspaces/{w}/blobs` with `Upload-Length` and `Upload-Metadata: blob <base64>,digest <base64>,domain <base64>` (standard base64, as tus requires) | create; the device must be able to write that domain, the workspace must not be over plan (else `over_plan`), the upload must fit the workspace's quota and its owner's allowance (else `quota_exceeded`, [§20](#20-atomic-changes-and-quota)) and the largest file of its owner's plan (else `file_too_large`, [§20](#plans)), and only operations of that domain may list the blob (else `blob_domain_mismatch`) |
 | `HEAD /v2/workspaces/{w}/blobs/{id}` | read `Upload-Offset` to resume |
 | `PATCH /v2/workspaces/{w}/blobs/{id}` with `Upload-Offset` and `Content-Type: application/offset+octet-stream` | append one segment: exactly 1 MiB at an offset that is a multiple of 1 MiB, or the rest of the upload; another offset, or a completed upload, gets `blob_offset_conflict` (409, as tus requires) |
 | `DELETE /v2/workspaces/{w}/blobs/{id}` | abandon an incomplete upload; a blob that operations list stays at offset 0, and only the device that created the upload may abandon it (else `forbidden`) |
@@ -1427,6 +1460,8 @@ Every route that creates something under a client-chosen ID (a workspace, blob, 
 | `GET /v2/devices`, `DELETE /v2/devices/{device}` | list the account's enrolled cards that no link removed, with their session counts; end the sessions of an enrolled card that no chain lists, from an active device's session ([§7](#device-list)) |
 | `POST /v2/accounts/chain`, `POST /v2/accounts/chains` | append links to the session's account chain, in order and all or none; read links of the chains the session may read, after given seqnos ([§7](#account-chain)) |
 | `POST /v2/account/reset-code`, `POST /v2/account/reset` | email a reset code; start a new account chain with it ([§7](#resetting-your-devices)) |
+| `GET /v2/account` | the session account's plan, limits and usage, and the state of each workspace it owns ([§20](#plans)) |
+| `POST /v2/account/active-workspaces` | choose which of the account's workspaces stay active when its plan allows fewer than it owns ([§20](#over-plan)) |
 | `POST /v2/approval-requests`, `GET /v2/approval-requests` | post a candidate's request, which names at most one of an invitation and a workspace (else `bad_request`); list, for an active device, the requests of the account's own new devices: those that name neither and carry no `candidate_head` |
 | `GET /v2/workspaces/{w}/pending-devices` | requests of invited accounts, and of reset member accounts, awaiting approval in this workspace |
 | `POST /v2/approvals`, `GET /v2/approvals` | send an `offer`; offers addressed to the calling device's card |
@@ -1479,6 +1514,8 @@ Five routes page, each with its own cursor: `policy` by revision (`after`, the l
 | `POST /v2/accounts/chain` | `list<bytes>` of account links | `u64 seqno` of the chain's new head |
 | `POST /v2/accounts/chains` | `list<chain_cursor>`: `id account`, `opt<digest> genesis` (absent for the account's current chain), `u64 after` | `list<chain_page>`, one per cursor in request order: `id account`, `digest genesis`, `u8 status` (1 current, 2 retired by a reset), `u64 head_seqno`, `list<bytes>` of links after `after` in seqno order; at most 1 MiB in all. More than 256 cursors get `too_large`, and two cursors that name one chain the same way get `bad_request` |
 | `POST /v2/account/reset` | `str code`, `bytes genesis` | |
+| `GET /v2/account` | | `str plan` (a plan ID of [§20](#plans), or `operator`), `u8 status` (0 no subscription, 1 active, 2 past due, 3 ended), `opt<u64> period_end` of the subscription, `u8 billing` (1 when the server sells plans), `opt<u64> storage_bytes`, `u32 owned_workspaces`, `opt<u64> max_file_bytes`, `opt<u32> members`, `opt<u64> upload_bytes_per_day`, `opt<u64> download_bytes_per_day` (each limit absent when the plan has none), `u64 used_bytes`, `u64 history_bytes` (the sums over the open workspaces the account owns), `u64 uploaded_today`, `u64 downloaded_today`, `list<owned_workspace>`: `id workspace`, `u8 state` (1 active, 2 over plan), `opt<u64> closes_at` |
+| `POST /v2/account/active-workspaces` | `list<id>` of workspaces the account owns, at most `owned_workspaces` of them (else `bad_request`; a workspace it doesn't own gets `not_found`) | |
 | `POST /v2/approval-requests` | `digest commit`, `opt<account_head> account`, `opt<id> invitation`, `opt<digest> invite_proof`, `opt<id> workspace` (present for a reset, [§10](#approval-request)) | |
 | `GET /v2/approval-requests`, `GET .../pending-devices` | | `list<pending>`: `bytes card`, `digest commit`, `opt<account_head> account`, `opt<id> invitation`, `opt<digest> invite_proof`, `opt<id> workspace` |
 | `POST /v2/approvals` | `bytes offer` | |
@@ -1536,7 +1573,10 @@ Server error codes:
 | `cursor_compacted`, `pruned` | 410 | a `live` or `manifest` request names a checkpoint below the retention floor; the chain position was pruned |
 | `blob_incomplete`, `blob_digest_mismatch`, `blob_domain_mismatch` | 409, 422, 422 | a referenced blob isn't complete; an upload's digest doesn't match; the blob was created for another domain |
 | `blob_offset_conflict` | 409 | a tus `PATCH` names an `Upload-Offset` other than the upload's, or the upload is already complete |
-| `quota_exceeded` | 507 | the workspace is over its storage quota and the record would raise usage, or an upload wouldn't fit ([§20](#20-atomic-changes-and-quota)) |
+| `quota_exceeded` | 507 | the workspace is over its storage quota, or its owner over the plan's storage, and the record would raise usage, or an upload wouldn't fit ([§20](#20-atomic-changes-and-quota)) |
+| `file_too_large` | 413 | an upload exceeds the largest file of the owner's plan; `detail` holds that size as `u64` ([§20](#plans)) |
+| `over_plan` | 403 | the workspace is over its owner's plan and takes only what keeps it safe ([§20](#over-plan)) |
+| `member_limit` | 409 | the workspace already holds as many member accounts, counting open invitations, as its owner's plan allows ([§20](#plans)) |
 | `id_conflict` | 409 | a client-chosen or derived ID already exists with other bytes, a change would make one device ID active under two accounts, or an enrolled card's device was removed |
 | `rid_domain_mismatch` | 409 | the `rid` belongs to another domain |
 | `checkpoint_not_due` | 409 | a standalone checkpoint arrived while none was due, or its `covered_seq` sits below the due point |
@@ -1547,7 +1587,7 @@ Server error codes:
 | `device_removed` | 401 | a link removed the session's card, or a reset retired its chain; `detail` names the link |
 | `reset_code_invalid` | 400 | the reset code is unknown, used or expired |
 | `profile_conflict` | 409 | a profile's `profile_revision` isn't one above the server's latest |
-| `workspace_limit` | 409 | the account already owns 100 workspaces, or already belongs to 1,000 |
+| `workspace_limit` | 409 | the account already owns 100 workspaces, or as many as its plan allows, or already belongs to 1,000 |
 | `snapshot_required`, `conflict_limit` | 409 | the `rid` holds too many live patches, so the client writes a snapshot first; the `rid` holds 64 live state operations, so the client resolves first |
 | `supersedes_incomplete` | 409 | a state operation leaves its own device's earlier state operation on the `rid` live |
 | `domain_limit` | 409 | the workspace already holds 256 domains |
@@ -1574,6 +1614,40 @@ The server limits sync traffic per device and in bytes, with a separate allowanc
 | Sign-in requests (device grant, magic link, passkey, reset code) | 30 a minute per client IP |
 
 At these defaults, the join in [§28](#28-worked-example-100000-objects) downloads its 10 GB of attachments in about 20 minutes, and a device uploads them in about 20 minutes while its edits go on from the push budget.
+
+### Transfer budgets
+
+On a server that sells plans, each account also has a daily budget in each direction from its own plan ([§20](#plans)), whichever workspace it reads or writes. Push bodies and tus `PATCH` bodies count up; the responses of pulls, chain, checkpoint, policy and key fetches, `live`, `manifest` and blob range reads count down, at the same least cost as above. The day is the UTC day, a window of 86,400 seconds from the Unix epoch, and the counters hold the account ID. A request past its budget gets `rate_limited` with the seconds left in the day, and the client waits as for any other limit. Budgets reset at midnight UTC, so a member of a larger workspace on the `free` plan finishes a big download across several days.
+
+### Billing
+
+A server sells plans when its operator configures a payment provider; the provider then runs checkout, invoices, taxes, refunds and the customer portal, and the server learns only what its webhooks report. Without one, every account has the plan `operator` and none of these routes exist. They take a web session from the account pages, not a device session:
+
+| Route | Purpose |
+|---|---|
+| `GET /account/upgrade?plan={plan}` | signs the visitor in first if needed, then shows the plan's renewal terms and asks for consent; an account whose subscription is active or past due goes to the portal instead, where plan changes happen |
+| `POST /account/upgrade` | records the consent, then sends the account to the provider's checkout for that plan ID |
+| `GET /account/billing` | sends the signed-in account to the provider's customer portal |
+| `GET`, `POST /account/cancel` | asks, then cancels the subscription |
+| `GET`, `POST /account/withdraw` | asks, then withdraws from the contract, for a customer in the EU or the UK within 14 days of the subscription's start |
+| `GET`, `POST /account/refund` | asks, then refunds the latest payment in full, within 14 days of it |
+| `POST /billing/polar/webhook` | Polar's webhook deliveries, signed under the Standard Webhooks scheme |
+
+A server that sells plans also names who sells them, with a street address, an email and a phone number, on the account pages and in the mail about plans, which come in English and in French. The server names the account to the provider by its ID in base64url, as the external customer ID, so a webhook ties a subscription back to an account without an email. It verifies each webhook's signature over the raw body, refuses a timestamp more than 5 minutes from its clock, and stores each event ID it applied, so a retried delivery changes nothing. Providers don't guarantee order, so the server keeps the time of the provider's last change to each subscription and ignores an event that reports an older one. An event that names an account the server doesn't hold, or a product no plan maps to, changes nothing.
+
+Each `POST` route takes the web session and refuses a request whose `Origin` isn't the server's own. The pages and the mail about plans follow the account's language: the language switch on the account pages, or else the browser's first preference, which the server records each time the account opens its account page. A customer whose billing address is in Québec gets each message in French, with the English after it.
+
+**Consent.** Before the checkout, the upgrade page shows the price and billing period of each plan the checkout offers, as the provider reports them, that the plan renews at the price in effect until the account cancels, and how to cancel. It asks for two checked boxes: agreement to the renewal, and a request that the service start right away, during the 14-day withdrawal period, with the understanding that a withdrawal within 14 days refunds everything. The server stores each consent with its time, the plan, and the version of the text, and deletes it after 3 years.
+
+**Contract email.** When the provider reports the first paid order of a subscription, the server mails the account its contract: the customer's name and billing address as the provider reports them, the date, the plan, the price before tax, the tax and the total, the currency, the billing period, the renewal and cancellation terms with the steps to cancel, the refund policy, the consent with its time, the merchant's name, address, email and phone, and the link to the terms in the account's language. For a customer in Québec it also gives the monthly rate and the date the period ends, and puts the French terms first.
+
+**Cancellation.** A customer in Québec, and any subscriber to a plan whose price change is announced or took effect at most 30 days ago, chooses between ending the plan today, which refunds the unused part of the period in proportion to the time left, with no fee, and ending it when the period ends. Otherwise the plan ends when the period ends. The provider's subscription stops renewing either way, and the server mails a confirmation. Polar renews a yearly subscription every year until it's canceled, which gives Québec's yearly plans their term without a fixed end after the first year.
+
+**Refunds and withdrawal.** The refund button refunds the latest payment in full, the first or a renewal, when it's at most 14 days old. The withdraw button, for a customer in the EU or the UK within 14 days of the subscription's start, does the same for the first payment, and the server mails an acknowledgment. Every refund the server issues, a Québec cancellation's included, also ends the paid period: the server revokes the subscription at the provider and moves the account to `free` at once, so its workspaces beyond the plan go over plan. The server records the refund and the revocation it owes before it calls the provider, and retries each one that failed on every maintenance pass until the provider accepts it. Polar refunds an amount before tax and refunds the tax in the same proportion.
+
+**Reminders and price changes.** The server mails a yearly subscriber twice before each renewal, once between 90 and 60 days before and once between 45 and 15 days before, and a monthly subscriber once a year. Each reminder gives the renewal date, the amount and how to cancel. The operator announces a price change with `sync-server billing announce-price`, at least 30 days before it takes effect, with the old and new clauses in English and in French. The server mails each subscriber to that plan a notice with both clauses, the date, and the right to refuse the change by cancelling at no cost, and a second notice between 30 and 7 days before the date.
+
+**Mail about plans.** The server queues each message about plans in the same transaction as the change it reports, and the maintenance pass sends the queue and deletes each message once it's sent, so a crash between the change and the send loses nothing.
 
 ## 27. Limits
 
@@ -1602,7 +1676,10 @@ At these defaults, the join in [§28](#28-worked-example-100000-objects) downloa
 | Device authorization codes, enrollment challenges, magic links, reset codes, approval requests and offers | 10 minutes |
 | Sessions | no expiry; a link that removes its card or a reset that retires its chain marks a session removed, which then reads only its account's chains and answers `device_removed` elsewhere ([§7](#desktop-sign-in)); for a card no chain lists, an active device ends it |
 | Active cards in an account chain | 256, at most one of them a recovery identity |
-| Workspaces | 1,000 per account, 100 of them owned |
+| Workspaces | 1,000 per account, 100 of them owned, or fewer as the owner's plan sets ([§20](#plans)) |
+| Plan limits | storage per account, owned workspaces, largest file, members per owned workspace and daily transfer, from the table in [§20](#plans) on a server that sells plans |
+| Over plan | 90 days, then the server closes the workspace |
+| Inactive `free` accounts | warnings at 10 and 11 months, the account's workspaces closed at 13 |
 | Card indices; load numbers | 16,777,215 per workspace over its life; 1 to 536,870,911 per device and workspace |
 | Pending approval requests | 32 per account, 100 per workspace |
 | Cursors per `POST /v2/accounts/chains` | 256 |
@@ -1613,7 +1690,7 @@ At these defaults, the join in [§28](#28-worked-example-100000-objects) downloa
 | Share snapshot, padded | 983,040 bytes |
 | Retained log per domain | `retained_bytes` of weight, a server setting, 1 GiB by default, less while the workspace's usage and history exceed its quota |
 | Checkpoint interval | 10,000 log entries or 64 MiB of weight, at due points the server publishes; a writer waits a random 0 to 60 seconds after a due point |
-| Workspace quota | `workspace_quota_bytes` of live data, policy changes and epoch bundles, a server setting, unlimited by default; history yields to it while usage alone fits |
+| Workspace quota | `workspace_quota_bytes` of live data, policy changes and epoch bundles, a server setting, unlimited by default; history yields to it while usage alone fits; the owner's plan adds an allowance across the owner's workspaces |
 | Completed upload that no operation lists | 24 hours |
 | Sync rate limits | [§26](#rate-limits) |
 | Quarantined blob-store objects after a restore | 7 days |
@@ -1678,7 +1755,14 @@ At the default bootstrap allowance of 512 MiB a minute ([§26](#rate-limits)), t
 | Devices | enrolled cards (account, device ID, public keys) and which sessions belong to which card; whether a card is active comes from its account chain, and whether it is a device of a workspace from that workspace's policy | how many devices you enrolled and which hold a session |
 | Pending approvals | approval requests with their commitments, offers and reveals until they expire | that a device is waiting for approval |
 | Server | the restore generation, the secret's key check, and the stamp `backup` writes into a copy; outside the database, the server secret | when the server was last restored, since the generation is a Unix time |
-| Workspaces | workspace ID, owner account, per-domain usage and history; a closed workspace keeps its row after the reclaim | that the workspace exists, and how much data it holds |
+| Workspaces | workspace ID, owner account, per-domain usage and history, the order the server created it in among all workspaces, whether its owner chose to keep it active, and while it's over plan the day it went over and how many notices went out; a closed workspace keeps its row after the reclaim | that the workspace exists, how much data it holds, which of an owner's workspaces is older, and when one went over plan |
+| Plans and billing | for an account that ever started a checkout: the payment provider's name, its customer and subscription IDs, the plan ID, the subscription's status, start, current period, price, currency and billing period, whether it's set to end, the country and region of the billing address, the time of the provider's last change to it, and which renewal reminders went out; the provider's ID, amount, currency and time of the subscription's latest paid order; the provider holds the name, address and payment details | that you pay, for which plan, how much, in which country, and until when |
+| Consents | the time, plan, text version and the two answers of each consent given before a checkout, for 3 years | when you subscribed |
+| Price changes | each announced change with its plan, date and clauses, and how many notices each subscriber got | that you were told |
+| Refunds owed | the order, amount and subscription of each refund or revocation the server owes the provider, until the provider accepts it | that you asked for a refund |
+| Mail about plans | each queued message, with its recipient and text, until it's sent | what the server is about to tell you |
+| Billing events | the ID of each webhook event the server applied, with the day it arrived, for 100 days | the days your subscription changed |
+| Account activity | on a server that sells plans, the month each account last sent an authenticated request, how many inactivity warnings it got, and the language it reads the account pages in | roughly when you last synced, to the month |
 | Policy changes | full signed records with the account heads each records, also as entries in every domain's log | members, roles, the head of each member's account chain the workspace follows, restricted domains and their grants, in order |
 | Domains | domain ID, kind (workspace or restricted), marker `rid`, current epoch, rotation state, history floors, the highest published retention floor | how many domains exist and who reads each |
 | Chain heads | per device and domain: counter, digest, sequence | the last position each device wrote |
@@ -1689,7 +1773,7 @@ At the default bootstrap allowance of 512 MiB a minute ([§26](#rate-limits)), t
 | Share links | token hash, workspace, domain, creating device, expiry, signed padded snapshot | that a domain has a shared item, which device shared it, and from its expiry roughly when |
 | Invitations | while open: ID, token hash, workspace, role, inviter, accepting account, status, expiry, padded context | who is inviting whom, with which role, until the invitation ends |
 | Workspace profile | signed encrypted record | when the name changed |
-| Rate counters | key, which holds a device ID, an account ID or a keyed hash of a client IP, window length, count and the end of the count's window; the server deletes a count within a minute after its window ends | request volume, and which keys sent requests in the current window |
+| Rate counters | key, which holds a device ID, an account ID or a keyed hash of a client IP, window length, count and the end of the count's window; the daily transfer budgets and sign-ups count per UTC day; the server deletes a count within a minute after its window ends | request volume, and which keys sent requests in the current window; how much each account transferred today |
 | Presence | nothing stored | |
 
 No stored table holds an object type, a per-record timestamp or an unpadded size. The blob store's file times date uploads, as the creation-times note below says.
@@ -1967,6 +2051,7 @@ These choices go beyond the list of topics the protocol had to cover. Each one s
 21. **Two IDs derive instead of being drawn.** Changed: an account's ID derives from its sign-up email under the server's secret, so Reset devices works after a restore lost the account, and a device's from its signing key. Workspace IDs are random, like domain and blob IDs, because no repair needs them, so only an approval, a kit or a change that a still-active device of your own account signed anchors a workspace's log.
 22. **Chains may skip counters.** Confirmed. A device starts a new block of counters at each start, so neither a crash nor a rolled-back journal makes it sign a counter twice.
 23. **The server publishes checkpoint due points.** Confirmed. Writers can't see blob weights inside payloads they can't read, and a quota crossing makes a checkpoint due once.
+24. **Plans bound accounts, not workspaces.** Added on 2026-11-26. A server that sells plans gives each account storage that its owned workspaces share, history included, and the owner's plan sets each workspace's other limits, so joining someone's workspace costs a member nothing. A downgrade never deletes at once: the workspaces beyond the allowance turn read-only for 90 days, and over quota the server keeps refusing what raises usage while it takes deletes. The plan table lives in the server's code under its own plan IDs, and the payment provider sits behind one boundary, so a provider change touches no limit. Without a provider the server keeps the operator's settings alone, as before.
 
 ## Sign-off
 

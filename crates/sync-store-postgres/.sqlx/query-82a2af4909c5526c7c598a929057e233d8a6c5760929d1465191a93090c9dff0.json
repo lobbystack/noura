@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO price_notices (change, account, notices) VALUES ($1, $2, $3)\n             ON CONFLICT (change, account) DO UPDATE SET notices = excluded.notices",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "82a2af4909c5526c7c598a929057e233d8a6c5760929d1465191a93090c9dff0"
+}

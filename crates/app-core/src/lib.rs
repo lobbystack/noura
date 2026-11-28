@@ -76,6 +76,7 @@ pub use agent::AgentWorkspace;
 pub use ai::{
     AI_KEY_PROVIDERS, AiProviderChoice, AiProviderInput, AiProviderRow, AiToolPrompt,
     DEFAULT_CONTEXT_WINDOW, NEW_CHAT_TITLE, WEB_SEARCH_PROVIDER_NAME, WebSearchRow,
+    chatgpt::{CHATGPT_USAGE_URL, ChatGptStatus},
 };
 pub use app::{
     App, Change, DragOut, EMPTY_COMMANDS, GROUP_LIMIT, IgnoredFiles, NameDraft, Notice, NoticeKind,
@@ -83,8 +84,8 @@ pub use app::{
     Screen, SearchScope, UnsavedPrompt,
 };
 pub use app::{
-    SPEECH_LANGUAGES, SpeechModelFilter, SpeechModelRow, SpeechModelSection, SpeechModelsPage,
-    speech_language_name,
+    SPEECH_LANGUAGES, ShortcutStatus, SpeechModelFilter, SpeechModelRow, SpeechModelSection,
+    SpeechModelsPage, SpeechShortcut, speech_language_name,
 };
 pub use calendar_grid::{GridDay, GridEntry, Segment, Span, grid_days, lay_out};
 pub use commands::{
@@ -111,6 +112,11 @@ pub use links::{
 };
 #[cfg(feature = "test-hooks")]
 pub use local_core::WatchFault;
+pub use local_core::chatgpt::ChatGptEndpoints;
+/// A stand-in for OpenAI's sign-in and Responses API, for
+/// [`App::set_chatgpt_endpoints`].
+#[cfg(feature = "test-hooks")]
+pub use local_core::chatgpt_fake;
 pub use local_core::{
     AI_PROVIDER_KINDS, AiStreamer, CredentialStore, MemoryCredentials, RemoteImage,
 };
@@ -183,7 +189,7 @@ pub use remote_images::RemoteImageState;
 pub use saves::{NoPendingSaves, PendingSaves};
 pub use search::{SEARCH_LIMIT, SEARCH_PAGE, SearchHit, SearchQuery, SearchState};
 pub use settings::{
-    ABOUT_LINKS, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
+    ABOUT_LINKS, AI_PLUGIN, AboutLink, LICENSE, Settings, SettingsGroup, SettingsSection,
     THIRD_PARTY_LICENSES, VERSION, settings_section,
 };
 pub use system::{NoSystem, Platform, System, move_to_system_trash};

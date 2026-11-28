@@ -573,6 +573,7 @@ fn labels(nodes: &[Node]) -> Vec<String> {
             NodeKind::Form(form) => Some(form.submit.clone()),
             NodeKind::Text(text) => Some(text.clone()),
             NodeKind::MenuItem(item) => Some(item.label.clone()),
+            NodeKind::Button(label) => Some(label.clone()),
             _ => None,
         })
         .collect()
@@ -592,12 +593,30 @@ fn add(dictation: &mut Dictation, fake: &Fake, word: &str) {
 }
 
 #[test]
+fn change_keys_opens_settings_speech_where_you_record_them() {
+    let fake = Fake::new();
+    let mut dictation = Dictation::new();
+    dictation.render_settings(&fake);
+    fake.calls();
+    dictation.settings_event(&fake, Event::Pressed("change-keys".into()));
+    assert_eq!(fake.calls(), ["open Settings > Speech"]);
+    assert!(fake.settings.borrow().is_none());
+}
+
+#[test]
 fn the_settings_page_writes_the_file_the_first_time_you_change_something() {
     let fake = Fake::new();
     let mut dictation = Dictation::new();
     assert_eq!(
         labels(&dictation.render_settings(&fake)),
-        ["Shortcut", "Paste with", "Custom Words", "Add", "Word"]
+        [
+            "Shortcut",
+            "Change keys",
+            "Paste with",
+            "Custom Words",
+            "Add",
+            "Word"
+        ]
     );
     assert!(fake.settings.borrow().is_none());
 
@@ -629,6 +648,7 @@ fn the_settings_page_writes_the_file_the_first_time_you_change_something() {
         labels(&dictation.render_settings(&fake)),
         [
             "Shortcut",
+            "Change keys",
             "Paste with",
             "Custom Words",
             "Noura",

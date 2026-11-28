@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT notices FROM price_notices WHERE change = $1 AND account = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "notices",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "price_notices",
+            "name": "notices"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3a67f337697aa64098fca749f988dabd1e60ded2a630214f7847f4669556ce9b"
+}
